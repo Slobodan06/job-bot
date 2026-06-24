@@ -1,0 +1,13 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: "8080"
+      # OPENAI_API_KEY: set in .env or here for local compose
+    env_file:
+      - path: backend/.env
+        required: false
+      - path: atlas-credentials.env
+        required: false

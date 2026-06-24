@@ -1,0 +1,14 @@
+{
+  "name": "job-bot",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently -k -n API,WEB -c cyan,magenta \"node scripts/run-backend.mjs\" \"npm --prefix frontend run dev\"",
+    "build": "npm --prefix frontend run build",
+    "start": "node scripts/run-production.mjs",
+    "docker:build": "docker build -t job-bot .",
+    "docker:up": "docker compose up --build"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}
