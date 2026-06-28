@@ -23,7 +23,7 @@ export function GuestRoute({ children }: { children: React.ReactNode }) {
 }
 
 export function ProtectedRoute({ children }: { children: React.ReactNode }) {
-  const { isAuthenticated, loading } = useAuth();
+  const { isAuthenticated, loading, user } = useAuth();
   const location = useLocation();
 
   if (loading) {
@@ -36,6 +36,10 @@ export function ProtectedRoute({ children }: { children: React.ReactNode }) {
 
   if (!isAuthenticated) {
     return <Navigate to="/auth" state={{ from: location.pathname }} replace />;
+  }
+
+  if (user && !user.email_verified) {
+    return <Navigate to="/auth/check-email" state={{ email: user.email }} replace />;
   }
 
   return children;
@@ -54,6 +58,10 @@ export function TemplatePickerRoute({ children }: { children: React.ReactNode })
 
   if (!user) {
     return <Navigate to="/auth" replace />;
+  }
+
+  if (!user.email_verified) {
+    return <Navigate to="/auth/check-email" state={{ email: user.email }} replace />;
   }
 
   if (!userCanBuild(user)) {
@@ -76,6 +84,10 @@ export function BuilderRoute({ children }: { children: React.ReactNode }) {
 
   if (!user) {
     return <Navigate to="/auth" replace />;
+  }
+
+  if (!user.email_verified) {
+    return <Navigate to="/auth/check-email" state={{ email: user.email }} replace />;
   }
 
   if (!userCanBuild(user)) {

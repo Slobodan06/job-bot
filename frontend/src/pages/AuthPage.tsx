@@ -47,9 +47,13 @@ export default function AuthPage() {
     },
   });
 
-  const handleResult = (res: Awaited<ReturnType<typeof login>>) => {
+  const handleResult = (res: Awaited<ReturnType<typeof login>>, email: string) => {
+    if (res.status === "pending_verification") {
+      navigate(`/auth/check-email?email=${encodeURIComponent(email)}`, { replace: true });
+      return;
+    }
     if (res.status === "pending_access") {
-      notifications.show({ title: "Account created", message: res.message, color: "yellow" });
+      notifications.show({ title: "Signed in", message: res.message, color: "yellow" });
       navigate("/pending-access", { replace: true });
       return;
     }
@@ -62,7 +66,7 @@ export default function AuthPage() {
     setSubmitting(true);
     try {
       const res = await login(values.email, values.password);
-      handleResult(res);
+      handleResult(res, values.email);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Sign in failed.");
     } finally {
@@ -75,7 +79,7 @@ export default function AuthPage() {
     setSubmitting(true);
     try {
       const res = await register(values.email, values.password, values.name.trim());
-      handleResult(res);
+      handleResult(res, values.email);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Sign up failed.");
     } finally {
@@ -101,8 +105,8 @@ export default function AuthPage() {
             </Title>
             <Text c="dimmed" size="sm">
               {tab === "signup"
-                ? "Sign up with email. A manager must approve your account before you can use the builder."
-                : "Sign in with your email and password."}
+                ? "Sign up with email. We will send an activation link from Vukasin@nivion.tech."
+                : "Sign in with email. You will receive an activation link if your account is not verified yet."}
             </Text>
           </Stack>
 
@@ -176,7 +180,7 @@ export default function AuthPage() {
           </Tabs>
 
           <Text ta="center" size="xs" c="dimmed">
-            After sign up, the site owner reviews new accounts and grants builder access.
+            After email verification, the manager may grant access to the resume builder.
           </Text>
         </Stack>
       </Paper>

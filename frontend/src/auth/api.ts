@@ -23,7 +23,7 @@ export type AuthResponse = {
 };
 
 export type AuthResult = {
-  status: "pending_access" | "authenticated";
+  status: "pending_verification" | "pending_access" | "authenticated";
   message: string;
   email: string;
   access_token?: string | null;
@@ -87,7 +87,7 @@ export function userHasTemplate(user: User | null): boolean {
 export function userCanBuild(user: User | null): boolean {
   if (!user) return false;
   if (user.role === "owner") return true;
-  return user.has_access;
+  return user.email_verified && user.has_access;
 }
 
 export function userIsOwner(user: User | null): boolean {
@@ -105,6 +105,15 @@ export const authApi = {
     return apiFetch<AuthResult>("/api/auth/login", {
       method: "POST",
       body: JSON.stringify({ email, password }),
+    });
+  },
+  verifyEmail(token: string) {
+    return apiFetch<AuthResult>(`/api/auth/verify-email?token=${encodeURIComponent(token)}`);
+  },
+  resendVerification(email: string) {
+    return apiFetch<{ message: string }>("/api/auth/resend-verification", {
+      method: "POST",
+      body: JSON.stringify({ email }),
     });
   },
   me(token?: string) {

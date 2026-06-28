@@ -27,8 +27,8 @@ export default function PendingAccessPage() {
               Access pending
             </Title>
             <Text c="dimmed" size="sm">
-              Hi {user?.name || user?.email}, your account is waiting for manager approval before you can use
-              the resume builder.
+              Hi {user?.name || user?.email}, your email is verified but the manager has not granted
+              resume builder access yet.
             </Text>
           </Stack>
           <Alert variant="light" color="yellow" w="100%">

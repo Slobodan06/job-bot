@@ -19,7 +19,7 @@ def owner_bootstrap_fields(email: str) -> dict:
         }
     return {
         "role": "member",
-        "email_verified": True,
+        "email_verified": False,
         "has_access": False,
     }
 
@@ -27,7 +27,7 @@ def owner_bootstrap_fields(email: str) -> dict:
 def user_can_build(doc: dict) -> bool:
     if doc.get("role") == "owner":
         return True
-    return bool(doc.get("has_access"))
+    return bool(doc.get("email_verified")) and bool(doc.get("has_access"))
 
 
 def user_is_owner(doc: dict) -> bool:

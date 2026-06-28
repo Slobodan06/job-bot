@@ -28,7 +28,17 @@ async def get_current_user(
     return doc
 
 
-async def get_builder_user(user: dict = Depends(get_current_user)) -> dict:
+async def get_verified_user(user: dict = Depends(get_current_user)) -> dict:
+    public = user_doc_to_public(user)
+    if not public["email_verified"]:
+        raise HTTPException(
+            status_code=403,
+            detail="Email not verified. Check your inbox for the activation link.",
+        )
+    return user
+
+
+async def get_builder_user(user: dict = Depends(get_verified_user)) -> dict:
     if not user_can_build(user):
         raise HTTPException(
             status_code=403,

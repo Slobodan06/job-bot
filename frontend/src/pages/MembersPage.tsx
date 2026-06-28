@@ -158,6 +158,9 @@ export default function MembersPage() {
                             Owner
                           </Badge>
                         ) : null}
+                        <Badge color={member.email_verified ? "teal" : "gray"} variant="outline" size="sm">
+                          {member.email_verified ? "Verified" : "Unverified"}
+                        </Badge>
                         <Badge color={member.has_access ? "teal" : "yellow"} variant="outline" size="sm">
                           {member.has_access ? "Approved" : "Pending"}
                         </Badge>
@@ -200,7 +203,7 @@ export default function MembersPage() {
                       ) : (
                         <Switch
                           checked={member.has_access}
-                          disabled={updatingId === member.id}
+                          disabled={!member.email_verified || updatingId === member.id}
                           onChange={(e) => void toggleAccess(member, e.currentTarget.checked)}
                           color="teal"
                           label={member.has_access ? "Granted" : "No access"}

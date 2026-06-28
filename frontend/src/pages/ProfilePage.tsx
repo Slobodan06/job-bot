@@ -154,6 +154,9 @@ export default function ProfilePage() {
                 <Badge variant="light" color={user.role === "owner" ? "grape" : "teal"}>
                   {user.role === "owner" ? "Owner" : "Member"}
                 </Badge>
+                <Badge variant="outline" color={user.email_verified ? "teal" : "gray"}>
+                  {user.email_verified ? "Verified" : "Unverified"}
+                </Badge>
                 {user.has_access || user.role === "owner" ? (
                   <Badge variant="light" color="cyan">
                     Builder access

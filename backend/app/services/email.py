@@ -130,6 +130,5 @@ async def send_verification_email(to_email: str, token: str, *, name: str = "") 
         )
         raise RuntimeError(
             "Could not send activation email. "
-            "On Railway, set RESEND_API_KEY and EMAIL_FROM (SMTP is blocked on Hobby). "
-            "For local dev, use SMTP_* in backend/.env."
+            "Set RESEND_API_KEY and EMAIL_FROM (e.g. Vukasin <Vukasin@nivion.tech>)."
         ) from exc
