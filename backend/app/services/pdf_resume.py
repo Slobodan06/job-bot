@@ -65,7 +65,10 @@ def _extract_url(text: str) -> str | None:
 
 
 def _href_markup(label: str, url: str, color: str = "#0d9488") -> str:
-    return f'<a href="{escape(_normalize_url(url))}" color="{color}">{escape(label)}</a>'
+    return (
+        f'<a href="{escape(_normalize_url(url))}">'
+        f'<font color="{color}">{escape(label)}</font></a>'
+    )
 
 
 @dataclass
@@ -99,14 +102,17 @@ def _is_link_label_line(line: str) -> bool:
 
 
 def _link_label_for(line: str, url: str) -> str:
-    text = f"{line} {url}".lower()
-    if "linkedin" in text:
+    key = (url or "").lower()
+    line_lower = (line or "").lower().strip().rstrip(": ")
+    if "linkedin.com" in key or line_lower == "linkedin":
         return "LinkedIn"
-    if "github" in text:
+    if "github.com" in key or line_lower == "github":
         return "GitHub"
-    if "portfolio" in text or "behance" in text or "dribbble" in text:
+    if "portfolio" in line_lower or "behance" in key or "dribbble" in key:
         return "Portfolio"
-    if "website" in line.lower() or "blog" in line.lower():
+    if line_lower in _LINK_LABELS:
+        return line.strip().rstrip(": ").title()
+    if "website" in line_lower or "blog" in line_lower:
         return line.strip().rstrip(": ").title() or "Website"
     return "Portfolio"
 
@@ -135,10 +141,11 @@ def _register_link(parsed: ParsedContact, label: str, url: str) -> None:
     key = url.lower().rstrip("/")
     if any(existing.lower().rstrip("/") == key for _, existing in parsed.links):
         return
-    if label.lower() == "linkedin" or "linkedin.com" in key:
+    if "linkedin.com" in key:
         parsed.linkedin_url = parsed.linkedin_url or url
-        if label.lower() == "linkedin":
-            parsed.links.append(("LinkedIn", url))
+        parsed.links.append(("LinkedIn", url))
+        return
+    if label.lower() == "linkedin":
         return
     parsed.links.append((label, url))
 
@@ -162,13 +169,25 @@ def parse_contact(contact: str) -> ParsedContact:
             continue
 
         if _is_link_label_line(line):
-            label = line.strip().rstrip(": ").title()
-            if i + 1 < len(lines):
-                next_url = _extract_url(lines[i + 1])
-                if next_url:
-                    _register_link(parsed, label, next_url)
-                    i += 2
-                    continue
+            labels: list[str] = []
+            j = i
+            while j < len(lines) and _is_link_label_line(lines[j]):
+                labels.append(lines[j].strip().rstrip(": ").title())
+                j += 1
+            urls: list[tuple[str, str]] = []
+            while j < len(lines):
+                part_url = _extract_url(lines[j])
+                if part_url:
+                    urls.append((lines[j], part_url))
+                    j += 1
+                else:
+                    break
+            if labels and urls:
+                for idx, (url_line, part_url) in enumerate(urls):
+                    lbl = labels[idx] if idx < len(labels) else _link_label_for(url_line, part_url)
+                    _register_link(parsed, lbl, part_url)
+                i = j
+                continue
             i += 1
             continue
 
@@ -234,8 +253,8 @@ def format_contact_name_markup(
     color = link_color or name_color or "#0f172a"
     if parsed.linkedin_url:
         return (
-            f'<a href="{escape(_normalize_url(parsed.linkedin_url))}" color="{color}">'
-            f"<b>{escape(parsed.name)}</b></a>"
+            f'<a href="{escape(_normalize_url(parsed.linkedin_url))}">'
+            f'<font color="{color}"><b>{escape(parsed.name)}</b></font></a>'
         )
     return f"<b>{escape(parsed.name)}</b>"
 
@@ -270,11 +289,12 @@ def format_contact_header_markup(
     if not parsed.name:
         return ""
     name_attr = f" color='{name_color}'" if name_color else ""
-    link_attr = f" color='{link_color or name_color or '#0d9488'}'" if (link_color or name_color) else ""
+    link_attr = f' color="{link_color or name_color or "#0d9488"}"' if (link_color or name_color) else ""
     if parsed.linkedin_url:
         name_html = (
-            f"<a href='{escape(_normalize_url(parsed.linkedin_url))}'{link_attr}>"
-            f"<b><font size='{name_size}'{name_attr}>{escape(parsed.name)}</font></b></a>"
+            f'<a href="{escape(_normalize_url(parsed.linkedin_url))}">'
+            f"<b><font size='{name_size}'{name_attr}{link_attr}>"
+            f"{escape(parsed.name)}</font></b></a>"
         )
     else:
         name_html = f"<b><font size='{name_size}'{name_attr}>{escape(parsed.name)}</font></b>"
@@ -292,7 +312,7 @@ def format_contact_header_markup(
 
 
 def merge_profile_links_into_contact(contact: str, full_text: str) -> str:
-    """Pull LinkedIn/portfolio/GitHub URLs from anywhere in the resume into the contact block."""
+    """Pull LinkedIn/portfolio/GitHub URLs from header/footer regions into the contact block."""
     if not (full_text or "").strip():
         return contact
     parsed = parse_contact(contact)
@@ -302,11 +322,22 @@ def merge_profile_links_into_contact(contact: str, full_text: str) -> str:
     for _, url in parsed.links:
         known.add(url.lower().rstrip("/"))
 
+    all_lines = full_text.splitlines()
+    scan_lines: list[str] = list(all_lines[:25])
+    if len(all_lines) > 40:
+        scan_lines.extend(all_lines[-12:])
+    for line in all_lines:
+        lower = line.lower()
+        if "linkedin.com" in lower or "github.com" in lower:
+            scan_lines.append(line)
+
     extras: list[str] = []
-    for line in full_text.splitlines():
+    seen_scan: set[str] = set()
+    for line in scan_lines:
         stripped = line.strip()
-        if not stripped:
+        if not stripped or stripped in seen_scan:
             continue
+        seen_scan.add(stripped)
         url = _extract_url(stripped)
         if not url:
             continue
@@ -315,7 +346,9 @@ def merge_profile_links_into_contact(contact: str, full_text: str) -> str:
             continue
         known.add(key)
         label = _link_label_for(stripped, url)
-        if label == "LinkedIn" or "linkedin.com" in key:
+        if label == "LinkedIn":
+            if "linkedin.com" not in key:
+                continue
             extras.append(f"LinkedIn\n{url}")
         elif label == "GitHub" or "github.com" in key:
             extras.append(f"GitHub\n{url}")
@@ -362,38 +395,92 @@ def format_experience_markup(content: str) -> str:
     else:
         line_blocks = _split_experience_lines(text)
 
-    html_parts: list[str] = []
-    for lines in line_blocks:
-        headers: list[str] = []
-        bullets: list[str] = []
-        for line in lines:
-            if _BULLET_RE.match(line):
-                bullets.append(_BULLET_RE.sub("", line).strip())
-            elif bullets:
-                bullets[-1] = f"{bullets[-1]} {line}"
-            else:
-                headers.append(line)
-        if headers:
-            html_parts.append(
-                f"<b><font size='10' color='#0f172a'>{escape(headers[0])}</font></b><br/>"
-            )
-            if len(headers) > 1:
-                html_parts.append(
-                    f"<font color='#334155'><b>{escape(headers[1])}</b></font><br/>"
-                )
-            meta = [escape(item) for item in headers[2:]]
-            if meta:
-                html_parts.append(
-                    f"<font color='#64748b' size='8'>{' · '.join(meta)}</font><br/>"
-                )
-            if bullets:
-                html_parts.append("<br/>")
-        for bullet in bullets:
-            html_parts.append(
-                f"<font color='#0f172a' size='9'>• {escape(bullet)}</font><br/>"
-            )
-        html_parts.append("<br/>")
+    html_parts = [_render_experience_block(lines) for lines in line_blocks]
     return _strip_trailing_breaks("".join(html_parts))
+
+
+_EXP_SUMMARY_START_RE = re.compile(
+    r"^(Developed|Designed|Built|Led|Managed|Created|Implemented|Worked|Collaborated|"
+    r"Spearheaded|Optimized|Delivered|Architected|Engineered|Maintained|Established|"
+    r"Provided|Supported|Integrated|Automated|Improved|Streamlined)\b",
+    re.I,
+)
+
+
+def _looks_like_exp_location(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped or _is_education_date_line(line):
+        return False
+    if _LOCATION_LINE_RE.match(stripped):
+        return True
+    if len(stripped) > 48 or len(stripped.split()) > 5:
+        return False
+    if _EXP_SUMMARY_START_RE.match(stripped):
+        return False
+    if stripped.endswith(".") and len(stripped.split()) > 4:
+        return False
+    return bool(re.match(r"^[A-ZÀ-ÿ]", stripped))
+
+
+def _looks_like_summary_line(line: str) -> bool:
+    if len(line) > 95:
+        return True
+    if _EXP_SUMMARY_START_RE.match(line):
+        return True
+    if line.rstrip().endswith(".") and len(line.split()) > 10:
+        return True
+    return False
+
+
+def _render_experience_block(lines: list[str]) -> str:
+    if not lines:
+        return ""
+    title = lines[0]
+    pre: list[str] = []
+    bullets: list[str] = []
+    for line in lines[1:]:
+        if _BULLET_RE.match(line):
+            bullets.append(_BULLET_RE.sub("", line).strip())
+        elif bullets:
+            bullets[-1] = f"{bullets[-1]} {line}"
+        else:
+            pre.append(line)
+
+    meta: list[str] = []
+    body: list[str] = []
+    company: str | None = None
+    for line in pre:
+        if _is_education_date_line(line):
+            meta.append(line)
+        elif _looks_like_exp_location(line):
+            meta.append(line)
+        elif _looks_like_summary_line(line):
+            body.append(line)
+        elif company is None and len(line) < 72 and not line.rstrip().endswith("."):
+            company = line
+        else:
+            body.append(line)
+
+    parts = [
+        f"<b><font size='10' color='#0f172a'>{escape(title)}</font></b><br/>",
+    ]
+    if company:
+        parts.append(f"<font color='#334155'><b>{escape(company)}</b></font><br/>")
+    if meta:
+        parts.append(
+            f"<font color='#64748b' size='8'>{' · '.join(escape(item) for item in meta)}</font><br/>"
+        )
+    if body:
+        parts.append("<br/>")
+        for paragraph in body:
+            parts.append(f"<font color='#0f172a' size='9'>{escape(paragraph)}</font><br/>")
+    if bullets:
+        if not body:
+            parts.append("<br/>")
+        for bullet in bullets:
+            parts.append(f"<font color='#0f172a' size='9'>• {escape(bullet)}</font><br/>")
+    parts.append("<br/>")
+    return "".join(parts)
 
 
 _EDU_DATE_RE = re.compile(
@@ -448,6 +535,9 @@ def _split_education_entries(text: str) -> list[list[str]]:
     lines = [line.strip() for line in text.split("\n") if line.strip()]
     if not lines:
         return []
+    stacked = _collect_stacked_education_entries(lines)
+    if stacked:
+        return stacked
     blocks: list[list[str]] = []
     current: list[str] = []
     for line in lines:
@@ -459,6 +549,52 @@ def _split_education_entries(text: str) -> list[list[str]]:
     if current:
         blocks.append(current)
     return blocks if blocks else [lines]
+
+
+def _split_compound_date_line(line: str) -> list[str]:
+    if " · " not in line:
+        return [line]
+    parts = [part.strip() for part in line.split(" · ")]
+    if len(parts) >= 2 and all(_is_education_date_line(part) for part in parts):
+        return parts
+    return [line]
+
+
+def _collect_stacked_education_entries(lines: list[str]) -> list[list[str]] | None:
+    degree_count = 0
+    for line in lines:
+        if _looks_like_degree_line(line):
+            degree_count += 1
+        else:
+            break
+    if degree_count < 2:
+        return None
+
+    degrees = lines[:degree_count]
+    rest = lines[degree_count:]
+    dates: list[str] = []
+    for line in rest:
+        if _is_education_date_line(line):
+            dates.extend(_split_compound_date_line(line))
+        elif dates:
+            break
+    if len(dates) < degree_count:
+        return None
+
+    institutions = [line for line in rest if _looks_like_institution_line(line)]
+    locations = [line for line in rest if _LOCATION_LINE_RE.match(line.strip())]
+
+    entries: list[list[str]] = []
+    for i, degree in enumerate(degrees):
+        entry = [degree]
+        if i < len(institutions):
+            entry.append(institutions[i])
+        if i < len(dates):
+            entry.append(dates[i])
+        if i < len(locations):
+            entry.append(locations[i])
+        entries.append(entry)
+    return entries
 
 
 def _render_education_entry(lines: list[str]) -> str:
