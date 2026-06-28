@@ -311,10 +311,42 @@ def format_contact_header_markup(
     return "".join(parts)
 
 
-def merge_profile_links_into_contact(contact: str, full_text: str) -> str:
-    """Pull LinkedIn/portfolio/GitHub URLs from header/footer regions into the contact block."""
-    if not (full_text or "").strip():
-        return contact
+def _extract_http_links_from_pdf(pdf_bytes: bytes) -> list[tuple[str, str]]:
+    """Read clickable http(s) URIs embedded in a PDF (not visible in plain-text extraction)."""
+    if not pdf_bytes:
+        return []
+    try:
+        import fitz
+    except ImportError:
+        return []
+
+    labeled: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    try:
+        for page in doc:
+            for link in page.get_links():
+                uri = (link.get("uri") or "").strip()
+                if not uri.lower().startswith(("http://", "https://")):
+                    continue
+                url = _normalize_url(uri)
+                key = url.lower().rstrip("/")
+                if key in seen:
+                    continue
+                seen.add(key)
+                labeled.append((_link_label_for("", url), url))
+    finally:
+        doc.close()
+    return labeled
+
+
+def merge_profile_links_into_contact(
+    contact: str,
+    full_text: str,
+    *,
+    pdf_bytes: bytes | None = None,
+) -> str:
+    """Pull profile URLs from PDF hyperlinks, header/footer text, and the contact block."""
     parsed = parse_contact(contact)
     known: set[str] = set()
     if parsed.linkedin_url:
@@ -322,37 +354,49 @@ def merge_profile_links_into_contact(contact: str, full_text: str) -> str:
     for _, url in parsed.links:
         known.add(url.lower().rstrip("/"))
 
-    all_lines = full_text.splitlines()
-    scan_lines: list[str] = list(all_lines[:25])
-    if len(all_lines) > 40:
-        scan_lines.extend(all_lines[-12:])
-    for line in all_lines:
-        lower = line.lower()
-        if "linkedin.com" in lower or "github.com" in lower:
-            scan_lines.append(line)
-
     extras: list[str] = []
-    seen_scan: set[str] = set()
-    for line in scan_lines:
-        stripped = line.strip()
-        if not stripped or stripped in seen_scan:
-            continue
-        seen_scan.add(stripped)
-        url = _extract_url(stripped)
-        if not url:
-            continue
-        key = url.lower().rstrip("/")
-        if key in known:
-            continue
-        known.add(key)
-        label = _link_label_for(stripped, url)
-        if label == "LinkedIn":
-            if "linkedin.com" not in key:
+
+    if (full_text or "").strip():
+        all_lines = full_text.splitlines()
+        scan_lines: list[str] = list(all_lines[:25])
+        if len(all_lines) > 40:
+            scan_lines.extend(all_lines[-12:])
+        for line in all_lines:
+            lower = line.lower()
+            if "linkedin.com" in lower or "github.com" in lower:
+                scan_lines.append(line)
+
+        seen_scan: set[str] = set()
+        for line in scan_lines:
+            stripped = line.strip()
+            if not stripped or stripped in seen_scan:
                 continue
-            extras.append(f"LinkedIn\n{url}")
-        elif label == "GitHub" or "github.com" in key:
-            extras.append(f"GitHub\n{url}")
-        else:
+            seen_scan.add(stripped)
+            url = _extract_url(stripped)
+            if not url:
+                continue
+            label = _link_label_for(stripped, url)
+            key = url.lower().rstrip("/")
+            if key in known:
+                continue
+            known.add(key)
+            if label == "LinkedIn":
+                if "linkedin.com" not in key:
+                    continue
+                extras.append(f"LinkedIn\n{url}")
+            elif label == "GitHub" or "github.com" in key:
+                extras.append(f"GitHub\n{url}")
+            else:
+                extras.append(f"{label}\n{url}")
+
+    if pdf_bytes:
+        for label, url in _extract_http_links_from_pdf(pdf_bytes):
+            key = url.lower().rstrip("/")
+            if key in known:
+                continue
+            if label == "LinkedIn" and "linkedin.com" not in key:
+                continue
+            known.add(key)
             extras.append(f"{label}\n{url}")
 
     if not extras:

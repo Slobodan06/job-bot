@@ -412,7 +412,11 @@ async def tailor_resume(
     template_key: str = "",
 ) -> TailorResponse:
     parsed = parse_resume_sections(resume_text)
-    enriched_contact = merge_profile_links_into_contact(parsed.contact, resume_text)
+    enriched_contact = merge_profile_links_into_contact(
+        parsed.contact,
+        resume_text,
+        pdf_bytes=source_pdf_bytes,
+    )
     if enriched_contact != parsed.contact:
         parsed = ParsedResume(
             contact=enriched_contact,
