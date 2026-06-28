@@ -15,8 +15,6 @@ import {
 
 const HomePage = lazy(() => import("./pages/HomePage"));
 const AuthPage = lazy(() => import("./pages/AuthPage"));
-const CheckEmailPage = lazy(() => import("./pages/CheckEmailPage"));
-const VerifyEmailPage = lazy(() => import("./pages/VerifyEmailPage"));
 const PendingAccessPage = lazy(() => import("./pages/PendingAccessPage"));
 const ProfilePage = lazy(() => import("./pages/ProfilePage"));
 const MembersPage = lazy(() => import("./pages/MembersPage"));
@@ -46,8 +44,6 @@ export default function App() {
                   </GuestRoute>
                 }
               />
-              <Route path="auth/check-email" element={<CheckEmailPage />} />
-              <Route path="auth/verify" element={<VerifyEmailPage />} />
               <Route
                 path="pending-access"
                 element={

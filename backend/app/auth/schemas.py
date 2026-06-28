@@ -20,10 +20,6 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=1, max_length=128)
 
 
-class ResendVerificationRequest(BaseModel):
-    email: EmailStr
-
-
 class ChangePasswordRequest(BaseModel):
     current_password: str = Field(min_length=1, max_length=128)
     new_password: str = Field(min_length=8, max_length=128)
@@ -70,7 +66,7 @@ class AuthResponse(BaseModel):
 
 
 class AuthResultResponse(BaseModel):
-    status: Literal["pending_verification", "pending_access", "authenticated"]
+    status: Literal["pending_access", "authenticated"]
     message: str
     email: str
     access_token: str | None = None

@@ -118,7 +118,7 @@ export default function MembersPage() {
               <Title order={2}>Member management</Title>
             </Group>
             <Text c="dimmed" size="sm" maw={640}>
-              Grant builder access, assign CV templates (40 smart exclusive designs), or change a member&apos;s template.
+              Review new sign-ups, grant builder access, and assign CV templates (40 smart exclusive designs).
             </Text>
           </Stack>
           <Button variant="light" color="teal" leftSection={<IconRefresh size={16} />} onClick={load} loading={loading}>
@@ -158,8 +158,8 @@ export default function MembersPage() {
                             Owner
                           </Badge>
                         ) : null}
-                        <Badge color={member.email_verified ? "teal" : "gray"} variant="outline" size="sm">
-                          {member.email_verified ? "Verified" : "Unverified"}
+                        <Badge color={member.has_access ? "teal" : "yellow"} variant="outline" size="sm">
+                          {member.has_access ? "Approved" : "Pending"}
                         </Badge>
                         {member.has_access && member.role !== "owner" ? (
                           <Badge color="cyan" variant="light" size="sm">
@@ -200,7 +200,7 @@ export default function MembersPage() {
                       ) : (
                         <Switch
                           checked={member.has_access}
-                          disabled={!member.email_verified || updatingId === member.id}
+                          disabled={updatingId === member.id}
                           onChange={(e) => void toggleAccess(member, e.currentTarget.checked)}
                           color="teal"
                           label={member.has_access ? "Granted" : "No access"}

@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 
 from bson import ObjectId
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
 
 from app.auth.dependencies import get_current_user, get_owner_user, public_user
 from app.auth.schemas import (
@@ -13,14 +13,11 @@ from app.auth.schemas import (
     MessageResponse,
     ProfileUpdateRequest,
     RegisterRequest,
-    ResendVerificationRequest,
     UserPublic,
 )
 from app.auth.security import create_access_token, hash_password, verify_password
-from app.auth.verification import new_verification_token, verification_is_valid
 from app.auth.roles import owner_bootstrap_fields, user_can_build
 from app.database import get_db, user_doc_to_public
-from app.services.email import send_verification_email
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -35,17 +32,11 @@ def _auth_response(doc: dict) -> AuthResponse:
 
 def _auth_result(doc: dict, *, message: str) -> AuthResultResponse:
     public = UserPublic(**public_user(doc))
-    if not public.email_verified:
-        return AuthResultResponse(
-            status="pending_verification",
-            message=message,
-            email=public.email,
-        )
     if not user_can_build(doc):
         token = create_access_token(str(doc["_id"]))
         return AuthResultResponse(
             status="pending_access",
-            message="Your email is verified. Waiting for the owner to grant resume builder access.",
+            message=message,
             email=public.email,
             access_token=token,
             user=public,
@@ -58,22 +49,6 @@ def _auth_result(doc: dict, *, message: str) -> AuthResultResponse:
         access_token=full.access_token,
         user=full.user,
     )
-
-
-async def _issue_verification(doc: dict) -> None:
-    token, expires = new_verification_token()
-    db = get_db()
-    await db.users.update_one(
-        {"_id": doc["_id"]},
-        {
-            "$set": {
-                "verification_token": token,
-                "verification_token_expires": expires,
-                "updated_at": datetime.now(UTC),
-            }
-        },
-    )
-    await send_verification_email(doc["email"], token, name=doc.get("name") or "")
 
 
 @router.post("/register", response_model=AuthResultResponse)
@@ -94,8 +69,6 @@ async def register(body: RegisterRequest) -> AuthResultResponse:
         "target_role": "",
         "location": "",
         "bio": "",
-        "verification_token": None,
-        "verification_token_expires": None,
         "created_at": now,
         "updated_at": now,
         **bootstrap,
@@ -103,17 +76,15 @@ async def register(body: RegisterRequest) -> AuthResultResponse:
     result = await db.users.insert_one(doc)
     doc["_id"] = result.inserted_id
 
-    if bootstrap["email_verified"]:
+    if bootstrap["role"] == "owner":
         return _auth_result(
             doc,
             message="Owner account created. You can use the resume builder and manage members.",
         )
 
-    await _issue_verification(doc)
-    return AuthResultResponse(
-        status="pending_verification",
-        message="Account created. Check your email for the activation link.",
-        email=email,
+    return _auth_result(
+        doc,
+        message="Account created. Waiting for the manager to approve your access.",
     )
 
 
@@ -127,53 +98,13 @@ async def login(body: LoginRequest) -> AuthResultResponse:
     if not verify_password(body.password, doc["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid email or password.")
 
-    public = user_doc_to_public(doc)
-    if not public["email_verified"]:
-        await _issue_verification(doc)
-        return AuthResultResponse(
-            status="pending_verification",
-            message="We sent an activation link to your email. Please verify before continuing.",
-            email=email,
-        )
+    if user_can_build(doc):
+        return _auth_result(doc, message="Signed in successfully.")
 
-    return _auth_result(doc, message="Signed in successfully.")
-
-
-@router.get("/verify-email", response_model=AuthResultResponse)
-async def verify_email(token: str = Query(min_length=10)) -> AuthResultResponse:
-    db = get_db()
-    doc = await db.users.find_one({"verification_token": token})
-    if not doc or not verification_is_valid(doc, token):
-        raise HTTPException(status_code=400, detail="Invalid or expired activation link.")
-    now = datetime.now(UTC)
-    await db.users.update_one(
-        {"_id": doc["_id"]},
-        {
-            "$set": {
-                "email_verified": True,
-                "updated_at": now,
-            },
-            "$unset": {
-                "verification_token": "",
-                "verification_token_expires": "",
-            },
-        },
+    return _auth_result(
+        doc,
+        message="Signed in. Waiting for the manager to approve your access.",
     )
-    doc = await db.users.find_one({"_id": doc["_id"]})
-    return _auth_result(doc, message="Email verified successfully.")
-
-
-@router.post("/resend-verification", response_model=MessageResponse)
-async def resend_verification(body: ResendVerificationRequest) -> MessageResponse:
-    db = get_db()
-    email = body.email.strip().lower()
-    doc = await db.users.find_one({"email": email})
-    if not doc:
-        return MessageResponse(message="If an account exists, a new activation link was sent.")
-    if user_doc_to_public(doc)["email_verified"]:
-        return MessageResponse(message="This account is already verified. You can sign in.")
-    await _issue_verification(doc)
-    return MessageResponse(message="A new activation link was sent to your email.")
 
 
 @router.get("/me", response_model=UserPublic)

@@ -18,7 +18,6 @@ type AuthContextValue = {
   isOwner: boolean;
   login: (email: string, password: string) => Promise<AuthResult>;
   register: (email: string, password: string, name: string) => Promise<AuthResult>;
-  verifyEmail: (token: string) => Promise<AuthResult>;
   logout: () => void;
   refreshUser: () => Promise<void>;
   applyAuthResult: (res: AuthResult) => void;
@@ -77,12 +76,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return res;
   }, [applyAuthResult]);
 
-  const verifyEmail = useCallback(async (token: string) => {
-    const res = await authApi.verifyEmail(token);
-    applyAuthResult(res);
-    return res;
-  }, [applyAuthResult]);
-
   const logout = useCallback(() => {
     setStoredToken(null);
     setUser(null);
@@ -97,12 +90,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       isOwner: user?.role === "owner",
       login,
       register,
-      verifyEmail,
       logout,
       refreshUser,
       applyAuthResult,
     }),
-    [user, loading, login, register, verifyEmail, logout, refreshUser, applyAuthResult],
+    [user, loading, login, register, logout, refreshUser, applyAuthResult],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
@@ -115,10 +107,7 @@ export function useAuth(): AuthContextValue {
 }
 
 export function getPostAuthPath(user: User | null, status?: AuthResult["status"]): string {
-  if (status === "pending_verification" || (user && !user.email_verified)) {
-    return "/auth/check-email";
-  }
-  if (status === "pending_access" || (user && user.email_verified && !userCanBuild(user))) {
+  if (status === "pending_access" || (user && !userCanBuild(user))) {
     return "/pending-access";
   }
   if (user && userCanBuild(user) && !userHasTemplate(user)) {
