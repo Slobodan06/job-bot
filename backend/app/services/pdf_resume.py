@@ -487,16 +487,7 @@ def format_experience_markup(content: str) -> str:
     if not text:
         return ""
     text = re.sub(r"\n[ \t]*\n[ \t]*\n+", "\n\n", text)
-    if re.search(r"\n\s*\n", text):
-        raw_blocks = re.split(r"\n\s*\n", text)
-        line_blocks: list[list[str]] = []
-        for block in raw_blocks:
-            lines = [line.strip() for line in block.split("\n") if line.strip()]
-            if lines:
-                line_blocks.append(lines)
-    else:
-        line_blocks = _split_experience_lines(text)
-
+    line_blocks = _split_experience_lines(text)
     html_parts = [_render_experience_block(lines) for lines in line_blocks]
     return _strip_trailing_breaks("".join(html_parts))
 
@@ -504,70 +495,118 @@ def format_experience_markup(content: str) -> str:
 _EXP_SUMMARY_START_RE = re.compile(
     r"^(Developed|Designed|Built|Led|Managed|Created|Implemented|Worked|Collaborated|"
     r"Spearheaded|Optimized|Delivered|Architected|Engineered|Maintained|Established|"
-    r"Provided|Supported|Integrated|Automated|Improved|Streamlined)\b",
+    r"Provided|Supported|Integrated|Automated|Improved|Streamlined|Conducted|"
+    r"Enhanced|Applied|Utilized|Proficient)\b",
+    re.I,
+)
+_EXP_ROLE_RE = re.compile(
+    r"\b(developer|engineer|manager|director|designer|founder|co-founder|cto|lead|"
+    r"architect|consultant|specialist|analyst|coordinator|head|principal|autónomo)\b",
     re.I,
 )
 
 
 def _looks_like_exp_location(line: str) -> bool:
     stripped = line.strip()
-    if not stripped or _is_education_date_line(line):
+    if not stripped or _is_education_date_line(line) or _BULLET_RE.match(stripped):
         return False
-    if _LOCATION_LINE_RE.match(stripped):
-        return True
-    if len(stripped) > 48 or len(stripped.split()) > 5:
+    if _EXP_ROLE_RE.search(stripped):
+        return False
+    if len(stripped) > 48 or stripped.rstrip().endswith("."):
         return False
     if _EXP_SUMMARY_START_RE.match(stripped):
         return False
-    if stripped.endswith(".") and len(stripped.split()) > 4:
-        return False
-    return bool(re.match(r"^[A-ZÀ-ÿ]", stripped))
+    if _LOCATION_LINE_RE.match(stripped):
+        city, _, country = stripped.partition(",")
+        return len(city.split()) <= 4 and len(country.split()) <= 4
+    words = stripped.split()
+    return len(words) <= 4 and bool(re.match(r"^[A-ZÀ-ÿ]", stripped))
 
 
 def _looks_like_summary_line(line: str) -> bool:
-    if len(line) > 95:
+    stripped = line.strip()
+    if len(stripped) > 95:
         return True
-    if _EXP_SUMMARY_START_RE.match(line):
+    if _EXP_SUMMARY_START_RE.match(stripped):
         return True
-    if line.rstrip().endswith(".") and len(line.split()) > 10:
+    if stripped.rstrip().endswith(".") and len(stripped.split()) > 8:
         return True
     return False
+
+
+def _looks_like_job_title_line(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped or _BULLET_RE.match(stripped) or _is_education_date_line(stripped):
+        return False
+    if _looks_like_summary_line(stripped):
+        return False
+    if _EXP_ROLE_RE.search(stripped) and len(stripped) < 120 and not stripped.rstrip().endswith("."):
+        return True
+    return False
+
+
+def _peel_meta_from_line(line: str) -> tuple[str, list[str]]:
+    meta: list[str] = []
+    rest = line.strip()
+    date_match = _EDU_DATE_RE.search(rest)
+    if date_match:
+        meta.append(date_match.group(0).strip())
+        rest = f"{rest[:date_match.start()]} {rest[date_match.end():]}".strip(" ·-|,\t")
+    if " · " in rest:
+        bits = [bit.strip() for bit in rest.split(" · ") if bit.strip()]
+        while bits and _looks_like_exp_location(bits[-1]):
+            meta.append(bits.pop())
+        rest = " · ".join(bits).strip()
+    elif _looks_like_exp_location(rest):
+        meta.append(rest)
+        rest = ""
+    return rest.strip(), meta
 
 
 def _render_experience_block(lines: list[str]) -> str:
     if not lines:
         return ""
     title = lines[0]
-    pre: list[str] = []
-    bullets: list[str] = []
-    for line in lines[1:]:
-        if _BULLET_RE.match(line):
-            bullets.append(_BULLET_RE.sub("", line).strip())
-        elif bullets:
-            bullets[-1] = f"{bullets[-1]} {line}"
-        else:
-            pre.append(line)
-
     meta: list[str] = []
     body: list[str] = []
-    company: str | None = None
-    for line in pre:
+    bullets: list[str] = []
+    current_bullet: str | None = None
+
+    def flush_bullet() -> None:
+        nonlocal current_bullet
+        if current_bullet:
+            bullets.append(current_bullet.strip())
+            current_bullet = None
+
+    for line in lines[1:]:
         if _is_education_date_line(line):
-            meta.append(line)
-        elif _looks_like_exp_location(line):
-            meta.append(line)
-        elif _looks_like_summary_line(line):
-            body.append(line)
-        elif company is None and len(line) < 72 and not line.rstrip().endswith("."):
-            company = line
-        else:
-            body.append(line)
+            flush_bullet()
+            meta.append(line.strip())
+            continue
+        if _looks_like_exp_location(line):
+            flush_bullet()
+            meta.append(line.strip())
+            continue
+        if _BULLET_RE.match(line):
+            flush_bullet()
+            current_bullet = _BULLET_RE.sub("", line).strip()
+            continue
+        if current_bullet is not None:
+            current_bullet = f"{current_bullet} {line}"
+            continue
+
+        peeled, inline_meta = _peel_meta_from_line(line)
+        meta.extend(inline_meta)
+        if peeled and _looks_like_summary_line(peeled):
+            body.append(peeled)
+        elif peeled:
+            body.append(peeled)
+
+    flush_bullet()
 
     parts = [
         f"<b><font size='10' color='#0f172a'>{escape(title)}</font></b><br/>",
     ]
-    if company:
-        parts.append(f"<font color='#334155'><b>{escape(company)}</b></font><br/>")
     if meta:
         parts.append(
             f"<font color='#64748b' size='8'>{' · '.join(escape(item) for item in meta)}</font><br/>"
@@ -843,16 +882,12 @@ def _split_experience_lines(text: str) -> list[list[str]]:
     lines = [line.strip() for line in text.split("\n") if line.strip()]
     blocks: list[list[str]] = []
     current: list[str] = []
-    seen_bullets = False
     for line in lines:
-        is_bullet = bool(_BULLET_RE.match(line))
-        if not is_bullet and seen_bullets and current:
+        if _looks_like_job_title_line(line) and current:
             blocks.append(current)
-            current = []
-            seen_bullets = False
-        current.append(line)
-        if is_bullet:
-            seen_bullets = True
+            current = [line]
+        else:
+            current.append(line)
     if current:
         blocks.append(current)
     return blocks
