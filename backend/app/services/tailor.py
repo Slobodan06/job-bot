@@ -12,6 +12,7 @@ from app.schemas import TailorResponse
 from app.services.pdf_inplace import apply_tailored_sections_to_pdf, output_pdf_filename
 from app.services.template_catalog import build_template_pdf, get_template_meta
 from app.services.pdf_text_util import sanitize_for_pdf
+from app.services.pdf_resume import merge_profile_links_into_contact
 from app.services.sectionize import ParsedResume, parse_resume_sections
 
 def _tailor_max_tokens() -> int:
@@ -411,6 +412,16 @@ async def tailor_resume(
     template_key: str = "",
 ) -> TailorResponse:
     parsed = parse_resume_sections(resume_text)
+    enriched_contact = merge_profile_links_into_contact(parsed.contact, resume_text)
+    if enriched_contact != parsed.contact:
+        parsed = ParsedResume(
+            contact=enriched_contact,
+            professional_summary=parsed.professional_summary,
+            professional_experience=parsed.professional_experience,
+            skills=parsed.skills,
+            education=parsed.education,
+            other=parsed.other,
+        )
     keywords = extract_keywords(job_description, top_k=22)
     key = os.getenv("OPENAI_API_KEY", "").strip()
     used_llm = False

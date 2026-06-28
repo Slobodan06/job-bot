@@ -291,6 +291,43 @@ def format_contact_header_markup(
     return "".join(parts)
 
 
+def merge_profile_links_into_contact(contact: str, full_text: str) -> str:
+    """Pull LinkedIn/portfolio/GitHub URLs from anywhere in the resume into the contact block."""
+    if not (full_text or "").strip():
+        return contact
+    parsed = parse_contact(contact)
+    known: set[str] = set()
+    if parsed.linkedin_url:
+        known.add(parsed.linkedin_url.lower().rstrip("/"))
+    for _, url in parsed.links:
+        known.add(url.lower().rstrip("/"))
+
+    extras: list[str] = []
+    for line in full_text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        url = _extract_url(stripped)
+        if not url:
+            continue
+        key = url.lower().rstrip("/")
+        if key in known:
+            continue
+        known.add(key)
+        label = _link_label_for(stripped, url)
+        if label == "LinkedIn" or "linkedin.com" in key:
+            extras.append(f"LinkedIn\n{url}")
+        elif label == "GitHub" or "github.com" in key:
+            extras.append(f"GitHub\n{url}")
+        else:
+            extras.append(f"{label}\n{url}")
+
+    if not extras:
+        return contact
+    base = contact.strip()
+    return f"{base}\n" + "\n".join(extras) if base else "\n".join(extras)
+
+
 def contact_detail_line(contact: str) -> str:
     """Plain one-line contact string: email · phone · location · links."""
     parsed = parse_contact(contact)
@@ -363,7 +400,18 @@ _EDU_DATE_RE = re.compile(
     r"(\d{1,2}/\d{4}|\d{4})\s*[–\-—|/to]+\s*(\d{1,2}/\d{4}|\d{4}|present|current)",
     re.I,
 )
-_INSTITUTION_RE = re.compile(r"\b(university|college|institute|school|academy|polytechnic)\b", re.I)
+_INSTITUTION_RE = re.compile(
+    r"\b(university|college|institute|instituto|escuela|school|academy|polytechnic|"
+    r"technological|cifp|technológica)\b",
+    re.I,
+)
+_DEGREE_LINE_RE = re.compile(
+    r"\b(bachelor|master|doctor|ph\.?\s*d|b\.?\s*s|b\.?\s*a|m\.?\s*s|m\.?\s*a|"
+    r"associate|diploma|advanced technician|technician in|degree in|systems engineering|"
+    r"licenciatura|grado)\b|^advanced\b",
+    re.I,
+)
+_LOCATION_LINE_RE = re.compile(r"^[A-Za-zÀ-ÿ0-9\s.'-]+,\s*[A-Za-zÀ-ÿ0-9\s.'-]+$")
 
 
 def _is_education_date_line(line: str) -> bool:
@@ -376,71 +424,97 @@ def _is_education_date_line(line: str) -> bool:
     return False
 
 
+def _looks_like_degree_line(line: str) -> bool:
+    if _is_education_date_line(line) or _BULLET_RE.match(line):
+        return False
+    stripped = line.strip()
+    if _LOCATION_LINE_RE.match(stripped) and len(stripped) < 72:
+        return False
+    return bool(_DEGREE_LINE_RE.search(stripped))
+
+
+def _looks_like_institution_line(line: str) -> bool:
+    if _is_education_date_line(line) or _looks_like_degree_line(line) or _BULLET_RE.match(line):
+        return False
+    if _INSTITUTION_RE.search(line):
+        return True
+    if _LOCATION_LINE_RE.match(line.strip()):
+        return False
+    words = line.split()
+    return len(words) >= 2 and len(line) < 90 and not re.search(r"\d{4}", line)
+
+
+def _split_education_entries(text: str) -> list[list[str]]:
+    lines = [line.strip() for line in text.split("\n") if line.strip()]
+    if not lines:
+        return []
+    blocks: list[list[str]] = []
+    current: list[str] = []
+    for line in lines:
+        if _looks_like_degree_line(line) and current:
+            blocks.append(current)
+            current = [line]
+        else:
+            current.append(line)
+    if current:
+        blocks.append(current)
+    return blocks if blocks else [lines]
+
+
+def _render_education_entry(lines: list[str]) -> str:
+    if not lines:
+        return ""
+    degree = lines[0]
+    institution: str | None = None
+    dates: str | None = None
+    location: str | None = None
+    bodies: list[str] = []
+    bullets: list[str] = []
+
+    for line in lines[1:]:
+        if _BULLET_RE.match(line):
+            bullets.append(_BULLET_RE.sub("", line).strip())
+        elif _is_education_date_line(line):
+            if dates is None:
+                dates = line
+            else:
+                bodies.append(line)
+        elif _LOCATION_LINE_RE.match(line.strip()) and location is None:
+            location = line
+        elif institution is None and _looks_like_institution_line(line):
+            institution = line
+        else:
+            bodies.append(line)
+
+    parts = [
+        f"<b><font size='10' color='#0f172a'>{escape(degree)}</font></b><br/>",
+    ]
+    if institution:
+        parts.append(f"<font color='#334155'><b>{escape(institution)}</b></font><br/>")
+    meta: list[str] = []
+    if dates:
+        meta.append(escape(dates))
+    if location:
+        meta.append(escape(location))
+    if meta:
+        parts.append(f"<font color='#64748b' size='8'>{' · '.join(meta)}</font><br/>")
+    if bodies or bullets:
+        parts.append("<br/>")
+    for paragraph in bodies:
+        parts.append(f"<font color='#0f172a' size='9'>{escape(paragraph)}</font><br/>")
+    for bullet in bullets:
+        parts.append(f"<font color='#0f172a' size='9'>• {escape(bullet)}</font><br/>")
+    parts.append("<br/>")
+    return "".join(parts)
+
+
 def format_education_markup(content: str) -> str:
     text = sanitize_for_pdf(content or "").strip()
     if not text:
         return ""
-    text = re.sub(r"\n[ \t]*\n[ \t]*\n+", "\n\n", text)
-    if re.search(r"\n\s*\n", text):
-        raw_blocks = re.split(r"\n\s*\n", text)
-        line_blocks: list[list[str]] = []
-        for block in raw_blocks:
-            lines = [line.strip() for line in block.split("\n") if line.strip()]
-            if lines:
-                line_blocks.append(lines)
-    else:
-        line_blocks = _split_experience_lines(text)
-
-    html_parts: list[str] = []
-    for lines in line_blocks:
-        titles: list[str] = []
-        metas: list[str] = []
-        bodies: list[str] = []
-        bullets: list[str] = []
-
-        for line in lines:
-            if _BULLET_RE.match(line):
-                bullets.append(_BULLET_RE.sub("", line).strip())
-            elif _is_education_date_line(line):
-                metas.append(line)
-            elif not titles:
-                titles.append(line)
-            elif (
-                len(titles) == 1
-                and _INSTITUTION_RE.search(line)
-                and len(line) < 90
-                and not bullets
-            ):
-                titles.append(line)
-            elif bullets:
-                bullets[-1] = f"{bullets[-1]} {line}"
-            else:
-                bodies.append(line)
-
-        if titles:
-            html_parts.append(
-                f"<b><font size='10' color='#0f172a'>{escape(titles[0])}</font></b><br/>"
-            )
-            if len(titles) > 1:
-                html_parts.append(
-                    f"<font color='#334155'><b>{escape(titles[1])}</b></font><br/>"
-                )
-        if metas:
-            html_parts.append(
-                f"<font color='#64748b' size='8'>{' · '.join(escape(item) for item in metas)}</font><br/>"
-            )
-        if bodies or bullets:
-            html_parts.append("<br/>")
-        for paragraph in bodies:
-            html_parts.append(
-                f"<font color='#0f172a' size='9'>{escape(paragraph)}</font><br/>"
-            )
-        for bullet in bullets:
-            html_parts.append(
-                f"<font color='#0f172a' size='9'>• {escape(bullet)}</font><br/>"
-            )
-        html_parts.append("<br/>")
-    return _strip_trailing_breaks("".join(html_parts))
+    entries = _split_education_entries(text)
+    html = "".join(_render_education_entry(entry) for entry in entries)
+    return _strip_trailing_breaks(html)
 
 
 def _split_experience_lines(text: str) -> list[list[str]]:

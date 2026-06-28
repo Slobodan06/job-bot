@@ -44,7 +44,7 @@ _SECTION_HEADERS: list[tuple[str, re.Pattern[str]]] = [
     (
         "education",
         re.compile(
-            r"^education\b|^academic\b|^qualifications\b|^certifications?\b|^licenses?\b|^training\b",
+            r"^education\b|^academic\b|^qualifications\b|^training\b",
             re.I,
         ),
     ),
@@ -55,14 +55,41 @@ _SECTION_HEADERS: list[tuple[str, re.Pattern[str]]] = [
             r"^publications?\s*:?\s*$|^awards?\s*:?\s*$|^achievements?\s*:?\s*$|"
             r"^volunteer(\s+experience)?\s*:?\s*$|^references?\s*:?\s*$|"
             r"^interests?\s*:?\s*$|^languages?\s*:?\s*$|"
-            r"^certifications?\s*:?\s*$|^certificates?\s*:?\s*$|^courses?\s*:?\s*$|"
+            r"^certifications?\s*:?\s*$|^certificates?\s*:?\s*$|^licenses?\s*:?\s*$|^courses?\s*:?\s*$|"
             r"^activities\s*:?\s*$|^extracurricular\s*:?\s*$|"
-            r"^additional(\s+information|\s+details|\s+experience)?\s*:?\s*$|^hobbies\s*:?\s*$|"
+            r"^additional(\s+information|\s+details|\s+experience|\s+strengths)?\s*:?\s*$|"
+            r"^hobbies\s*:?\s*$|"
             r"^portfolio\s*:?\s*$",
             re.I,
         ),
     ),
 ]
+
+_OTHER_TAIL_IN_EDUCATION_RE = re.compile(
+    r"^additional\s+strengths\b|^certifications?\s*:?\s*$|^licenses?\s*:?\s*$|"
+    r"^professional\s+certifications?\s*:?\s*$|"
+    r"^[-•*–—]\s*.*\bcertificat",
+    re.I,
+)
+
+
+def _partition_education_and_other(education: str, other: str) -> tuple[str, str]:
+    """Move certifications / additional-strengths tail out of the education bucket."""
+    if not education.strip():
+        return education, other
+    lines = education.splitlines()
+    split_at: int | None = None
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped and _OTHER_TAIL_IN_EDUCATION_RE.match(stripped):
+            split_at = i
+            break
+    if split_at is None:
+        return education, other
+    edu = "\n".join(lines[:split_at]).strip()
+    tail = "\n".join(lines[split_at:]).strip()
+    other_parts = [part for part in (tail, other.strip()) if part]
+    return edu, "\n\n".join(other_parts)
 
 
 def _match_section_header(line: str, *, in_contact: bool = False) -> str | None:
@@ -118,6 +145,8 @@ def parse_resume_sections(text: str) -> ParsedResume:
     if not any([summary, experience, skills, education, other]) and contact:
         experience = contact
         contact = ""
+
+    education, other = _partition_education_and_other(education, other)
 
     return ParsedResume(
         contact=contact,
