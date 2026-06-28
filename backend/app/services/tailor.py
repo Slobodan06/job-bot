@@ -264,7 +264,7 @@ def _assemble_plain(parsed: ParsedResume, t: TailoredSections) -> str:
     if parsed.education.strip():
         parts.append("EDUCATION\n" + parsed.education.strip())
     if parsed.other.strip():
-        parts.append(parsed.other.strip())
+        parts.append("ADDITIONAL\n" + parsed.other.strip())
     return "\n\n".join(parts)
 
 

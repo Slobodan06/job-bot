@@ -21,11 +21,13 @@ from app.cv_templates.routes import router as cv_templates_router
 from app.database import close_db, connect_db, ensure_indexes
 from app.schemas import TailorResponse
 from app.services.extract_text import extract_text_from_bytes
+from app.services.email import log_email_config
 from app.services.tailor import tailor_resume
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    log_email_config()
     await connect_db()
     await ensure_indexes()
     yield

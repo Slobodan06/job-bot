@@ -26,12 +26,36 @@ def email_configured() -> bool:
     return resend_configured() or smtp_configured()
 
 
+def _resend_from_address() -> str:
+    return os.getenv("EMAIL_FROM", "").strip()
+
+
 def _from_address() -> str:
+    if resend_configured():
+        return _resend_from_address()
     return (
         os.getenv("EMAIL_FROM", "").strip()
         or os.getenv("SMTP_FROM", "").strip()
         or os.getenv("SMTP_USER", "").strip()
     )
+
+
+def log_email_config() -> None:
+    if resend_configured():
+        from_addr = _resend_from_address()
+        if not from_addr:
+            logger.warning(
+                "RESEND_API_KEY is set but EMAIL_FROM is missing. "
+                "Set EMAIL_FROM=Vukasin <Vukasin@nivion.tech> on Railway."
+            )
+        elif "resend.dev" in from_addr.lower() or "@gmail.com" in from_addr.lower():
+            logger.warning(
+                "EMAIL_FROM=%r cannot send to customers on Resend. "
+                "Use your verified domain, e.g. Vukasin <Vukasin@nivion.tech>.",
+                from_addr,
+            )
+        else:
+            logger.info("Resend email sender configured: %s", from_addr)
 
 
 def _build_verification_link(token: str) -> str:
@@ -62,9 +86,19 @@ def _send_sync_smtp(to_email: str, subject: str, html: str, text: str) -> None:
 
 async def _send_via_resend(to_email: str, subject: str, html: str, text: str) -> None:
     api_key = os.getenv("RESEND_API_KEY", "").strip()
-    from_addr = _from_address()
+    from_addr = _resend_from_address()
     if not from_addr:
-        raise RuntimeError("EMAIL_FROM is required when using RESEND_API_KEY.")
+        raise RuntimeError(
+            "EMAIL_FROM is required when using RESEND_API_KEY. "
+            "Example: Vukasin <Vukasin@nivion.tech>"
+        )
+    if "resend.dev" in from_addr.lower() or "@gmail.com" in from_addr.lower():
+        raise RuntimeError(
+            f"EMAIL_FROM={from_addr!r} is not allowed for customer emails. "
+            "Use your verified domain, e.g. Vukasin <Vukasin@nivion.tech>."
+        )
+
+    logger.info("Sending verification email via Resend from %s to %s", from_addr, to_email)
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.post(

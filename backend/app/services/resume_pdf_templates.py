@@ -15,7 +15,17 @@ from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import (
+    BaseDocTemplate,
+    Frame,
+    FrameBreak,
+    PageTemplate,
+    Paragraph,
+    SimpleDocTemplate,
+    Spacer,
+    Table,
+    TableStyle,
+)
 
 from app.services.pdf_fonts import register_reportlab_fira_fonts
 from app.services.pdf_resume import (
@@ -24,14 +34,124 @@ from app.services.pdf_resume import (
     MODERN_MARGIN_LR,
     MODERN_MARGIN_TOP,
     build_tailored_resume_pdf,
+    format_contact_header_markup,
+    _section_body_markup,
 )
 from app.services.pdf_text_util import sanitize_for_pdf
 
 
+def _splittable_table(
+    data,
+    colWidths,
+    style: TableStyle | None = None,
+    **kwargs,
+) -> Table:
+    table = Table(data, colWidths=colWidths, splitInRow=1, **kwargs)
+    if style is not None:
+        table.setStyle(style)
+    return table
+
+
+def _build_framed_two_column_pdf(
+    *,
+    left_flowables: list,
+    right_flowables: list,
+    sidebar_bg: colors.Color | None = None,
+    border_after_left: colors.Color | None = None,
+    left_w: float = 2.15 * inch,
+    gap: float = 0.05 * inch,
+) -> bytes:
+    """Side-by-side columns that can span multiple pages (right column continues on page 2+)."""
+    buf = BytesIO()
+    right_w = MODERN_CONTENT_WIDTH - left_w - gap
+    frame_h = letter[1] - MODERN_MARGIN_TOP - MODERN_MARGIN_BOTTOM
+    frame_y = MODERN_MARGIN_BOTTOM
+    left_x = MODERN_MARGIN_LR
+    right_x = MODERN_MARGIN_LR + left_w + gap
+
+    def _on_page(canvas, doc) -> None:
+        if sidebar_bg is None and border_after_left is None:
+            return
+        canvas.saveState()
+        if sidebar_bg is not None:
+            canvas.setFillColor(sidebar_bg)
+            canvas.rect(
+                left_x,
+                MODERN_MARGIN_BOTTOM,
+                left_w,
+                frame_h,
+                fill=1,
+                stroke=0,
+            )
+        if border_after_left is not None:
+            canvas.setStrokeColor(border_after_left)
+            canvas.setLineWidth(1)
+            canvas.line(
+                left_x + left_w,
+                MODERN_MARGIN_BOTTOM,
+                left_x + left_w,
+                MODERN_MARGIN_BOTTOM + frame_h,
+            )
+        canvas.restoreState()
+
+    class TwoColDoc(BaseDocTemplate):
+        def __init__(self) -> None:
+            BaseDocTemplate.__init__(
+                self,
+                buf,
+                pagesize=letter,
+                leftMargin=MODERN_MARGIN_LR,
+                rightMargin=MODERN_MARGIN_LR,
+                topMargin=MODERN_MARGIN_TOP,
+                bottomMargin=MODERN_MARGIN_BOTTOM,
+            )
+            left_frame = Frame(
+                left_x,
+                frame_y,
+                left_w,
+                frame_h,
+                id="left",
+                leftPadding=10,
+                rightPadding=8,
+                topPadding=10,
+                bottomPadding=10,
+            )
+            right_frame = Frame(
+                right_x,
+                frame_y,
+                right_w,
+                frame_h,
+                id="right",
+                leftPadding=10,
+                rightPadding=10,
+                topPadding=10,
+                bottomPadding=10,
+            )
+            self.addPageTemplates(
+                [
+                    PageTemplate(
+                        id="TwoCol",
+                        frames=[left_frame, right_frame],
+                        onPage=_on_page,
+                    )
+                ]
+            )
+
+    doc = TwoColDoc()
+    story = list(left_flowables) + [FrameBreak("right")] + list(right_flowables)
+    doc.build(story)
+    return buf.getvalue()
+
+
 def _para_markup(text: str) -> str:
     t = sanitize_for_pdf(text or "")
+    t = re.sub(r"\n[ \t]*\n[ \t]*\n+", "\n\n", t)
     t = escape(t)
     return re.sub(r"\r\n|\r|\n", "<br/>", t)
+
+
+def _section_content_markup(title: str, content: str) -> str:
+    return _section_body_markup(title, content)
 
 
 def _styles(accent_hex: str = "#0f7669") -> tuple[str, str, ParagraphStyle, ParagraphStyle, ParagraphStyle]:
@@ -74,7 +194,11 @@ def _section_block(title: str, content: str, heading: ParagraphStyle, body: Para
     c = (content or "").strip()
     if not c:
         return []
-    return [Paragraph(_para_markup(title.upper()), heading), Paragraph(_para_markup(c), body), Spacer(1, 6)]
+    return [
+        Paragraph(_para_markup(title.upper()), heading),
+        Paragraph(_section_content_markup(title, c), body),
+        Spacer(1, 6),
+    ]
 
 
 def build_clean_classic(
@@ -124,21 +248,16 @@ def build_executive_band(
         leading=20,
         textColor=white,
         alignment=TA_CENTER,
-        spaceAfter=4,
     )
-    sub_st = ParagraphStyle(
-        "ExecSub",
-        fontName=body_f,
-        fontSize=9,
-        leading=12,
-        textColor=colors.HexColor("#c5dae6"),
-        alignment=TA_CENTER,
+    header_html = format_contact_header_markup(
+        contact,
+        name_size=17,
+        name_color="#ffffff",
+        headline_color="#c5dae6",
+        detail_color="#c5dae6",
     )
-    raw = sanitize_for_pdf(contact).strip().split("\n")
-    name = raw[0] if raw else " "
-    sub = "<br/>".join(escape(x) for x in raw[1:]) if len(raw) > 1 else "&nbsp;"
     hdr = Table(
-        [[Paragraph(escape(name), name_st)], [Paragraph(sub, sub_st)]],
+        [[Paragraph(header_html or "&nbsp;", name_st)]],
         colWidths=[6.6 * inch],
     )
     hdr.setStyle(
@@ -176,55 +295,45 @@ def build_two_column(
     other: str,
 ) -> bytes:
     _, head_f, body, body_sm, heading = _styles()
-    buf = BytesIO()
-    doc = SimpleDocTemplate(
-        buf,
-        pagesize=letter,
-        rightMargin=MODERN_MARGIN_LR,
-        leftMargin=MODERN_MARGIN_LR,
-        topMargin=MODERN_MARGIN_TOP,
-        bottomMargin=MODERN_MARGIN_BOTTOM,
-    )
-    left_bits = ["<b><font color='#0f172a'>PROFILE &amp; SKILLS</font></b>", "<br/>"]
+    left_flowables: list = [
+        Paragraph("<b><font color='#0f172a'>PROFILE &amp; SKILLS</font></b>", body_sm),
+        Spacer(1, 6),
+    ]
     if contact.strip():
-        left_bits.append(_para_markup(contact))
-        left_bits.append("<br/><br/>")
-    left_bits.append(f"<b><font color='#0f172a'>SKILLS</font></b><br/>{_para_markup(skills) if skills.strip() else '—'}")
+        left_flowables.append(Paragraph(_para_markup(contact), body_sm))
+        left_flowables.append(Spacer(1, 10))
+    left_flowables.append(
+        Paragraph(
+            f"<b><font color='#0f172a'>SKILLS</font></b><br/>{_para_markup(skills) if skills.strip() else '—'}",
+            body_sm,
+        )
+    )
     if education.strip():
-        left_bits.append("<br/><br/><b><font color='#0f172a'>EDUCATION</font></b><br/>")
-        left_bits.append(_para_markup(education))
-    left_cell = Paragraph("".join(left_bits), body_sm)
+        left_flowables.append(Spacer(1, 10))
+        left_flowables.append(
+            Paragraph(
+                f"<b><font color='#0f172a'>EDUCATION</font></b><br/>{_para_markup(education)}",
+                body_sm,
+            )
+        )
 
-    right_story: list = []
+    right_flowables: list = []
     for block in (
         _section_block("PROFESSIONAL SUMMARY", professional_summary, heading, body),
         _section_block("PROFESSIONAL EXPERIENCE", professional_experience, heading, body),
         _section_block("ADDITIONAL", other, heading, body_sm),
     ):
-        right_story.extend(block)
-    if not right_story:
-        right_story = [Paragraph(_para_markup("(No main content)"), body)]
-    right_inner = Table([[x] for x in right_story], colWidths=[4.55 * inch])
-    right_inner.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 0)]))
+        right_flowables.extend(block)
+    if not right_flowables:
+        right_flowables = [Paragraph(_para_markup("(No main content)"), body)]
 
-    outer = Table([[left_cell, right_inner]], colWidths=[2.15 * inch, 4.85 * inch])
-    outer.setStyle(
-        TableStyle(
-            [
-                ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#eef4f8")),
-                ("BACKGROUND", (1, 0), (1, -1), colors.white),
-                ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ("LEFTPADDING", (0, 0), (-1, -1), 14),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 14),
-                ("TOPPADDING", (0, 0), (-1, -1), 14),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 14),
-                ("LINEAFTER", (0, 0), (0, -1), 1, colors.HexColor("#cbd5e1")),
-            ]
-        )
+    return _build_framed_two_column_pdf(
+        left_flowables=left_flowables,
+        right_flowables=right_flowables,
+        sidebar_bg=colors.HexColor("#eef4f8"),
+        border_after_left=colors.HexColor("#cbd5e1"),
+        left_w=2.15 * inch,
     )
-    story = [outer]
-    doc.build(story)
-    return buf.getvalue()
 
 
 def build_navy_sidebar(
@@ -236,58 +345,15 @@ def build_navy_sidebar(
     education: str,
     other: str,
 ) -> bytes:
-    _, head_f, body, body_sm, heading = _styles()
-    buf = BytesIO()
-    doc = SimpleDocTemplate(
-        buf,
-        pagesize=letter,
-        rightMargin=MODERN_MARGIN_LR,
-        leftMargin=MODERN_MARGIN_LR,
-        topMargin=MODERN_MARGIN_TOP,
-        bottomMargin=MODERN_MARGIN_BOTTOM,
+    return _build_navy_colored_impl(
+        sidebar_hex="#1e3a5f",
+        contact=contact,
+        professional_summary=professional_summary,
+        professional_experience=professional_experience,
+        skills=skills,
+        education=education,
+        other=other,
     )
-    navy = colors.HexColor("#1e3a5f")
-    w = colors.white
-    side_body = ParagraphStyle("SideB", parent=body_sm, fontName=head_f, textColor=w, fontSize=9, leading=13)
-    left_parts: list[str] = ["<b><font size='12'>CONTACT</font></b><br/><br/>"]
-    left_parts.append(_para_markup(contact) if contact.strip() else "—")
-    left_parts.append("<br/><br/><b><font size='12'>SKILLS</font></b><br/><br/>")
-    left_parts.append(_para_markup(skills) if skills.strip() else "—")
-    if education.strip():
-        left_parts.append("<br/><br/><b><font size='12'>EDUCATION</font></b><br/><br/>")
-        left_parts.append(_para_markup(education))
-    left = Paragraph("".join(left_parts), side_body)
-
-    rh = ParagraphStyle("RightH", parent=heading, textColor=colors.HexColor("#1e3a5f"), fontSize=12)
-    rb = ParagraphStyle("RightB", parent=body, alignment=TA_JUSTIFY)
-    right: list = []
-    for block in (
-        _section_block("PROFILE / SUMMARY", professional_summary, rh, rb),
-        _section_block("EXPERIENCE", professional_experience, rh, rb),
-        _section_block("OTHER", other, rh, rb),
-    ):
-        right.extend(block)
-    if not right:
-        right = [Paragraph(_para_markup("(No content)"), rb)]
-    right_inner = Table([[x] for x in right], colWidths=[4.95 * inch])
-    right_inner.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 0)]))
-
-    outer = Table([[left, right_inner]], colWidths=[2.05 * inch, 4.95 * inch])
-    outer.setStyle(
-        TableStyle(
-            [
-                ("BACKGROUND", (0, 0), (0, -1), navy),
-                ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ("LEFTPADDING", (0, 0), (0, -1), 14),
-                ("RIGHTPADDING", (0, 0), (0, -1), 10),
-                ("TOPPADDING", (0, 0), (-1, -1), 12),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 12),
-            ]
-        )
-    )
-    story = [outer]
-    doc.build(story)
-    return buf.getvalue()
 
 
 def build_bordered_cards(
@@ -313,7 +379,10 @@ def build_bordered_cards(
     if contact.strip():
         story.append(
             Table(
-                [[Paragraph(_para_markup(contact), ParagraphStyle("c", parent=body, alignment=TA_CENTER, fontName=head_f, fontSize=12))]],
+                [[Paragraph(
+                    format_contact_header_markup(contact, name_size=12),
+                    ParagraphStyle("c", parent=body, alignment=TA_CENTER, fontName=head_f, fontSize=12, leading=15),
+                )]],
                 colWidths=[6.5 * inch],
             )
         )
@@ -333,9 +402,9 @@ def build_bordered_cards(
             return
         inner = [
             [Paragraph(_para_markup(f"<b>{escape(title)}</b>"), heading)],
-            [Paragraph(_para_markup(content), body)],
+            [Paragraph(_section_content_markup(title, content), body)],
         ]
-        t = Table(inner, colWidths=[6.5 * inch])
+        t = _splittable_table(inner, colWidths=[6.5 * inch])
         t.setStyle(
             TableStyle(
                 [
@@ -398,7 +467,7 @@ def build_timeline_accent(
             body,
         )
         # Single-column + LINEBEFORE avoids ReportLab two-column height bugs with tiny accent cells.
-        row = Table([[combined]], colWidths=[6.5 * inch])
+        row = _splittable_table([[combined]], colWidths=[6.5 * inch])
         row.setStyle(
             TableStyle(
                 [
@@ -460,12 +529,12 @@ def build_dense_modern(
             continue
         story.append(Paragraph(escape(title), h2))
         story.append(
-            Table(
-                [[Paragraph(_para_markup(content), b2)]],
+            _splittable_table(
+                [[Paragraph(_section_content_markup(title, content), b2)]],
                 colWidths=[6.7 * inch],
+                style=TableStyle([("LINEBELOW", (0, 0), (-1, -1), 0.5, colors.HexColor("#e2e8f0"))]),
             )
         )
-        story[-1].setStyle(TableStyle([("LINEBELOW", (0, 0), (-1, -1), 0.5, colors.HexColor("#e2e8f0"))]))
         story.append(Spacer(1, 8))
     if not story:
         story.append(Paragraph(_para_markup("(No content)"), body))
@@ -595,11 +664,11 @@ def build_warm_accent(
     ):
         if not (content or "").strip():
             continue
-        row = Table(
+        row = _splittable_table(
             [
                 [
                     Paragraph(f"<b>{escape(title)}</b>", wa_h),
-                    Paragraph(_para_markup(content), body_sm),
+                    Paragraph(_section_content_markup(title, content), body_sm),
                 ]
             ],
             colWidths=[1.35 * inch, 5.15 * inch],
@@ -714,14 +783,7 @@ def build_navy_colored(
     education: str,
     other: str,
 ) -> bytes:
-    return build_navy_sidebar(
-        contact=contact,
-        professional_summary=professional_summary,
-        professional_experience=professional_experience,
-        skills=skills,
-        education=education,
-        other=other,
-    ) if sidebar_hex == "#1e3a5f" else _build_navy_colored_impl(
+    return _build_navy_colored_impl(
         sidebar_hex=sidebar_hex,
         contact=contact,
         professional_summary=professional_summary,
@@ -743,34 +805,47 @@ def _build_navy_colored_impl(
     other: str,
 ) -> bytes:
     _, head_f, body, body_sm, heading = _styles()
-    buf = BytesIO()
-    doc = SimpleDocTemplate(
-        buf,
-        pagesize=letter,
-        rightMargin=MODERN_MARGIN_LR,
-        leftMargin=MODERN_MARGIN_LR,
-        topMargin=MODERN_MARGIN_TOP,
-        bottomMargin=MODERN_MARGIN_BOTTOM,
-    )
     navy = colors.HexColor(sidebar_hex)
-    side_body = ParagraphStyle("SideB", parent=body_sm, fontName=head_f, textColor=colors.white, fontSize=9, leading=13)
-    left_parts = ["<b><font size='12'>CONTACT</font></b><br/><br/>", _para_markup(contact) if contact.strip() else "—", "<br/><br/><b><font size='12'>SKILLS</font></b><br/><br/>", _para_markup(skills) if skills.strip() else "—"]
+    side_body = ParagraphStyle(
+        "SideB", parent=body_sm, fontName=head_f, textColor=colors.white, fontSize=9, leading=13
+    )
+    left_flowables: list = [
+        Paragraph("<b><font size='12'>CONTACT</font></b>", side_body),
+        Spacer(1, 6),
+        Paragraph(_para_markup(contact) if contact.strip() else "—", side_body),
+        Spacer(1, 10),
+        Paragraph(
+            f"<b><font size='12'>SKILLS</font></b><br/><br/>{_para_markup(skills) if skills.strip() else '—'}",
+            side_body,
+        ),
+    ]
     if education.strip():
-        left_parts.extend(["<br/><br/><b><font size='12'>EDUCATION</font></b><br/><br/>", _para_markup(education)])
-    left = Paragraph("".join(left_parts), side_body)
+        left_flowables.extend(
+            [
+                Spacer(1, 10),
+                Paragraph(
+                    f"<b><font size='12'>EDUCATION</font></b><br/><br/>{_para_markup(education)}",
+                    side_body,
+                ),
+            ]
+        )
     rh = ParagraphStyle("RightH", parent=heading, textColor=navy, fontSize=12)
     rb = ParagraphStyle("RightB", parent=body, alignment=TA_JUSTIFY)
-    right: list = []
-    for block in (_section_block("PROFILE / SUMMARY", professional_summary, rh, rb), _section_block("EXPERIENCE", professional_experience, rh, rb), _section_block("OTHER", other, rh, rb)):
-        right.extend(block)
-    if not right:
-        right = [Paragraph(_para_markup("(No content)"), rb)]
-    right_inner = Table([[x] for x in right], colWidths=[4.95 * inch])
-    right_inner.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 0)]))
-    outer = Table([[left, right_inner]], colWidths=[2.05 * inch, 4.95 * inch])
-    outer.setStyle(TableStyle([("BACKGROUND", (0, 0), (0, -1), navy), ("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (0, -1), 14), ("RIGHTPADDING", (0, 0), (0, -1), 10), ("TOPPADDING", (0, 0), (-1, -1), 12), ("BOTTOMPADDING", (0, 0), (-1, -1), 12)]))
-    doc.build([outer])
-    return buf.getvalue()
+    right_flowables: list = []
+    for block in (
+        _section_block("PROFILE / SUMMARY", professional_summary, rh, rb),
+        _section_block("EXPERIENCE", professional_experience, rh, rb),
+        _section_block("OTHER", other, rh, rb),
+    ):
+        right_flowables.extend(block)
+    if not right_flowables:
+        right_flowables = [Paragraph(_para_markup("(No content)"), rb)]
+    return _build_framed_two_column_pdf(
+        left_flowables=left_flowables,
+        right_flowables=right_flowables,
+        sidebar_bg=navy,
+        left_w=2.05 * inch,
+    )
 
 
 def build_two_column_tinted(
@@ -785,33 +860,45 @@ def build_two_column_tinted(
     other: str,
 ) -> bytes:
     _, head_f, body, body_sm, heading = _styles()
-    buf = BytesIO()
-    doc = SimpleDocTemplate(
-        buf,
-        pagesize=letter,
-        rightMargin=MODERN_MARGIN_LR,
-        leftMargin=MODERN_MARGIN_LR,
-        topMargin=MODERN_MARGIN_TOP,
-        bottomMargin=MODERN_MARGIN_BOTTOM,
-    )
-    left_bits = ["<b><font color='#0f172a'>PROFILE &amp; SKILLS</font></b>", "<br/>"]
+    left_flowables: list = [
+        Paragraph("<b><font color='#0f172a'>PROFILE &amp; SKILLS</font></b>", body_sm),
+        Spacer(1, 6),
+    ]
     if contact.strip():
-        left_bits.extend([_para_markup(contact), "<br/><br/>"])
-    left_bits.append(f"<b><font color='#0f172a'>SKILLS</font></b><br/>{_para_markup(skills) if skills.strip() else '—'}")
+        left_flowables.append(Paragraph(_para_markup(contact), body_sm))
+        left_flowables.append(Spacer(1, 10))
+    left_flowables.append(
+        Paragraph(
+            f"<b><font color='#0f172a'>SKILLS</font></b><br/>{_para_markup(skills) if skills.strip() else '—'}",
+            body_sm,
+        )
+    )
     if education.strip():
-        left_bits.extend(["<br/><br/><b><font color='#0f172a'>EDUCATION</font></b><br/>", _para_markup(education)])
-    left_cell = Paragraph("".join(left_bits), body_sm)
-    right_story: list = []
-    for block in (_section_block("PROFESSIONAL SUMMARY", professional_summary, heading, body), _section_block("PROFESSIONAL EXPERIENCE", professional_experience, heading, body), _section_block("ADDITIONAL", other, heading, body_sm)):
-        right_story.extend(block)
-    if not right_story:
-        right_story = [Paragraph(_para_markup("(No main content)"), body)]
-    right_inner = Table([[x] for x in right_story], colWidths=[4.55 * inch])
-    right_inner.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 0)]))
-    outer = Table([[left_cell, right_inner]], colWidths=[2.15 * inch, 4.85 * inch])
-    outer.setStyle(TableStyle([("BACKGROUND", (0, 0), (0, -1), colors.HexColor(sidebar_hex)), ("BACKGROUND", (1, 0), (1, -1), colors.white), ("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 14), ("RIGHTPADDING", (0, 0), (-1, -1), 14), ("TOPPADDING", (0, 0), (-1, -1), 14), ("BOTTOMPADDING", (0, 0), (-1, -1), 14), ("LINEAFTER", (0, 0), (0, -1), 1, colors.HexColor(border_hex))]))
-    doc.build([outer])
-    return buf.getvalue()
+        left_flowables.extend(
+            [
+                Spacer(1, 10),
+                Paragraph(
+                    f"<b><font color='#0f172a'>EDUCATION</font></b><br/>{_para_markup(education)}",
+                    body_sm,
+                ),
+            ]
+        )
+    right_flowables: list = []
+    for block in (
+        _section_block("PROFESSIONAL SUMMARY", professional_summary, heading, body),
+        _section_block("PROFESSIONAL EXPERIENCE", professional_experience, heading, body),
+        _section_block("ADDITIONAL", other, heading, body_sm),
+    ):
+        right_flowables.extend(block)
+    if not right_flowables:
+        right_flowables = [Paragraph(_para_markup("(No main content)"), body)]
+    return _build_framed_two_column_pdf(
+        left_flowables=left_flowables,
+        right_flowables=right_flowables,
+        sidebar_bg=colors.HexColor(sidebar_hex),
+        border_after_left=colors.HexColor(border_hex),
+        left_w=2.15 * inch,
+    )
 
 
 def build_timeline_colored(
@@ -847,7 +934,7 @@ def build_timeline_colored(
         if not (content or "").strip():
             return
         combined = Paragraph(f"<b><font color='{accent_hex}'>{escape(title)}</font></b><br/>{_para_markup(content)}", body)
-        row = Table([[combined]], colWidths=[6.5 * inch])
+        row = _splittable_table([[combined]], colWidths=[6.5 * inch])
         row.setStyle(TableStyle([("LINEBEFORE", (0, 0), (0, 0), 4, accent), ("VALIGN", (0, 0), (-1, -1), "TOP"), ("TOPPADDING", (0, 0), (-1, -1), 4), ("BOTTOMPADDING", (0, 0), (-1, -1), 8), ("LEFTPADDING", (0, 0), (-1, -1), 12)]))
         story.append(row)
         story.append(Spacer(1, 6))
@@ -893,9 +980,24 @@ def build_bordered_tinted(
     def card(title: str, content: str) -> None:
         if not (content or "").strip():
             return
-        inner = [[Paragraph(_para_markup(f"<b>{escape(title)}</b>"), heading)], [Paragraph(_para_markup(content), body)]]
-        t = Table(inner, colWidths=[6.5 * inch])
-        t.setStyle(TableStyle([("BOX", (0, 0), (-1, -1), 0.6, accent), ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f1f5f9")), ("TOPPADDING", (0, 0), (-1, -1), 10), ("BOTTOMPADDING", (0, 0), (-1, -1), 10), ("LEFTPADDING", (0, 0), (-1, -1), 12), ("RIGHTPADDING", (0, 0), (-1, -1), 12)]))
+        inner = [
+            [Paragraph(_para_markup(f"<b>{escape(title)}</b>"), heading)],
+            [Paragraph(_section_content_markup(title, content), body)],
+        ]
+        t = _splittable_table(
+            inner,
+            colWidths=[6.5 * inch],
+            style=TableStyle(
+                [
+                    ("BOX", (0, 0), (-1, -1), 0.6, accent),
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f1f5f9")),
+                    ("TOPPADDING", (0, 0), (-1, -1), 10),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 12),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 12),
+                ]
+            ),
+        )
         story.append(t)
         story.append(Spacer(1, 12))
 
@@ -940,8 +1042,13 @@ def build_dense_tinted(
         if not (content or "").strip():
             continue
         story.append(Paragraph(escape(title), h2))
-        story.append(Table([[Paragraph(_para_markup(content), b2)]], colWidths=[6.7 * inch]))
-        story[-1].setStyle(TableStyle([("LINEBELOW", (0, 0), (-1, -1), 0.5, colors.HexColor("#e2e8f0"))]))
+        story.append(
+            _splittable_table(
+                [[Paragraph(_section_content_markup(title, content), b2)]],
+                colWidths=[6.7 * inch],
+                style=TableStyle([("LINEBELOW", (0, 0), (-1, -1), 0.5, colors.HexColor("#e2e8f0"))]),
+            )
+        )
         story.append(Spacer(1, 8))
     if not story:
         story.append(Paragraph(_para_markup("(No content)"), body))
@@ -1052,8 +1159,18 @@ def build_warm_colored(
     for title, content in (("PROFILE", professional_summary), ("EXPERIENCE", professional_experience), ("SKILLS", skills), ("EDUCATION", education), ("OTHER", other)):
         if not (content or "").strip():
             continue
-        row = Table([[Paragraph(f"<b>{escape(title)}</b>", wa_h), Paragraph(_para_markup(content), body_sm)]], colWidths=[1.35 * inch, 5.15 * inch])
-        row.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("LINEBELOW", (0, 0), (-1, -1), 0.5, border), ("TOPPADDING", (0, 0), (-1, -1), 8), ("BOTTOMPADDING", (0, 0), (-1, -1), 10)]))
+        row = _splittable_table(
+            [[Paragraph(f"<b>{escape(title)}</b>", wa_h), Paragraph(_section_content_markup(title, content), body_sm)]],
+            colWidths=[1.35 * inch, 5.15 * inch],
+            style=TableStyle(
+                [
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("LINEBELOW", (0, 0), (-1, -1), 0.5, border),
+                    ("TOPPADDING", (0, 0), (-1, -1), 8),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+                ]
+            ),
+        )
         story.append(row)
     if not story:
         story.append(Paragraph(_para_markup("(No content)"), body))
@@ -1063,10 +1180,8 @@ def build_warm_colored(
 
 def _contact_header(contact: str, body_f: str, head_f: str, accent_hex: str) -> list:
     story: list = []
-    raw = sanitize_for_pdf(contact or "").strip()
-    if not raw:
+    if not sanitize_for_pdf(contact or "").strip():
         return story
-    lines = raw.split("\n")
     name_st = ParagraphStyle(
         "ModName",
         fontName=head_f,
@@ -1075,16 +1190,7 @@ def _contact_header(contact: str, body_f: str, head_f: str, accent_hex: str) -> 
         textColor=colors.HexColor("#0f172a"),
         spaceAfter=2,
     )
-    sub_st = ParagraphStyle(
-        "ModSub",
-        fontName=body_f,
-        fontSize=9,
-        leading=12,
-        textColor=colors.HexColor("#64748b"),
-    )
-    story.append(Paragraph(_para_markup(lines[0]), name_st))
-    if len(lines) > 1:
-        story.append(Paragraph(_para_markup("\n".join(lines[1:])), sub_st))
+    story.append(Paragraph(format_contact_header_markup(contact, name_size=16), name_st))
     accent = colors.HexColor(accent_hex)
     story.append(Spacer(1, 6))
     story.append(Table([[""]], colWidths=[MODERN_CONTENT_WIDTH], rowHeights=[2]))
@@ -1125,24 +1231,22 @@ def build_modern_stack(
         c = (content or "").strip()
         if not c:
             continue
-        row = Table(
+        row = _splittable_table(
             [
                 [
                     Paragraph(f"<b><font color='{accent_hex}'>{escape(title.upper())}</font></b>", heading),
                 ],
-                [Paragraph(_para_markup(c), b)],
+                [Paragraph(_section_content_markup(title, c), b)],
             ],
             colWidths=[MODERN_CONTENT_WIDTH],
-        )
-        row.setStyle(
-            TableStyle(
+            style=TableStyle(
                 [
                     ("LINEBEFORE", (0, 0), (0, -1), 3, accent),
                     ("LEFTPADDING", (0, 0), (-1, -1), 10),
                     ("TOPPADDING", (0, 0), (-1, -1), 2),
                     ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
                 ]
-            )
+            ),
         )
         story.append(row)
         story.append(Spacer(1, 4))
@@ -1164,55 +1268,43 @@ def build_modern_split(
     other: str,
 ) -> bytes:
     _, head_f, body, body_sm, heading = _styles(accent_hex)
-    buf = BytesIO()
-    doc = SimpleDocTemplate(
-        buf,
-        pagesize=letter,
-        rightMargin=MODERN_MARGIN_LR,
-        leftMargin=MODERN_MARGIN_LR,
-        topMargin=MODERN_MARGIN_TOP,
-        bottomMargin=MODERN_MARGIN_BOTTOM,
-    )
-    accent = colors.HexColor(accent_hex)
     left_w = 2.25 * inch
-    right_w = MODERN_CONTENT_WIDTH - left_w
-    left_bits = [f"<b><font color='{accent_hex}'>CONTACT</font></b><br/><br/>"]
-    left_bits.append(_para_markup(contact) if contact.strip() else "—")
-    left_bits.append(f"<br/><br/><b><font color='{accent_hex}'>SKILLS</font></b><br/><br/>")
-    left_bits.append(_para_markup(skills) if skills.strip() else "—")
+    left_flowables: list = [
+        Paragraph(f"<b><font color='{accent_hex}'>CONTACT</font></b>", body_sm),
+        Spacer(1, 6),
+        Paragraph(_para_markup(contact) if contact.strip() else "—", body_sm),
+        Spacer(1, 10),
+        Paragraph(
+            f"<b><font color='{accent_hex}'>SKILLS</font></b><br/><br/>{_para_markup(skills) if skills.strip() else '—'}",
+            body_sm,
+        ),
+    ]
     if education.strip():
-        left_bits.append(f"<br/><br/><b><font color='{accent_hex}'>EDUCATION</font></b><br/><br/>")
-        left_bits.append(_para_markup(education))
-    left_cell = Paragraph("".join(left_bits), body_sm)
-
-    right: list = []
+        left_flowables.extend(
+            [
+                Spacer(1, 10),
+                Paragraph(
+                    f"<b><font color='{accent_hex}'>EDUCATION</font></b><br/><br/>{_para_markup(education)}",
+                    body_sm,
+                ),
+            ]
+        )
+    right_flowables: list = []
     for block in (
         _section_block("Summary", professional_summary, heading, body),
         _section_block("Experience", professional_experience, heading, body),
         _section_block("Additional", other, heading, body_sm),
     ):
-        right.extend(block)
-    if not right:
-        right = [Paragraph(_para_markup("(No content)"), body)]
-    right_inner = Table([[x] for x in right], colWidths=[right_w])
-    right_inner.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 0)]))
-
-    outer = Table([[left_cell, right_inner]], colWidths=[left_w, right_w])
-    outer.setStyle(
-        TableStyle(
-            [
-                ("BACKGROUND", (0, 0), (0, -1), colors.HexColor(sidebar_hex)),
-                ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ("LEFTPADDING", (0, 0), (-1, -1), 10),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 10),
-                ("TOPPADDING", (0, 0), (-1, -1), 10),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
-                ("LINEAFTER", (0, 0), (0, -1), 1.5, accent),
-            ]
-        )
+        right_flowables.extend(block)
+    if not right_flowables:
+        right_flowables = [Paragraph(_para_markup("(No content)"), body)]
+    return _build_framed_two_column_pdf(
+        left_flowables=left_flowables,
+        right_flowables=right_flowables,
+        sidebar_bg=colors.HexColor(sidebar_hex),
+        border_after_left=colors.HexColor(accent_hex),
+        left_w=left_w,
     )
-    doc.build([outer])
-    return buf.getvalue()
 
 
 def build_modern_hero(
@@ -1236,13 +1328,23 @@ def build_modern_hero(
         bottomMargin=MODERN_MARGIN_BOTTOM,
     )
     band = colors.HexColor(accent_hex)
-    raw = sanitize_for_pdf(contact or "").strip().split("\n")
-    name = raw[0] if raw else " "
-    sub = "<br/>".join(escape(x) for x in raw[1:]) if len(raw) > 1 else "&nbsp;"
-    name_st = ParagraphStyle("HeroName", fontName=head_f, fontSize=17, leading=20, textColor=colors.white, spaceAfter=3)
-    sub_st = ParagraphStyle("HeroSub", fontName=body_f, fontSize=9, leading=12, textColor=colors.HexColor("#e2e8f0"))
+    header_html = format_contact_header_markup(
+        contact,
+        name_size=17,
+        name_color="#ffffff",
+        headline_color="#e2e8f0",
+        detail_color="#e2e8f0",
+    )
+    name_st = ParagraphStyle(
+        "HeroName",
+        fontName=head_f,
+        fontSize=17,
+        leading=20,
+        textColor=colors.white,
+        spaceAfter=3,
+    )
     hdr = Table(
-        [[Paragraph(escape(name), name_st)], [Paragraph(sub, sub_st)]],
+        [[Paragraph(header_html or "&nbsp;", name_st)]],
         colWidths=[MODERN_CONTENT_WIDTH],
     )
     hdr.setStyle(
@@ -1315,7 +1417,7 @@ def build_modern_pill(
             )
         )
         story.append(label)
-        story.append(Paragraph(_para_markup(c), b))
+        story.append(Paragraph(_section_content_markup(title, c), b))
         story.append(Spacer(1, 6))
 
     pill_section("Summary", professional_summary, body)
@@ -1354,15 +1456,12 @@ def build_modern_line(
     story: list = []
     raw = sanitize_for_pdf(contact or "").strip()
     if raw:
-        lines = raw.split("\n")
         story.append(
             Paragraph(
-                _para_markup(lines[0]),
+                format_contact_header_markup(contact, name_size=15),
                 ParagraphStyle("LineName", fontName=head_f, fontSize=15, leading=18, textColor=colors.HexColor("#0f172a")),
             )
         )
-        if len(lines) > 1:
-            story.append(Paragraph(_para_markup("\n".join(lines[1:])), ParagraphStyle("LineSub", parent=body_sm, textColor=colors.HexColor("#64748b"))))
         story.append(Spacer(1, 8))
         story.append(Table([[""]], colWidths=[MODERN_CONTENT_WIDTH], rowHeights=[0.5]))
         story[-1].setStyle(TableStyle([("LINEBELOW", (0, 0), (-1, -1), 0.5, muted)]))
@@ -1375,7 +1474,7 @@ def build_modern_line(
         if not c:
             return
         story.append(Paragraph(escape(title.upper()), title_st))
-        story.append(Paragraph(_para_markup(c), b))
+        story.append(Paragraph(_section_content_markup(title, c), b))
         story.append(Table([[""]], colWidths=[MODERN_CONTENT_WIDTH], rowHeights=[0.5]))
         story[-1].setStyle(TableStyle([("LINEBELOW", (0, 0), (-1, -1), 0.5, colors.HexColor("#e2e8f0"))]))
         story.append(Spacer(1, 4))

@@ -60,6 +60,7 @@ const UploadedPdfPreview = lazy(() =>
 const ACCEPT = [
   MIME_TYPES.pdf,
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/msword",
   "text/plain",
   "text/markdown",
 ];
@@ -467,8 +468,8 @@ export default function HomePage() {
                   </ScrollArea>
                 ) : (
                   <Alert color="gray" variant="light" title="No in-browser preview for this format">
-                    Word (.docx) files are still processed on the server. To see the file here, save as PDF or plain
-                    text, or continue and open your tailored sections on the right after generating.
+                    Word (.doc / .docx) files are processed on the server. To preview the upload here, save as PDF or
+                    plain text, or continue and open your tailored sections on the right after generating.
                   </Alert>
                 )}
               </Accordion.Panel>

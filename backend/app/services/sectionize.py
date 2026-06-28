@@ -20,7 +20,8 @@ _SECTION_HEADERS: list[tuple[str, re.Pattern[str]]] = [
     (
         "professional_summary",
         re.compile(
-            r"^(professional\s+)?summary\b|^profile\b|^(career\s+)?profile\b|^objectives?\b|^about\s+me\b|^highlights\b",
+            r"^(professional\s+)?summary\b|^profile\b|^(career\s+)?profile\b|^objectives?\b|"
+            r"^about(\s+me)?\s*:?\s*$|^highlights\b",
             re.I,
         ),
     ),
@@ -50,19 +51,35 @@ _SECTION_HEADERS: list[tuple[str, re.Pattern[str]]] = [
     (
         "other",
         re.compile(
-            r"^projects?\b|^publications?\b|^awards?\b|^volunteer\b|^references?\b|^interests?\b",
+            r"^(personal|side|selected|key)\s+projects?\s*:?\s*$|^projects?\s*:?\s*$|"
+            r"^publications?\s*:?\s*$|^awards?\s*:?\s*$|^achievements?\s*:?\s*$|"
+            r"^volunteer(\s+experience)?\s*:?\s*$|^references?\s*:?\s*$|"
+            r"^interests?\s*:?\s*$|^languages?\s*:?\s*$|"
+            r"^certifications?\s*:?\s*$|^certificates?\s*:?\s*$|^courses?\s*:?\s*$|"
+            r"^activities\s*:?\s*$|^extracurricular\s*:?\s*$|"
+            r"^additional(\s+information|\s+details|\s+experience)?\s*:?\s*$|^hobbies\s*:?\s*$|"
+            r"^portfolio\s*:?\s*$",
             re.I,
         ),
     ),
 ]
 
 
-def _match_section_header(line: str) -> str | None:
+def _match_section_header(line: str, *, in_contact: bool = False) -> str | None:
     s = line.strip()
-    if len(s) > 100:
+    if len(s) > 80:
+        return None
+    if s.startswith(("-", "•", "*", "–", "—")):
+        return None
+    words = s.split()
+    if len(words) > 6:
+        return None
+    if s.endswith(".") and len(words) > 3:
         return None
     for name, pat in _SECTION_HEADERS:
         if pat.search(s):
+            if in_contact and name == "other":
+                continue
             return name
     return None
 
@@ -81,7 +98,7 @@ def parse_resume_sections(text: str) -> ParsedResume:
     for line in lines:
         stripped = line.strip()
         if stripped:
-            sec = _match_section_header(stripped)
+            sec = _match_section_header(stripped, in_contact=(current == "contact"))
             if sec:
                 current = sec
                 continue
