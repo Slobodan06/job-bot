@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass, field
 from io import BytesIO
 from xml.sax.saxutils import escape
 
@@ -21,12 +22,59 @@ MODERN_MARGIN_TOP = 0.42 * inch
 MODERN_MARGIN_BOTTOM = 0.48 * inch
 MODERN_CONTENT_WIDTH = 8.5 * inch - 2 * MODERN_MARGIN_LR
 
+_URL_IN_TEXT_RE = re.compile(
+    r"https?://[^\s<>\"']+|"
+    r"(?:https?://)?(?:www\.)?linkedin\.com[/\w\-?=&%#.+]*|"
+    r"(?:https?://)?(?:www\.)?github\.com[/\w\-?=&%#.+]*|"
+    r"(?:https?://)?(?:www\.)?[a-z0-9][a-z0-9\-]*\.(?:dev|io|me|tech|app|com|net|org)[/\w\-?=&%#.+]*",
+    re.I,
+)
+_EMAIL_LINE_RE = re.compile(r"^[^@\s/]+@[^@\s]+\.[^@\s]+$")
+_LINK_LABELS = frozenset(
+    {"portfolio", "linkedin", "github", "website", "blog", "linktree", "personal website", "link"}
+)
+
 
 def _para_markup(text: str) -> str:
     t = sanitize_for_pdf(text or "")
     t = re.sub(r"\n[ \t]*\n[ \t]*\n+", "\n\n", t)
     t = escape(t)
     return re.sub(r"\r\n|\r|\n", "<br/>", t)
+
+
+def _normalize_url(url: str) -> str:
+    u = (url or "").strip().rstrip(".,;)")
+    if not u:
+        return u
+    if not u.lower().startswith(("http://", "https://")):
+        u = "https://" + u.lstrip("/")
+    return u
+
+
+def _extract_url(text: str) -> str | None:
+    stripped = (text or "").strip()
+    if _EMAIL_LINE_RE.match(stripped):
+        return None
+    match = _URL_IN_TEXT_RE.search(stripped)
+    if not match:
+        return None
+    url = match.group(0)
+    if "@" in url.split("/")[0]:
+        return None
+    return _normalize_url(url)
+
+
+def _href_markup(label: str, url: str, color: str = "#0d9488") -> str:
+    return f'<a href="{escape(_normalize_url(url))}" color="{color}">{escape(label)}</a>'
+
+
+@dataclass
+class ParsedContact:
+    name: str
+    headline: str | None
+    linkedin_url: str | None
+    links: list[tuple[str, str]] = field(default_factory=list)
+    details: list[str] = field(default_factory=list)
 
 
 _CONTACT_DETAIL_RE = re.compile(
@@ -36,6 +84,8 @@ _CONTACT_DETAIL_RE = re.compile(
 
 
 def _looks_like_contact_detail(line: str) -> bool:
+    if _extract_url(line):
+        return True
     if _CONTACT_DETAIL_RE.search(line):
         return True
     if re.search(r",\s*[A-Za-z]", line) and not line.startswith("-"):
@@ -43,10 +93,28 @@ def _looks_like_contact_detail(line: str) -> bool:
     return False
 
 
+def _is_link_label_line(line: str) -> bool:
+    label = line.strip().lower().rstrip(": ")
+    return label in _LINK_LABELS
+
+
+def _link_label_for(line: str, url: str) -> str:
+    text = f"{line} {url}".lower()
+    if "linkedin" in text:
+        return "LinkedIn"
+    if "github" in text:
+        return "GitHub"
+    if "portfolio" in text or "behance" in text or "dribbble" in text:
+        return "Portfolio"
+    if "website" in line.lower() or "blog" in line.lower():
+        return line.strip().rstrip(": ").title() or "Website"
+    return "Portfolio"
+
+
 def _split_name_and_title(line: str) -> tuple[str, str | None]:
     """Split a combined 'First Last Job Title' line from PDF extraction."""
     s = line.strip()
-    if not s or _looks_like_contact_detail(s):
+    if not s or _looks_like_contact_detail(s) or _is_link_label_line(s):
         return s, None
     words = s.split()
     if len(words) <= 2:
@@ -60,41 +128,132 @@ def _split_name_and_title(line: str) -> tuple[str, str | None]:
     return " ".join(words[:2]), title
 
 
-def parse_contact_header(contact: str) -> tuple[str, str | None, list[str]]:
+def _register_link(parsed: ParsedContact, label: str, url: str) -> None:
+    url = _normalize_url(url)
+    if not url:
+        return
+    key = url.lower().rstrip("/")
+    if any(existing.lower().rstrip("/") == key for _, existing in parsed.links):
+        return
+    if label.lower() == "linkedin" or "linkedin.com" in key:
+        parsed.linkedin_url = parsed.linkedin_url or url
+        if label.lower() == "linkedin":
+            parsed.links.append(("LinkedIn", url))
+        return
+    parsed.links.append((label, url))
+
+
+def parse_contact(contact: str) -> ParsedContact:
     lines = [line.strip() for line in sanitize_for_pdf(contact or "").strip().split("\n") if line.strip()]
     if not lines:
-        return "", None, []
+        return ParsedContact("", None, None)
     name, title_from_name = _split_name_and_title(lines[0])
-    rest = lines[1:]
-    headline: str | None = title_from_name
-    details: list[str] = []
+    parsed = ParsedContact(name=name, headline=title_from_name, linkedin_url=None)
     headline_parts: list[str] = []
-    for line in rest:
-        if "|" in line and (_looks_like_contact_detail(line) or "@" in line):
-            details.extend(part.strip() for part in line.split("|") if part.strip())
+    i = 1
+    while i < len(lines):
+        line = lines[i]
+        url = _extract_url(line)
+
+        if url:
+            label = _link_label_for(line, url)
+            _register_link(parsed, label, url)
+            i += 1
             continue
+
+        if _is_link_label_line(line):
+            label = line.strip().rstrip(": ").title()
+            if i + 1 < len(lines):
+                next_url = _extract_url(lines[i + 1])
+                if next_url:
+                    _register_link(parsed, label, next_url)
+                    i += 2
+                    continue
+            i += 1
+            continue
+
+        if _EMAIL_LINE_RE.match(line.strip()):
+            parsed.details.append(line.strip())
+            i += 1
+            continue
+
+        if "|" in line:
+            for part in line.split("|"):
+                part = part.strip()
+                if part:
+                    part_url = _extract_url(part)
+                    if part_url:
+                        _register_link(parsed, _link_label_for(part, part_url), part_url)
+                    elif _looks_like_contact_detail(part):
+                        parsed.details.append(part)
+            i += 1
+            continue
+
         if _looks_like_contact_detail(line):
-            details.append(line)
-        else:
-            headline_parts.append(line)
+            parsed.details.append(line)
+            i += 1
+            continue
+
+        headline_parts.append(line)
+        i += 1
+
     if headline_parts:
-        if headline is None:
+        if parsed.headline is None:
             if len(headline_parts) == 1:
-                headline = headline_parts[0]
-            elif not details:
-                if len(headline_parts) >= 2 and _looks_like_contact_detail(headline_parts[-1]):
-                    headline = headline_parts[0]
-                    details = headline_parts[1:]
-                else:
-                    headline = " · ".join(headline_parts)
+                parsed.headline = headline_parts[0]
+            elif not parsed.details:
+                parsed.headline = headline_parts[0]
+                parsed.details.extend(headline_parts[1:])
             else:
-                headline = headline_parts[0]
-                if len(headline_parts) > 1:
-                    details = headline_parts[1:] + details
-        elif headline_parts:
+                parsed.headline = " · ".join(headline_parts)
+        else:
             extra = " · ".join(headline_parts)
-            headline = f"{headline} · {extra}" if headline else extra
-    return name, headline, details
+            parsed.headline = f"{parsed.headline} · {extra}" if extra else parsed.headline
+    return parsed
+
+
+def parse_contact_header(contact: str) -> tuple[str, str | None, list[str]]:
+    """Backward-compatible tuple API."""
+    parsed = parse_contact(contact)
+    details = list(parsed.details)
+    for label, url in parsed.links:
+        if parsed.linkedin_url and url == parsed.linkedin_url:
+            continue
+        details.append(f"{label}: {url}")
+    return parsed.name, parsed.headline, details
+
+
+def format_contact_name_markup(
+    parsed: ParsedContact,
+    *,
+    name_color: str | None = None,
+    link_color: str | None = None,
+) -> str:
+    if not parsed.name:
+        return ""
+    color = link_color or name_color or "#0f172a"
+    if parsed.linkedin_url:
+        return (
+            f'<a href="{escape(_normalize_url(parsed.linkedin_url))}" color="{color}">'
+            f"<b>{escape(parsed.name)}</b></a>"
+        )
+    return f"<b>{escape(parsed.name)}</b>"
+
+
+def format_contact_details_markup(
+    parsed: ParsedContact,
+    *,
+    detail_color: str = "#64748b",
+    link_color: str = "#0d9488",
+) -> str:
+    parts: list[str] = []
+    for item in parsed.details:
+        parts.append(f'<font color="{detail_color}">{escape(item)}</font>')
+    for label, url in parsed.links:
+        if parsed.linkedin_url and url == parsed.linkedin_url:
+            continue
+        parts.append(_href_markup(label, url, link_color))
+    return " · ".join(parts)
 
 
 def format_contact_header_markup(
@@ -104,29 +263,41 @@ def format_contact_header_markup(
     name_color: str | None = None,
     headline_color: str = "#475569",
     detail_color: str = "#64748b",
+    link_color: str = "#0d9488",
     detail_size: int = 9,
 ) -> str:
-    name, headline, details = parse_contact_header(contact)
-    if not name:
+    parsed = parse_contact(contact)
+    if not parsed.name:
         return ""
     name_attr = f" color='{name_color}'" if name_color else ""
-    parts = [f"<b><font size='{name_size}'{name_attr}>{escape(name)}</font></b>"]
-    if headline:
-        parts.append(
-            f"<br/><font color='{headline_color}' size='{detail_size + 1}'>{escape(headline)}</font>"
+    link_attr = f" color='{link_color or name_color or '#0d9488'}'" if (link_color or name_color) else ""
+    if parsed.linkedin_url:
+        name_html = (
+            f"<a href='{escape(_normalize_url(parsed.linkedin_url))}'{link_attr}>"
+            f"<b><font size='{name_size}'{name_attr}>{escape(parsed.name)}</font></b></a>"
         )
-    if details:
-        joined = " · ".join(escape(item) for item in details)
+    else:
+        name_html = f"<b><font size='{name_size}'{name_attr}>{escape(parsed.name)}</font></b>"
+    parts = [name_html]
+    if parsed.headline:
         parts.append(
-            f"<br/><font color='{detail_color}' size='{detail_size}'>{joined}</font>"
+            f"<br/><font color='{headline_color}' size='{detail_size + 1}'>{escape(parsed.headline)}</font>"
         )
+    detail_html = format_contact_details_markup(
+        parsed, detail_color=detail_color, link_color=link_color or "#0d9488"
+    )
+    if detail_html:
+        parts.append(f"<br/><font size='{detail_size}'>{detail_html}</font>")
     return "".join(parts)
 
 
 def contact_detail_line(contact: str) -> str:
-    """Plain one-line contact string: email · phone · location."""
-    _, _, details = parse_contact_header(contact)
-    return " · ".join(details)
+    """Plain one-line contact string: email · phone · location · links."""
+    parsed = parse_contact(contact)
+    parts = list(parsed.details)
+    for label, url in parsed.links:
+        parts.append(f"{label}: {url}")
+    return " · ".join(parts)
 
 
 _BULLET_RE = re.compile(r"^[-•*–—]\s*")
@@ -188,6 +359,90 @@ def format_experience_markup(content: str) -> str:
     return _strip_trailing_breaks("".join(html_parts))
 
 
+_EDU_DATE_RE = re.compile(
+    r"(\d{1,2}/\d{4}|\d{4})\s*[–\-—|/to]+\s*(\d{1,2}/\d{4}|\d{4}|present|current)",
+    re.I,
+)
+_INSTITUTION_RE = re.compile(r"\b(university|college|institute|school|academy|polytechnic)\b", re.I)
+
+
+def _is_education_date_line(line: str) -> bool:
+    if _EDU_DATE_RE.search(line):
+        return True
+    if re.search(r"\b(19|20)\d{2}\b", line) and re.search(r"[–\-—|]", line) and len(line) < 72:
+        return True
+    if re.search(r"\bgpa\b", line, re.I):
+        return True
+    return False
+
+
+def format_education_markup(content: str) -> str:
+    text = sanitize_for_pdf(content or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"\n[ \t]*\n[ \t]*\n+", "\n\n", text)
+    if re.search(r"\n\s*\n", text):
+        raw_blocks = re.split(r"\n\s*\n", text)
+        line_blocks: list[list[str]] = []
+        for block in raw_blocks:
+            lines = [line.strip() for line in block.split("\n") if line.strip()]
+            if lines:
+                line_blocks.append(lines)
+    else:
+        line_blocks = _split_experience_lines(text)
+
+    html_parts: list[str] = []
+    for lines in line_blocks:
+        titles: list[str] = []
+        metas: list[str] = []
+        bodies: list[str] = []
+        bullets: list[str] = []
+
+        for line in lines:
+            if _BULLET_RE.match(line):
+                bullets.append(_BULLET_RE.sub("", line).strip())
+            elif _is_education_date_line(line):
+                metas.append(line)
+            elif not titles:
+                titles.append(line)
+            elif (
+                len(titles) == 1
+                and _INSTITUTION_RE.search(line)
+                and len(line) < 90
+                and not bullets
+            ):
+                titles.append(line)
+            elif bullets:
+                bullets[-1] = f"{bullets[-1]} {line}"
+            else:
+                bodies.append(line)
+
+        if titles:
+            html_parts.append(
+                f"<b><font size='10' color='#0f172a'>{escape(titles[0])}</font></b><br/>"
+            )
+            if len(titles) > 1:
+                html_parts.append(
+                    f"<font color='#334155'><b>{escape(titles[1])}</b></font><br/>"
+                )
+        if metas:
+            html_parts.append(
+                f"<font color='#64748b' size='8'>{' · '.join(escape(item) for item in metas)}</font><br/>"
+            )
+        if bodies or bullets:
+            html_parts.append("<br/>")
+        for paragraph in bodies:
+            html_parts.append(
+                f"<font color='#0f172a' size='9'>{escape(paragraph)}</font><br/>"
+            )
+        for bullet in bullets:
+            html_parts.append(
+                f"<font color='#0f172a' size='9'>• {escape(bullet)}</font><br/>"
+            )
+        html_parts.append("<br/>")
+    return _strip_trailing_breaks("".join(html_parts))
+
+
 def _split_experience_lines(text: str) -> list[list[str]]:
     lines = [line.strip() for line in text.split("\n") if line.strip()]
     blocks: list[list[str]] = []
@@ -208,8 +463,11 @@ def _split_experience_lines(text: str) -> list[list[str]]:
 
 
 def _section_body_markup(title: str, content: str) -> str:
-    if "experience" in title.lower():
+    lowered = title.lower()
+    if "experience" in lowered:
         return format_experience_markup(content)
+    if "education" in lowered:
+        return format_education_markup(content)
     return _para_markup(content)
 
 
@@ -286,15 +544,15 @@ def build_tailored_resume_pdf(
 
     lead = sanitize_for_pdf(contact or "").strip()
     if lead:
-        name, headline, details = parse_contact_header(lead)
-        if name:
-            story.append(Paragraph(f"<b>{escape(name)}</b>", contact_name_style))
-        if headline:
-            story.append(Paragraph(escape(headline), contact_detail_style))
-        if details:
-            story.append(
-                Paragraph(escape(" · ".join(details)), contact_detail_style)
-            )
+        parsed_contact = parse_contact(lead)
+        name_html = format_contact_name_markup(parsed_contact)
+        if name_html:
+            story.append(Paragraph(name_html, contact_name_style))
+        if parsed_contact.headline:
+            story.append(Paragraph(escape(parsed_contact.headline), contact_detail_style))
+        details_html = format_contact_details_markup(parsed_contact)
+        if details_html:
+            story.append(Paragraph(details_html, contact_detail_style))
         story.append(Spacer(1, 10))
 
     def add_section(title: str, content: str) -> None:

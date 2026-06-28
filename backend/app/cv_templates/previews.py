@@ -24,7 +24,8 @@ SAMPLE_SKILLS = """Frontend: React, TypeScript, Next.js
 Backend: Python, FastAPI, Node.js
 Tools: AWS, Docker, PostgreSQL"""
 
-SAMPLE_EDUCATION = """B.S. Computer Science — State University
+SAMPLE_EDUCATION = """Bachelor of Science — State University
+Participated in distributed systems research and senior capstone projects.
 2014 – 2018 | GPA 3.8"""
 
 SAMPLE_OTHER = "Certifications: AWS Solutions Architect"

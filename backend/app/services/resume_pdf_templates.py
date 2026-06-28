@@ -34,7 +34,10 @@ from app.services.pdf_resume import (
     MODERN_MARGIN_LR,
     MODERN_MARGIN_TOP,
     build_tailored_resume_pdf,
+    format_contact_details_markup,
     format_contact_header_markup,
+    format_contact_name_markup,
+    parse_contact,
     parse_contact_header,
     _section_body_markup,
 )
@@ -204,6 +207,7 @@ def _append_contact_block(
     name_color: colors.Color | None = None,
     detail_color: colors.Color | None = None,
     headline_color: colors.Color | None = None,
+    link_color: str = "#0d9488",
     alignment: int = TA_LEFT,
     trailing_spacer: float = 10,
 ) -> None:
@@ -218,13 +222,22 @@ def _append_contact_block(
         headline_color=headline_color,
         alignment=alignment,
     )
-    name, headline, details = parse_contact_header(contact)
-    if name:
-        story.append(Paragraph(f"<b>{escape(name)}</b>", name_st))
-    if headline:
-        story.append(Paragraph(escape(headline), headline_st))
-    if details:
-        story.append(Paragraph(escape(" · ".join(details)), detail_st))
+    parsed = parse_contact(contact)
+    name_link_color = link_color
+    if name_color is not None:
+        name_link_color = (
+            f"#{int(name_color.red * 255):02x}"
+            f"{int(name_color.green * 255):02x}"
+            f"{int(name_color.blue * 255):02x}"
+        )
+    name_html = format_contact_name_markup(parsed, link_color=name_link_color)
+    if name_html:
+        story.append(Paragraph(name_html, name_st))
+    if parsed.headline:
+        story.append(Paragraph(escape(parsed.headline), headline_st))
+    details_html = format_contact_details_markup(parsed, link_color=link_color)
+    if details_html:
+        story.append(Paragraph(details_html, detail_st))
     if trailing_spacer:
         story.append(Spacer(1, trailing_spacer))
 
@@ -246,15 +259,16 @@ def _contact_markup_for_table(
     )
 
 
-def _contact_centered_markup(contact: str) -> str:
-    name, headline, details = parse_contact_header(contact)
+def _contact_centered_markup(contact: str, *, link_color: str = "#0d9488") -> str:
+    parsed = parse_contact(contact)
     parts: list[str] = []
-    if name:
-        parts.append(f"<b>{escape(name)}</b>")
-    if headline:
-        parts.append(escape(headline))
-    if details:
-        parts.append(escape(" · ".join(details)))
+    if parsed.name:
+        parts.append(format_contact_name_markup(parsed, link_color=link_color))
+    if parsed.headline:
+        parts.append(escape(parsed.headline))
+    details_html = format_contact_details_markup(parsed, link_color=link_color)
+    if details_html:
+        parts.append(details_html)
     return "<br/>".join(parts)
 
 
@@ -363,6 +377,7 @@ def build_executive_band(
         name_color="#ffffff",
         headline_color="#c5dae6",
         detail_color="#c5dae6",
+        link_color="#93c5fd",
     )
     hdr = Table(
         [[Paragraph(header_html or "&nbsp;", name_st)]],
@@ -859,14 +874,19 @@ def build_executive_colored(
     band = colors.HexColor(band_hex)
     name_st = ParagraphStyle("ExecName", fontName=head_f, fontSize=17, leading=20, textColor=colors.white, alignment=TA_CENTER, spaceAfter=4)
     sub_st = ParagraphStyle("ExecSub", fontName=body_f, fontSize=9, leading=12, textColor=colors.HexColor("#c5dae6"), alignment=TA_CENTER)
-    name, headline, details = parse_contact_header(contact)
+    parsed_contact = parse_contact(contact)
+    name_html = format_contact_name_markup(parsed_contact, link_color="#c5dae6")
     sub_parts: list[str] = []
-    if headline:
-        sub_parts.append(escape(headline))
-    if details:
-        sub_parts.append(escape(" · ".join(details)))
+    if parsed_contact.headline:
+        sub_parts.append(escape(parsed_contact.headline))
+    details_html = format_contact_details_markup(parsed_contact, link_color="#93c5fd")
+    if details_html:
+        sub_parts.append(details_html)
     sub = "<br/>".join(sub_parts) if sub_parts else "&nbsp;"
-    hdr = Table([[Paragraph(escape(name or " "), name_st)], [Paragraph(sub, sub_st)]], colWidths=[6.6 * inch])
+    hdr = Table(
+        [[Paragraph(name_html or "&nbsp;", name_st)], [Paragraph(sub, sub_st)]],
+        colWidths=[6.6 * inch],
+    )
     hdr.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), band), ("TOPPADDING", (0, 0), (-1, -1), 12), ("BOTTOMPADDING", (0, 0), (-1, -1), 14), ("ALIGN", (0, 0), (-1, -1), "CENTER")]))
     story: list = [hdr, Spacer(1, 10)]
     for block in (
@@ -932,6 +952,7 @@ def _build_navy_colored_impl(
         name_color=colors.white,
         detail_color=colors.HexColor("#e2e8f0"),
         headline_color=colors.HexColor("#cbd5e1"),
+        link_color="#93c5fd",
         trailing_spacer=10,
     )
     left_flowables.append(
@@ -945,7 +966,7 @@ def _build_navy_colored_impl(
             [
                 Spacer(1, 10),
                 Paragraph(
-                    f"<b><font size='12'>EDUCATION</font></b><br/><br/>{_para_markup(education)}",
+                    f"<b><font size='12'>EDUCATION</font></b><br/><br/>{_section_content_markup('Education', education)}",
                     side_body,
                 ),
             ]
@@ -1474,6 +1495,7 @@ def build_modern_hero(
         name_color="#ffffff",
         headline_color="#e2e8f0",
         detail_color="#e2e8f0",
+        link_color="#93c5fd",
     )
     name_st = ParagraphStyle(
         "HeroName",
