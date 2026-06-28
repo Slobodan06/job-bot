@@ -29,7 +29,10 @@ _URL_IN_TEXT_RE = re.compile(
     r"(?:https?://)?(?:www\.)?[a-z0-9][a-z0-9\-]*\.(?:dev|io|me|tech|app|com|net|org)[/\w\-?=&%#.+]*",
     re.I,
 )
+_EMAIL_IN_TEXT_RE = re.compile(r"[\w.+-]+@[\w.-]+\.\w+")
 _EMAIL_LINE_RE = re.compile(r"^[^@\s/]+@[^@\s]+\.[^@\s]+$")
+_CONTACT_SEP_RE = re.compile(r"\s*[•|·]\s*")
+_BULLET_RE = re.compile(r"^[-•*–—]\s*")
 _LINK_LABELS = frozenset(
     {"portfolio", "linkedin", "github", "website", "blog", "linktree", "personal website", "link"}
 )
@@ -52,16 +55,72 @@ def _normalize_url(url: str) -> str:
 
 
 def _extract_url(text: str) -> str | None:
-    stripped = (text or "").strip()
-    if _EMAIL_LINE_RE.match(stripped):
+    stripped = _strip_leading_bullet(text)
+    if _is_email_part(stripped):
         return None
-    match = _URL_IN_TEXT_RE.search(stripped)
+    cleaned = _EMAIL_IN_TEXT_RE.sub(" ", stripped)
+    match = _URL_IN_TEXT_RE.search(cleaned)
     if not match:
         return None
     url = match.group(0)
     if "@" in url.split("/")[0]:
         return None
     return _normalize_url(url)
+
+
+def _strip_leading_bullet(text: str) -> str:
+    return _BULLET_RE.sub("", (text or "").strip()).strip()
+
+
+def _is_email_part(text: str) -> bool:
+    return bool(_EMAIL_LINE_RE.match(_strip_leading_bullet(text)))
+
+
+def _split_contact_parts(line: str) -> list[str]:
+    stripped = (line or "").strip()
+    if _CONTACT_SEP_RE.search(stripped):
+        return [part.strip() for part in _CONTACT_SEP_RE.split(stripped) if part.strip()]
+    if re.search(r"\s-\s+", stripped) and (
+        _EMAIL_IN_TEXT_RE.search(stripped)
+        or _URL_IN_TEXT_RE.search(stripped)
+        or re.search(r"\+?\d[\d\s().-]{7,}", stripped)
+    ):
+        parts = [p.strip().lstrip("-").strip() for p in re.split(r"\s+-\s+", stripped) if p.strip()]
+        if len(parts) > 1:
+            return parts
+    if "|" in stripped:
+        return [part.strip() for part in stripped.split("|") if part.strip()]
+    return [stripped]
+
+
+def _is_contact_detail_part(part: str) -> bool:
+    cleaned = _strip_leading_bullet(part)
+    if not cleaned:
+        return False
+    if _extract_url(cleaned):
+        return True
+    if _is_email_part(cleaned):
+        return True
+    if re.search(r"\+?\d[\d\s().-]{7,}", cleaned):
+        return True
+    if re.search(r",\s*[A-Za-zÀ-ÿ]", cleaned) and len(cleaned) < 72:
+        return True
+    return False
+
+
+def _ingest_contact_part(parsed: ParsedContact, part: str) -> None:
+    cleaned = _strip_leading_bullet(part)
+    if not cleaned:
+        return
+    url = _extract_url(cleaned)
+    if url:
+        _register_link(parsed, _link_label_for(cleaned, url), url)
+        return
+    if _is_email_part(cleaned):
+        parsed.details.append(cleaned)
+        return
+    if _is_contact_detail_part(cleaned):
+        parsed.details.append(cleaned)
 
 
 def _href_markup(label: str, url: str, color: str = "#0d9488") -> str:
@@ -160,11 +219,25 @@ def parse_contact(contact: str) -> ParsedContact:
     i = 1
     while i < len(lines):
         line = lines[i]
-        url = _extract_url(line)
+        parts = _split_contact_parts(line)
 
+        if len(parts) > 1:
+            headline_bits: list[str] = []
+            for part in parts:
+                if _is_contact_detail_part(part):
+                    _ingest_contact_part(parsed, part)
+                else:
+                    cleaned = _strip_leading_bullet(part)
+                    if cleaned:
+                        headline_bits.append(cleaned)
+            if headline_bits:
+                headline_parts.append(" · ".join(headline_bits))
+            i += 1
+            continue
+
+        url = _extract_url(line)
         if url:
-            label = _link_label_for(line, url)
-            _register_link(parsed, label, url)
+            _register_link(parsed, _link_label_for(line, url), url)
             i += 1
             continue
 
@@ -191,25 +264,13 @@ def parse_contact(contact: str) -> ParsedContact:
             i += 1
             continue
 
-        if _EMAIL_LINE_RE.match(line.strip()):
-            parsed.details.append(line.strip())
+        if _is_email_part(line):
+            parsed.details.append(_strip_leading_bullet(line))
             i += 1
             continue
 
-        if "|" in line:
-            for part in line.split("|"):
-                part = part.strip()
-                if part:
-                    part_url = _extract_url(part)
-                    if part_url:
-                        _register_link(parsed, _link_label_for(part, part_url), part_url)
-                    elif _looks_like_contact_detail(part):
-                        parsed.details.append(part)
-            i += 1
-            continue
-
-        if _looks_like_contact_detail(line):
-            parsed.details.append(line)
+        if _is_contact_detail_part(line):
+            _ingest_contact_part(parsed, line)
             i += 1
             continue
 
@@ -414,9 +475,6 @@ def contact_detail_line(contact: str) -> str:
     return " · ".join(parts)
 
 
-_BULLET_RE = re.compile(r"^[-•*–—]\s*")
-
-
 def _strip_trailing_breaks(html: str) -> str:
     """Remove trailing <br/> tags without corrupting closing tags like </font>."""
     while html.endswith("<br/>"):
@@ -575,10 +633,28 @@ def _looks_like_institution_line(line: str) -> bool:
     return len(words) >= 2 and len(line) < 90 and not re.search(r"\d{4}", line)
 
 
+def _looks_like_education_location(line: str) -> bool:
+    stripped = line.strip()
+    if (
+        _is_education_date_line(line)
+        or _looks_like_degree_line(line)
+        or _looks_like_institution_line(line)
+        or len(stripped) > 48
+    ):
+        return False
+    if not _LOCATION_LINE_RE.match(stripped):
+        return False
+    city, _, country = stripped.partition(",")
+    return len(city.split()) <= 4 and len(country.split()) <= 4
+
+
 def _split_education_entries(text: str) -> list[list[str]]:
     lines = [line.strip() for line in text.split("\n") if line.strip()]
     if not lines:
         return []
+    paired = _collect_paired_education_entries(lines)
+    if paired:
+        return paired
     stacked = _collect_stacked_education_entries(lines)
     if stacked:
         return stacked
@@ -604,6 +680,30 @@ def _split_compound_date_line(line: str) -> list[str]:
     return [line]
 
 
+def _collect_paired_education_entries(lines: list[str]) -> list[list[str]] | None:
+    """Degree, institution, degree, institution, … then trailing dates and locations."""
+    degrees = [line for line in lines if _looks_like_degree_line(line)]
+    if len(degrees) < 2:
+        return None
+    institutions = [line for line in lines if _looks_like_institution_line(line)]
+    dates: list[str] = []
+    for line in lines:
+        if _is_education_date_line(line):
+            dates.extend(_split_compound_date_line(line))
+    locations = [line for line in lines if _looks_like_education_location(line)]
+    count = len(degrees)
+    if not (len(institutions) >= count and len(dates) >= count and len(locations) >= count):
+        return None
+    first_date_idx = next(i for i, line in enumerate(lines) if _is_education_date_line(line))
+    last_inst_idx = max(i for i, line in enumerate(lines) if _looks_like_institution_line(line))
+    if last_inst_idx >= first_date_idx:
+        return None
+    return [
+        [degrees[i], institutions[i], dates[i], locations[i]]
+        for i in range(count)
+    ]
+
+
 def _collect_stacked_education_entries(lines: list[str]) -> list[list[str]] | None:
     degree_count = 0
     for line in lines:
@@ -626,7 +726,7 @@ def _collect_stacked_education_entries(lines: list[str]) -> list[list[str]] | No
         return None
 
     institutions = [line for line in rest if _looks_like_institution_line(line)]
-    locations = [line for line in rest if _LOCATION_LINE_RE.match(line.strip())]
+    locations = [line for line in rest if _looks_like_education_location(line)]
 
     entries: list[list[str]] = []
     for i, degree in enumerate(degrees):
@@ -659,7 +759,7 @@ def _render_education_entry(lines: list[str]) -> str:
                 dates = line
             else:
                 bodies.append(line)
-        elif _LOCATION_LINE_RE.match(line.strip()) and location is None:
+        elif _looks_like_education_location(line) and location is None:
             location = line
         elif institution is None and _looks_like_institution_line(line):
             institution = line
@@ -697,6 +797,48 @@ def format_education_markup(content: str) -> str:
     return _strip_trailing_breaks(html)
 
 
+_OTHER_SUBHEADER_RE = re.compile(
+    r"^(certifications?|certification|additional\s+strengths|licenses?|courses?)\s*:?\s*$",
+    re.I,
+)
+
+
+def format_other_markup(content: str) -> str:
+    text = sanitize_for_pdf(content or "").strip()
+    if not text:
+        return ""
+    parts: list[str] = []
+    for line in [ln.strip() for ln in text.split("\n") if ln.strip()]:
+        if _OTHER_SUBHEADER_RE.match(line):
+            parts.append(
+                f"<br/><b><font size='9' color='#334155'>{escape(line.upper())}</font></b><br/>"
+            )
+            continue
+        stripped = line.lstrip("•").strip()
+        dash_items = [p.strip() for p in re.split(r"\s+-\s+", stripped) if p.strip()]
+        if len(dash_items) > 1 and line.strip().startswith(("-", "•", "*", "–", "—")):
+            for item in dash_items:
+                item = item.lstrip("-•* ").strip()
+                if item and not _OTHER_SUBHEADER_RE.match(item):
+                    parts.append(f"<font color='#0f172a' size='9'>• {escape(item)}</font><br/>")
+            continue
+        if _CONTACT_SEP_RE.search(stripped) and (
+            line.strip().startswith(("•", "-", "*", "–", "—")) or "  •" in line
+        ):
+            for item in _CONTACT_SEP_RE.split(stripped):
+                item = item.strip()
+                if item:
+                    parts.append(f"<font color='#0f172a' size='9'>• {escape(item)}</font><br/>")
+            continue
+        if _BULLET_RE.match(line):
+            parts.append(
+                f"<font color='#0f172a' size='9'>• {escape(_BULLET_RE.sub('', line).strip())}</font><br/>"
+            )
+        else:
+            parts.append(f"<font color='#0f172a' size='9'>{escape(line)}</font><br/>")
+    return _strip_trailing_breaks("".join(parts))
+
+
 def _split_experience_lines(text: str) -> list[list[str]]:
     lines = [line.strip() for line in text.split("\n") if line.strip()]
     blocks: list[list[str]] = []
@@ -722,6 +864,8 @@ def _section_body_markup(title: str, content: str) -> str:
         return format_experience_markup(content)
     if "education" in lowered:
         return format_education_markup(content)
+    if "other" in lowered or "additional" in lowered:
+        return format_other_markup(content)
     return _para_markup(content)
 
 

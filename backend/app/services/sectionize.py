@@ -55,7 +55,7 @@ _SECTION_HEADERS: list[tuple[str, re.Pattern[str]]] = [
             r"^publications?\s*:?\s*$|^awards?\s*:?\s*$|^achievements?\s*:?\s*$|"
             r"^volunteer(\s+experience)?\s*:?\s*$|^references?\s*:?\s*$|"
             r"^interests?\s*:?\s*$|^languages?\s*:?\s*$|"
-            r"^certifications?\s*:?\s*$|^certificates?\s*:?\s*$|^licenses?\s*:?\s*$|^courses?\s*:?\s*$|"
+            r"^certifications?\s*:?\s*$|^certification\s*:?\s*$|^certificates?\s*:?\s*$|^licenses?\s*:?\s*$|^courses?\s*:?\s*$|"
             r"^activities\s*:?\s*$|^extracurricular\s*:?\s*$|"
             r"^additional(\s+information|\s+details|\s+experience|\s+strengths)?\s*:?\s*$|"
             r"^hobbies\s*:?\s*$|"
@@ -66,7 +66,7 @@ _SECTION_HEADERS: list[tuple[str, re.Pattern[str]]] = [
 ]
 
 _OTHER_TAIL_IN_EDUCATION_RE = re.compile(
-    r"^additional\s+strengths\b|^certifications?\s*:?\s*$|^licenses?\s*:?\s*$|"
+    r"^additional\s+strengths\b|^certifications?\s*:?\s*$|^certification\s*:?\s*$|^licenses?\s*:?\s*$|"
     r"^professional\s+certifications?\s*:?\s*$|"
     r"^[-•*–—]\s*.*\bcertificat",
     re.I,
@@ -128,6 +128,8 @@ def parse_resume_sections(text: str) -> ParsedResume:
             sec = _match_section_header(stripped, in_contact=(current == "contact"))
             if sec:
                 current = sec
+                if sec == "other":
+                    buckets[current].append(line)
                 continue
         buckets[current].append(line)
 
