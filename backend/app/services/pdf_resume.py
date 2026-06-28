@@ -219,6 +219,9 @@ def parse_contact(contact: str) -> ParsedContact:
     i = 1
     while i < len(lines):
         line = lines[i]
+        if line.strip() == name:
+            i += 1
+            continue
         parts = _split_contact_parts(line)
 
         if len(parts) > 1:
@@ -329,6 +332,8 @@ def format_contact_details_markup(
     parts: list[str] = []
     for item in parsed.details:
         parts.append(f'<font color="{detail_color}">{escape(item)}</font>')
+    if parsed.linkedin_url:
+        parts.append(_href_markup("LinkedIn", parsed.linkedin_url, link_color))
     for label, url in parsed.links:
         if parsed.linkedin_url and url == parsed.linkedin_url:
             continue

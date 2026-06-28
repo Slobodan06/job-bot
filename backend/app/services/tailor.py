@@ -393,7 +393,13 @@ def _build_pdf_sync(
             )
     pdf_bytes, tmpl_key, tmpl_label = build_template_pdf(
         template_key,
-        contact=sanitize_for_pdf(parsed.contact),
+        contact=sanitize_for_pdf(
+            merge_profile_links_into_contact(
+                parsed.contact,
+                "",
+                pdf_bytes=source_pdf_bytes,
+            )
+        ),
         professional_summary=pdf_tailored.professional_summary,
         professional_experience=pdf_tailored.professional_experience,
         skills=pdf_tailored.skills,
@@ -417,15 +423,14 @@ async def tailor_resume(
         resume_text,
         pdf_bytes=source_pdf_bytes,
     )
-    if enriched_contact != parsed.contact:
-        parsed = ParsedResume(
-            contact=enriched_contact,
-            professional_summary=parsed.professional_summary,
-            professional_experience=parsed.professional_experience,
-            skills=parsed.skills,
-            education=parsed.education,
-            other=parsed.other,
-        )
+    parsed = ParsedResume(
+        contact=enriched_contact,
+        professional_summary=parsed.professional_summary,
+        professional_experience=parsed.professional_experience,
+        skills=parsed.skills,
+        education=parsed.education,
+        other=parsed.other,
+    )
     keywords = extract_keywords(job_description, top_k=22)
     key = os.getenv("OPENAI_API_KEY", "").strip()
     used_llm = False
