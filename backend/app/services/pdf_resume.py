@@ -43,13 +43,30 @@ def _looks_like_contact_detail(line: str) -> bool:
     return False
 
 
+def _split_name_and_title(line: str) -> tuple[str, str | None]:
+    """Split a combined 'First Last Job Title' line from PDF extraction."""
+    s = line.strip()
+    if not s or _looks_like_contact_detail(s):
+        return s, None
+    words = s.split()
+    if len(words) <= 2:
+        return s, None
+    if not (words[0][0].isupper() and words[1][0].isupper()):
+        return s, None
+    title_words = words[2:]
+    title = " ".join(title_words).strip()
+    if not title or _looks_like_contact_detail(title):
+        return s, None
+    return " ".join(words[:2]), title
+
+
 def parse_contact_header(contact: str) -> tuple[str, str | None, list[str]]:
     lines = [line.strip() for line in sanitize_for_pdf(contact or "").strip().split("\n") if line.strip()]
     if not lines:
         return "", None, []
-    name = lines[0]
+    name, title_from_name = _split_name_and_title(lines[0])
     rest = lines[1:]
-    headline: str | None = None
+    headline: str | None = title_from_name
     details: list[str] = []
     headline_parts: list[str] = []
     for line in rest:
@@ -61,18 +78,22 @@ def parse_contact_header(contact: str) -> tuple[str, str | None, list[str]]:
         else:
             headline_parts.append(line)
     if headline_parts:
-        if len(headline_parts) == 1:
-            headline = headline_parts[0]
-        elif not details:
-            if len(headline_parts) >= 2 and _looks_like_contact_detail(headline_parts[-1]):
+        if headline is None:
+            if len(headline_parts) == 1:
                 headline = headline_parts[0]
-                details = headline_parts[1:]
+            elif not details:
+                if len(headline_parts) >= 2 and _looks_like_contact_detail(headline_parts[-1]):
+                    headline = headline_parts[0]
+                    details = headline_parts[1:]
+                else:
+                    headline = " · ".join(headline_parts)
             else:
-                headline = " · ".join(headline_parts)
-        else:
-            headline = headline_parts[0]
-            if len(headline_parts) > 1:
-                details = headline_parts[1:] + details
+                headline = headline_parts[0]
+                if len(headline_parts) > 1:
+                    details = headline_parts[1:] + details
+        elif headline_parts:
+            extra = " · ".join(headline_parts)
+            headline = f"{headline} · {extra}" if headline else extra
     return name, headline, details
 
 
@@ -83,6 +104,7 @@ def format_contact_header_markup(
     name_color: str | None = None,
     headline_color: str = "#475569",
     detail_color: str = "#64748b",
+    detail_size: int = 9,
 ) -> str:
     name, headline, details = parse_contact_header(contact)
     if not name:
@@ -91,12 +113,20 @@ def format_contact_header_markup(
     parts = [f"<b><font size='{name_size}'{name_attr}>{escape(name)}</font></b>"]
     if headline:
         parts.append(
-            f"<br/><font color='{headline_color}' size='9'>{escape(headline)}</font>"
+            f"<br/><font color='{headline_color}' size='{detail_size + 1}'>{escape(headline)}</font>"
         )
     if details:
         joined = " · ".join(escape(item) for item in details)
-        parts.append(f"<br/><font color='{detail_color}' size='9'>{joined}</font>")
+        parts.append(
+            f"<br/><font color='{detail_color}' size='{detail_size}'>{joined}</font>"
+        )
     return "".join(parts)
+
+
+def contact_detail_line(contact: str) -> str:
+    """Plain one-line contact string: email · phone · location."""
+    _, _, details = parse_contact_header(contact)
+    return " · ".join(details)
 
 
 _BULLET_RE = re.compile(r"^[-•*–—]\s*")
@@ -230,17 +260,41 @@ def build_tailored_resume_pdf(
     contact_style = ParagraphStyle(
         "ContactLead",
         parent=body,
+        fontName=body_font,
+        fontSize=9,
+        leading=12,
+        textColor=ink,
+        spaceAfter=2,
+    )
+    contact_name_style = ParagraphStyle(
+        "ContactName",
+        parent=contact_style,
         fontName=heading_font,
         fontSize=15,
         leading=18,
-        textColor=ink,
         spaceAfter=2,
+    )
+    contact_detail_style = ParagraphStyle(
+        "ContactDetail",
+        parent=contact_style,
+        fontSize=9,
+        leading=12,
+        textColor=muted,
+        spaceAfter=4,
     )
     story: list = []
 
     lead = sanitize_for_pdf(contact or "").strip()
     if lead:
-        story.append(Paragraph(format_contact_header_markup(lead, name_size=15), contact_style))
+        name, headline, details = parse_contact_header(lead)
+        if name:
+            story.append(Paragraph(f"<b>{escape(name)}</b>", contact_name_style))
+        if headline:
+            story.append(Paragraph(escape(headline), contact_detail_style))
+        if details:
+            story.append(
+                Paragraph(escape(" · ".join(details)), contact_detail_style)
+            )
         story.append(Spacer(1, 10))
 
     def add_section(title: str, content: str) -> None:

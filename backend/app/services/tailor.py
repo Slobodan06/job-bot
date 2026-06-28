@@ -15,7 +15,7 @@ from app.services.pdf_text_util import sanitize_for_pdf
 from app.services.sectionize import ParsedResume, parse_resume_sections
 
 def _tailor_max_tokens() -> int:
-    raw = os.getenv("OPENAI_TAILOR_MAX_TOKENS", "8192").strip()
+    raw = os.getenv("OPENAI_TAILOR_MAX_TOKENS", "16384").strip()
     try:
         n = int(raw)
     except ValueError:
@@ -97,6 +97,36 @@ class TailoredSections:
     skills: str
 
 
+def _source_section_stats(parsed: ParsedResume) -> dict[str, int]:
+    exp = (parsed.professional_experience or "").strip()
+    skills = (parsed.skills or "").strip()
+    bullets = len(re.findall(r"^[\-•*–—]\s", exp, re.M))
+    roles = len(re.findall(r"\n\s*\n", exp)) + (1 if exp else 0)
+    skill_lines = len([line for line in skills.splitlines() if line.strip()])
+    return {
+        "experience_chars": len(exp),
+        "experience_bullets": bullets,
+        "experience_roles_est": roles,
+        "skills_chars": len(skills),
+        "skills_lines": skill_lines,
+    }
+
+
+def _tailor_volume_ok(parsed: ParsedResume, tailored: TailoredSections) -> bool:
+    stats = _source_section_stats(parsed)
+    out_exp = len(tailored.professional_experience.strip())
+    out_sk = len(tailored.skills.strip())
+    if stats["experience_chars"] > 600 and out_exp < stats["experience_chars"] * 0.45:
+        return False
+    if stats["experience_bullets"] >= 6:
+        out_bullets = len(re.findall(r"^[\-•*–—]\s", tailored.professional_experience, re.M))
+        if out_bullets < max(4, int(stats["experience_bullets"] * 0.55)):
+            return False
+    if stats["skills_chars"] > 80 and out_sk < stats["skills_chars"] * 0.4:
+        return False
+    return True
+
+
 def _skills_as_categorized_lines(text: str) -> str:
     """Normalize skills to one category per line: Frontend: a, b, c — keeps newlines."""
     raw = (text or "").strip()
@@ -166,8 +196,9 @@ def _offline_tailor_structured(parsed: ParsedResume, jd: str) -> TailoredSection
 
 
 STRUCTURED_SYSTEM = """You are an ATS-aware resume editor optimizing for ONE target job posting.
-You receive that job description and JSON with three resume sections: professional_summary,
-professional_experience, skills (each may be empty strings).
+You receive that job description and JSON with resume sections from the candidate's uploaded CV:
+professional_summary, professional_experience, skills (rewrite these three), plus reference_education
+and reference_other (context only — do not output separate keys for those).
 
 Return ONLY a JSON object with exactly these keys (all strings, use \\n for line breaks inside values):
 "professional_summary", "professional_experience", "skills"
@@ -176,9 +207,15 @@ Truth and ethics:
 - Preserve factual truth from the candidate's source only: employers, tenure, titles, stacks they actually used. Do NOT invent employers, titles, dates, certifications, metrics, products, or tools never evidenced or strongly implied by the source.
 - If a section is empty, infer concise content consistent with other sections (still no fabrication).
 
+Coverage (critical — do not under-generate):
+- **Include EVERY role** listed in source professional_experience. Never drop, merge away, or skip a position.
+- For each role, preserve job title, employer, dates, and location lines from the source (you may rephrase titles slightly but not change facts).
+- **Bullet volume**: when the source role has N bullets, output at least max(4, N) rewritten bullets for that role. When source experience is rich (many bullets), aim for 6–12 bullets per role.
+- **Skills completeness**: every tool, language, framework, and platform explicitly named in source skills MUST appear somewhere in your rebuilt skills lines (reordered and grouped for the job). Add JD-aligned terms only when truthful. Do not shrink a rich skills section.
+
 Job-first targeting (critical):
 - Read the job description before writing. Prioritize vocabulary, domains, outcomes, scale, compliance, stack, user types, and success criteria that the posting emphasizes.
-- **Do NOT copy source bullet wording.** Never paste or lightly tweak résumé lines (e.g. identical sentence plus a trailing clause like "aligned with X sector" or "enhancing Y"). Each "- " bullet must be **fresh sentences** optimized for THIS role while reflecting the same underlying responsibilities and tech.
+- **Do NOT copy source bullet wording.** Each "- " bullet must be **fresh sentences** optimized for THIS role while reflecting the same underlying responsibilities and tech.
 - **Forbidden pattern**: reproducing ~70%+ of an original bullet with only a short suffix about the industry or employer. Rewrite the whole bullet so leadership, scope, and impact read differently while staying honest.
 - Vary openings (verbs and structure) across bullets and across roles so positions do not read like copy-paste with employer names swapped.
 
@@ -188,11 +225,10 @@ professional_summary:
 professional_experience:
 - Use "- " bullets only (plain text).
 - For EACH role from the source: job title line, employer line, then dates and location when present (separate lines), then bullets—preserve structure but **rewrite all bullet content for the job**.
-- Aim for **6–12 bullets per role** when the source supports that much substance; minimum **4 bullets** per role when the excerpt is modest. Merge or split ideas so bullets stay distinct.
 - Each bullet should answer how that work maps to the posting's problems (platform, reliability, UX, APIs, commerce, data, collaboration as relevant)—using **new phrasing**, not appended clichés.
 
 skills:
-- **Fully rebuild for the target job.** Do NOT mirror the source skills section order or wording.
+- **Fully rebuild for the target job** while retaining all verified tools from the source.
 - MUST be categorized lines only (no bullets, no markdown). One category per line:
   Frontend: …
   Backend: …
@@ -202,7 +238,7 @@ skills:
   E-commerce / CMS: … (when relevant)
   Plus other categories as needed (Mobile, Security, Monitoring, Testing/QA).
 - **Reorder categories** so the **most JD-relevant category appears first** (when sensible). Within each line, list **job-aligned tools and phrases first** when truthful, then other verified skills from the résumé.
-- Aim for **6–14 distinct items per line** where supported; weave JD terminology where accurate. Omit irrelevant niche tools if space is tight; prefer concrete nouns.
+- Aim for **6–14 distinct items per line** where supported; weave JD terminology where accurate.
 
 No markdown fences, no commentary outside JSON."""
 
@@ -217,11 +253,25 @@ def _parse_json_object(raw: str) -> dict:
 
 async def _llm_tailor_structured(parsed: ParsedResume, jd: str, api_key: str) -> TailoredSections:
     client = AsyncOpenAI(api_key=api_key)
+    stats = _source_section_stats(parsed)
     payload = {
         "professional_summary": parsed.professional_summary,
         "professional_experience": parsed.professional_experience,
         "skills": parsed.skills,
+        "reference_education": parsed.education,
+        "reference_other": parsed.other,
     }
+    user_intro = (
+        "TARGET JOB — rewrite aggressively for THIS posting only.\n"
+        "- Experience: include EVERY role from source; rewrite every bullet in new words (same facts/tech).\n"
+        "- Skills: keep ALL source tools/skills, reordered for this JD; add JD terms only when truthful.\n"
+        f"- Source stats: ~{stats['experience_roles_est']} roles, ~{stats['experience_bullets']} bullets, "
+        f"{stats['skills_lines']} skills lines — output must not be shorter than a thorough rewrite of that material.\n\n"
+        "JOB DESCRIPTION:\n"
+        + jd.strip()
+        + "\n\nSOURCE_SECTIONS_JSON:\n"
+        + json.dumps(payload, ensure_ascii=False)
+    )
     completion = await client.chat.completions.create(
         model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
         temperature=_tailor_temperature(),
@@ -229,20 +279,34 @@ async def _llm_tailor_structured(parsed: ParsedResume, jd: str, api_key: str) ->
         response_format={"type": "json_object"},
         messages=[
             {"role": "system", "content": STRUCTURED_SYSTEM},
-            {
-                "role": "user",
-                "content": (
-                    "TARGET JOB — rewrite aggressively for THIS posting only.\n"
-                    "- Experience: NEW prose for every bullet (no copy-paste from SOURCE_SECTIONS_JSON); "
-                    "same facts and tech, completely different sentences tied to the job.\n"
-                    "- Skills: categories and ordering optimized for this JD; reorder tools within each line so "
-                    "job-relevant skills lead.\n\n"
-                    "JOB DESCRIPTION:\n"
-                    + jd.strip()
-                    + "\n\nSOURCE_SECTIONS_JSON:\n"
-                    + json.dumps(payload, ensure_ascii=False)
-                ),
-            },
+            {"role": "user", "content": user_intro},
+        ],
+    )
+    raw = completion.choices[0].message.content or "{}"
+    data = _parse_json_object(raw)
+    tailored = TailoredSections(
+        professional_summary=str(data.get("professional_summary", "")).strip(),
+        professional_experience=str(data.get("professional_experience", "")).strip(),
+        skills=_skills_as_categorized_lines(str(data.get("skills", ""))),
+    )
+    if _tailor_volume_ok(parsed, tailored):
+        return tailored
+
+    retry_msg = (
+        user_intro
+        + "\n\nYour previous JSON was too short or omitted source material. "
+        "Return a FULL rewrite: every employer/role from professional_experience, "
+        f"at least {max(4, stats['experience_bullets'])} total bullets when the source supports it, "
+        "and every skill/tool from source skills reorganized for the job."
+    )
+    completion = await client.chat.completions.create(
+        model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+        temperature=min(_tailor_temperature() + 0.05, 0.65),
+        max_tokens=_tailor_max_tokens(),
+        response_format={"type": "json_object"},
+        messages=[
+            {"role": "system", "content": STRUCTURED_SYSTEM},
+            {"role": "user", "content": retry_msg},
         ],
     )
     raw = completion.choices[0].message.content or "{}"

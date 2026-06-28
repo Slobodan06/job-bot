@@ -35,6 +35,7 @@ from app.services.pdf_resume import (
     MODERN_MARGIN_TOP,
     build_tailored_resume_pdf,
     format_contact_header_markup,
+    parse_contact_header,
     _section_body_markup,
 )
 from app.services.pdf_text_util import sanitize_for_pdf
@@ -148,6 +149,113 @@ def _para_markup(text: str) -> str:
     t = re.sub(r"\n[ \t]*\n[ \t]*\n+", "\n\n", t)
     t = escape(t)
     return re.sub(r"\r\n|\r|\n", "<br/>", t)
+
+
+def _contact_styles(
+    body_f: str,
+    head_f: str,
+    *,
+    name_size: int = 16,
+    name_color: colors.Color | None = None,
+    detail_color: colors.Color | None = None,
+    headline_color: colors.Color | None = None,
+    alignment: int = TA_LEFT,
+) -> tuple[ParagraphStyle, ParagraphStyle, ParagraphStyle]:
+    ink = name_color or colors.HexColor("#0f172a")
+    muted = detail_color or colors.HexColor("#64748b")
+    headline = headline_color or colors.HexColor("#475569")
+    name_st = ParagraphStyle(
+        "ContactName",
+        fontName=head_f,
+        fontSize=name_size,
+        leading=name_size + 3,
+        textColor=ink,
+        alignment=alignment,
+        spaceAfter=2,
+    )
+    headline_st = ParagraphStyle(
+        "ContactHeadline",
+        fontName=body_f,
+        fontSize=10,
+        leading=13,
+        textColor=headline,
+        alignment=alignment,
+        spaceAfter=2,
+    )
+    detail_st = ParagraphStyle(
+        "ContactDetail",
+        fontName=body_f,
+        fontSize=9,
+        leading=12,
+        textColor=muted,
+        alignment=alignment,
+        spaceAfter=4,
+    )
+    return name_st, headline_st, detail_st
+
+
+def _append_contact_block(
+    story: list,
+    contact: str,
+    *,
+    body_f: str,
+    head_f: str,
+    name_size: int = 16,
+    name_color: colors.Color | None = None,
+    detail_color: colors.Color | None = None,
+    headline_color: colors.Color | None = None,
+    alignment: int = TA_LEFT,
+    trailing_spacer: float = 10,
+) -> None:
+    if not sanitize_for_pdf(contact or "").strip():
+        return
+    name_st, headline_st, detail_st = _contact_styles(
+        body_f,
+        head_f,
+        name_size=name_size,
+        name_color=name_color,
+        detail_color=detail_color,
+        headline_color=headline_color,
+        alignment=alignment,
+    )
+    name, headline, details = parse_contact_header(contact)
+    if name:
+        story.append(Paragraph(f"<b>{escape(name)}</b>", name_st))
+    if headline:
+        story.append(Paragraph(escape(headline), headline_st))
+    if details:
+        story.append(Paragraph(escape(" · ".join(details)), detail_st))
+    if trailing_spacer:
+        story.append(Spacer(1, trailing_spacer))
+
+
+def _contact_markup_for_table(
+    contact: str,
+    *,
+    name_size: int = 12,
+    name_color: str | None = None,
+    headline_color: str = "#475569",
+    detail_color: str = "#64748b",
+) -> str:
+    return format_contact_header_markup(
+        contact,
+        name_size=name_size,
+        name_color=name_color,
+        headline_color=headline_color,
+        detail_color=detail_color,
+    )
+
+
+def _contact_centered_markup(contact: str) -> str:
+    name, headline, details = parse_contact_header(contact)
+    parts: list[str] = []
+    if name:
+        parts.append(f"<b>{escape(name)}</b>")
+    if headline:
+        parts.append(escape(headline))
+    if details:
+        parts.append(escape(" · ".join(details)))
+    return "<br/>".join(parts)
 
 
 def _section_content_markup(title: str, content: str) -> str:
@@ -294,14 +402,19 @@ def build_two_column(
     education: str,
     other: str,
 ) -> bytes:
-    _, head_f, body, body_sm, heading = _styles()
+    body_f, head_f, body, body_sm, heading = _styles()
     left_flowables: list = [
         Paragraph("<b><font color='#0f172a'>PROFILE &amp; SKILLS</font></b>", body_sm),
         Spacer(1, 6),
     ]
-    if contact.strip():
-        left_flowables.append(Paragraph(_para_markup(contact), body_sm))
-        left_flowables.append(Spacer(1, 10))
+    _append_contact_block(
+        left_flowables,
+        contact,
+        body_f=body_f,
+        head_f=head_f,
+        name_size=10,
+        trailing_spacer=10,
+    )
     left_flowables.append(
         Paragraph(
             f"<b><font color='#0f172a'>SKILLS</font></b><br/>{_para_markup(skills) if skills.strip() else '—'}",
@@ -365,7 +478,7 @@ def build_bordered_cards(
     education: str,
     other: str,
 ) -> bytes:
-    _, head_f, body, body_sm, heading = _styles()
+    body_f, head_f, body, body_sm, heading = _styles()
     buf = BytesIO()
     doc = SimpleDocTemplate(
         buf,
@@ -380,8 +493,8 @@ def build_bordered_cards(
         story.append(
             Table(
                 [[Paragraph(
-                    format_contact_header_markup(contact, name_size=12),
-                    ParagraphStyle("c", parent=body, alignment=TA_CENTER, fontName=head_f, fontSize=12, leading=15),
+                    _contact_centered_markup(contact),
+                    ParagraphStyle("c", parent=body, alignment=TA_CENTER, fontName=body_f, fontSize=12, leading=15),
                 )]],
                 colWidths=[6.5 * inch],
             )
@@ -440,7 +553,7 @@ def build_timeline_accent(
     education: str,
     other: str,
 ) -> bytes:
-    _, head_f, body, body_sm, heading = _styles()
+    body_f, head_f, body, body_sm, heading = _styles()
     buf = BytesIO()
     doc = SimpleDocTemplate(
         buf,
@@ -452,9 +565,8 @@ def build_timeline_accent(
     )
     accent = colors.HexColor("#0d9488")
     story: list = []
-    if contact.strip():
-        story.append(Paragraph(_para_markup(contact), ParagraphStyle("topc", parent=body, fontName=head_f, fontSize=13, leading=18)))
-        story.append(Spacer(1, 8))
+    _append_contact_block(story, contact, body_f=body_f, head_f=head_f, name_size=13, trailing_spacer=8)
+    if sanitize_for_pdf(contact or "").strip():
         story.append(Table([[""]], colWidths=[6.2 * inch], rowHeights=[2]))
         story[-1].setStyle(TableStyle([("LINEABOVE", (0, 0), (-1, -1), 3, accent)]))
         story.append(Spacer(1, 16))
@@ -502,7 +614,7 @@ def build_dense_modern(
     education: str,
     other: str,
 ) -> bytes:
-    _, head_f, body, body_sm, heading = _styles()
+    body_f, head_f, body, body_sm, heading = _styles()
     buf = BytesIO()
     doc = SimpleDocTemplate(
         buf,
@@ -515,9 +627,7 @@ def build_dense_modern(
     h2 = ParagraphStyle("d2", parent=heading, fontSize=9, spaceBefore=8, spaceAfter=4, textColor=colors.HexColor("#64748b"), fontName=head_f)
     b2 = ParagraphStyle("db2", parent=body_sm, fontSize=9, leading=12.5, alignment=TA_JUSTIFY)
     story: list = []
-    if contact.strip():
-        story.append(Paragraph(_para_markup(contact), ParagraphStyle("dn", parent=body, fontName=head_f, fontSize=11, leading=15)))
-        story.append(Spacer(1, 6))
+    _append_contact_block(story, contact, body_f=body_f, head_f=head_f, name_size=11, trailing_spacer=6)
     for title, content in (
         ("SUMMARY", professional_summary),
         ("EXPERIENCE", professional_experience),
@@ -551,7 +661,7 @@ def build_minimal_serif(
     education: str,
     other: str,
 ) -> bytes:
-    _, head_f, body, body_sm, heading = _styles()
+    body_f, head_f, body, body_sm, heading = _styles()
     buf = BytesIO()
     doc = SimpleDocTemplate(
         buf,
@@ -562,14 +672,16 @@ def build_minimal_serif(
         bottomMargin=MODERN_MARGIN_BOTTOM,
     )
     story: list = []
-    if contact.strip():
-        story.append(
-            Paragraph(
-                _para_markup(contact),
-                ParagraphStyle("msName", parent=body, fontName=head_f, fontSize=16, leading=20, alignment=TA_CENTER),
-            )
-        )
-        story.append(Spacer(1, 6))
+    _append_contact_block(
+        story,
+        contact,
+        body_f=body_f,
+        head_f=head_f,
+        name_size=16,
+        alignment=TA_CENTER,
+        trailing_spacer=6,
+    )
+    if sanitize_for_pdf(contact or "").strip():
         story.append(Table([[""]], colWidths=[5.8 * inch], rowHeights=[1]))
         story[-1].setStyle(TableStyle([("LINEBELOW", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1"))]))
         story.append(Spacer(1, 18))
@@ -597,7 +709,7 @@ def build_corporate_blue(
     education: str,
     other: str,
 ) -> bytes:
-    _, head_f, body, body_sm, heading = _styles()
+    body_f, head_f, body, body_sm, heading = _styles()
     buf = BytesIO()
     doc = SimpleDocTemplate(
         buf,
@@ -609,9 +721,7 @@ def build_corporate_blue(
     )
     blue = colors.HexColor("#1d4ed8")
     story: list = []
-    if contact.strip():
-        story.append(Paragraph(_para_markup(contact), ParagraphStyle("cbC", parent=body, fontName=head_f, fontSize=13)))
-        story.append(Spacer(1, 8))
+    _append_contact_block(story, contact, body_f=body_f, head_f=head_f, name_size=13, trailing_spacer=8)
     story.append(Table([[""]], colWidths=[6.5 * inch], rowHeights=[3]))
     story[-1].setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), blue)]))
     story.append(Spacer(1, 14))
@@ -639,7 +749,7 @@ def build_warm_accent(
     education: str,
     other: str,
 ) -> bytes:
-    _, head_f, body, body_sm, heading = _styles()
+    body_f, head_f, body, body_sm, heading = _styles()
     buf = BytesIO()
     doc = SimpleDocTemplate(
         buf,
@@ -651,9 +761,7 @@ def build_warm_accent(
     )
     accent = colors.HexColor("#c2410c")
     story: list = []
-    if contact.strip():
-        story.append(Paragraph(_para_markup(contact), ParagraphStyle("waC", parent=body, fontName=head_f, fontSize=12)))
-        story.append(Spacer(1, 12))
+    _append_contact_block(story, contact, body_f=body_f, head_f=head_f, name_size=12, trailing_spacer=12)
     wa_h = ParagraphStyle("waH", parent=heading, textColor=accent, fontSize=10, fontName=head_f)
     for title, content in (
         ("PROFILE", professional_summary),
@@ -700,7 +808,7 @@ def build_classic_tinted(
     education: str,
     other: str,
 ) -> bytes:
-    _, head_f, body, body_sm, heading = _styles()
+    body_f, head_f, body, body_sm, heading = _styles()
     accent = colors.HexColor(accent_hex)
     h = ParagraphStyle("clH", parent=heading, textColor=accent, fontSize=11, fontName=head_f)
     buf = BytesIO()
@@ -713,9 +821,7 @@ def build_classic_tinted(
         bottomMargin=MODERN_MARGIN_BOTTOM,
     )
     story: list = []
-    if contact.strip():
-        story.append(Paragraph(_para_markup(contact), ParagraphStyle("clC", parent=body, fontName=head_f, fontSize=12)))
-        story.append(Spacer(1, 14))
+    _append_contact_block(story, contact, body_f=body_f, head_f=head_f, name_size=12, trailing_spacer=14)
     for title, content in (
         ("PROFESSIONAL SUMMARY", professional_summary),
         ("PROFESSIONAL EXPERIENCE", professional_experience),
@@ -753,10 +859,14 @@ def build_executive_colored(
     band = colors.HexColor(band_hex)
     name_st = ParagraphStyle("ExecName", fontName=head_f, fontSize=17, leading=20, textColor=colors.white, alignment=TA_CENTER, spaceAfter=4)
     sub_st = ParagraphStyle("ExecSub", fontName=body_f, fontSize=9, leading=12, textColor=colors.HexColor("#c5dae6"), alignment=TA_CENTER)
-    raw = sanitize_for_pdf(contact).strip().split("\n")
-    name = raw[0] if raw else " "
-    sub = "<br/>".join(escape(x) for x in raw[1:]) if len(raw) > 1 else "&nbsp;"
-    hdr = Table([[Paragraph(escape(name), name_st)], [Paragraph(sub, sub_st)]], colWidths=[6.6 * inch])
+    name, headline, details = parse_contact_header(contact)
+    sub_parts: list[str] = []
+    if headline:
+        sub_parts.append(escape(headline))
+    if details:
+        sub_parts.append(escape(" · ".join(details)))
+    sub = "<br/>".join(sub_parts) if sub_parts else "&nbsp;"
+    hdr = Table([[Paragraph(escape(name or " "), name_st)], [Paragraph(sub, sub_st)]], colWidths=[6.6 * inch])
     hdr.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), band), ("TOPPADDING", (0, 0), (-1, -1), 12), ("BOTTOMPADDING", (0, 0), (-1, -1), 14), ("ALIGN", (0, 0), (-1, -1), "CENTER")]))
     story: list = [hdr, Spacer(1, 10)]
     for block in (
@@ -804,7 +914,7 @@ def _build_navy_colored_impl(
     education: str,
     other: str,
 ) -> bytes:
-    _, head_f, body, body_sm, heading = _styles()
+    body_f, head_f, body, body_sm, heading = _styles()
     navy = colors.HexColor(sidebar_hex)
     side_body = ParagraphStyle(
         "SideB", parent=body_sm, fontName=head_f, textColor=colors.white, fontSize=9, leading=13
@@ -812,13 +922,24 @@ def _build_navy_colored_impl(
     left_flowables: list = [
         Paragraph("<b><font size='12'>CONTACT</font></b>", side_body),
         Spacer(1, 6),
-        Paragraph(_para_markup(contact) if contact.strip() else "—", side_body),
-        Spacer(1, 10),
+    ]
+    _append_contact_block(
+        left_flowables,
+        contact,
+        body_f=body_f,
+        head_f=head_f,
+        name_size=10,
+        name_color=colors.white,
+        detail_color=colors.HexColor("#e2e8f0"),
+        headline_color=colors.HexColor("#cbd5e1"),
+        trailing_spacer=10,
+    )
+    left_flowables.append(
         Paragraph(
             f"<b><font size='12'>SKILLS</font></b><br/><br/>{_para_markup(skills) if skills.strip() else '—'}",
             side_body,
-        ),
-    ]
+        )
+    )
     if education.strip():
         left_flowables.extend(
             [
@@ -859,14 +980,19 @@ def build_two_column_tinted(
     education: str,
     other: str,
 ) -> bytes:
-    _, head_f, body, body_sm, heading = _styles()
+    body_f, head_f, body, body_sm, heading = _styles()
     left_flowables: list = [
         Paragraph("<b><font color='#0f172a'>PROFILE &amp; SKILLS</font></b>", body_sm),
         Spacer(1, 6),
     ]
-    if contact.strip():
-        left_flowables.append(Paragraph(_para_markup(contact), body_sm))
-        left_flowables.append(Spacer(1, 10))
+    _append_contact_block(
+        left_flowables,
+        contact,
+        body_f=body_f,
+        head_f=head_f,
+        name_size=10,
+        trailing_spacer=10,
+    )
     left_flowables.append(
         Paragraph(
             f"<b><font color='#0f172a'>SKILLS</font></b><br/>{_para_markup(skills) if skills.strip() else '—'}",
@@ -911,7 +1037,7 @@ def build_timeline_colored(
     education: str,
     other: str,
 ) -> bytes:
-    _, head_f, body, body_sm, heading = _styles()
+    body_f, head_f, body, body_sm, heading = _styles()
     buf = BytesIO()
     doc = SimpleDocTemplate(
         buf,
@@ -923,9 +1049,8 @@ def build_timeline_colored(
     )
     accent = colors.HexColor(accent_hex)
     story: list = []
-    if contact.strip():
-        story.append(Paragraph(_para_markup(contact), ParagraphStyle("topc", parent=body, fontName=head_f, fontSize=13, leading=18)))
-        story.append(Spacer(1, 8))
+    _append_contact_block(story, contact, body_f=body_f, head_f=head_f, name_size=13, trailing_spacer=8)
+    if sanitize_for_pdf(contact or "").strip():
         story.append(Table([[""]], colWidths=[6.2 * inch], rowHeights=[2]))
         story[-1].setStyle(TableStyle([("LINEABOVE", (0, 0), (-1, -1), 3, accent)]))
         story.append(Spacer(1, 16))
@@ -960,7 +1085,7 @@ def build_bordered_tinted(
     education: str,
     other: str,
 ) -> bytes:
-    _, head_f, body, body_sm, heading = _styles()
+    body_f, head_f, body, body_sm, heading = _styles()
     accent = colors.HexColor(accent_hex)
     buf = BytesIO()
     doc = SimpleDocTemplate(
@@ -973,7 +1098,15 @@ def build_bordered_tinted(
     )
     story: list = []
     if contact.strip():
-        story.append(Table([[Paragraph(_para_markup(contact), ParagraphStyle("c", parent=body, alignment=TA_CENTER, fontName=head_f, fontSize=12))]], colWidths=[6.5 * inch]))
+        story.append(
+            Table(
+                [[Paragraph(
+                    _contact_centered_markup(contact),
+                    ParagraphStyle("c", parent=body, alignment=TA_CENTER, fontName=body_f, fontSize=12, leading=15),
+                )]],
+                colWidths=[6.5 * inch],
+            )
+        )
         story[-1].setStyle(TableStyle([("BOX", (0, 0), (-1, -1), 0.8, accent), ("TOPPADDING", (0, 0), (-1, -1), 12), ("BOTTOMPADDING", (0, 0), (-1, -1), 12)]))
         story.append(Spacer(1, 14))
 
@@ -1022,7 +1155,7 @@ def build_dense_tinted(
     education: str,
     other: str,
 ) -> bytes:
-    _, head_f, body, body_sm, heading = _styles()
+    body_f, head_f, body, body_sm, heading = _styles()
     buf = BytesIO()
     doc = SimpleDocTemplate(
         buf,
@@ -1035,9 +1168,7 @@ def build_dense_tinted(
     h2 = ParagraphStyle("d2", parent=heading, fontSize=9, spaceBefore=8, spaceAfter=4, textColor=colors.HexColor(accent_hex), fontName=head_f)
     b2 = ParagraphStyle("db2", parent=body_sm, fontSize=9, leading=12.5, alignment=TA_JUSTIFY)
     story: list = []
-    if contact.strip():
-        story.append(Paragraph(_para_markup(contact), ParagraphStyle("dn", parent=body, fontName=head_f, fontSize=11, leading=15)))
-        story.append(Spacer(1, 6))
+    _append_contact_block(story, contact, body_f=body_f, head_f=head_f, name_size=11, trailing_spacer=6)
     for title, content in (("SUMMARY", professional_summary), ("EXPERIENCE", professional_experience), ("SKILLS", skills), ("EDUCATION", education), ("OTHER", other)):
         if not (content or "").strip():
             continue
@@ -1066,7 +1197,7 @@ def build_minimal_tinted(
     education: str,
     other: str,
 ) -> bytes:
-    _, head_f, body, body_sm, heading = _styles()
+    body_f, head_f, body, body_sm, heading = _styles()
     buf = BytesIO()
     doc = SimpleDocTemplate(
         buf,
@@ -1077,9 +1208,16 @@ def build_minimal_tinted(
         bottomMargin=MODERN_MARGIN_BOTTOM,
     )
     story: list = []
-    if contact.strip():
-        story.append(Paragraph(_para_markup(contact), ParagraphStyle("msName", parent=body, fontName=head_f, fontSize=16, leading=20, alignment=TA_CENTER)))
-        story.append(Spacer(1, 6))
+    _append_contact_block(
+        story,
+        contact,
+        body_f=body_f,
+        head_f=head_f,
+        name_size=16,
+        alignment=TA_CENTER,
+        trailing_spacer=6,
+    )
+    if sanitize_for_pdf(contact or "").strip():
         story.append(Table([[""]], colWidths=[5.8 * inch], rowHeights=[1]))
         story[-1].setStyle(TableStyle([("LINEBELOW", (0, 0), (-1, -1), 0.5, colors.HexColor(accent_hex))]))
         story.append(Spacer(1, 18))
@@ -1102,7 +1240,7 @@ def build_corporate_colored(
     education: str,
     other: str,
 ) -> bytes:
-    _, head_f, body, body_sm, heading = _styles()
+    body_f, head_f, body, body_sm, heading = _styles()
     blue = colors.HexColor(rule_hex)
     buf = BytesIO()
     doc = SimpleDocTemplate(
@@ -1114,9 +1252,7 @@ def build_corporate_colored(
         bottomMargin=MODERN_MARGIN_BOTTOM,
     )
     story: list = []
-    if contact.strip():
-        story.append(Paragraph(_para_markup(contact), ParagraphStyle("cbC", parent=body, fontName=head_f, fontSize=13)))
-        story.append(Spacer(1, 8))
+    _append_contact_block(story, contact, body_f=body_f, head_f=head_f, name_size=13, trailing_spacer=8)
     story.append(Table([[""]], colWidths=[6.5 * inch], rowHeights=[3]))
     story[-1].setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), blue)]))
     story.append(Spacer(1, 14))
@@ -1139,7 +1275,7 @@ def build_warm_colored(
     education: str,
     other: str,
 ) -> bytes:
-    _, head_f, body, body_sm, heading = _styles()
+    body_f, head_f, body, body_sm, heading = _styles()
     buf = BytesIO()
     doc = SimpleDocTemplate(
         buf,
@@ -1151,9 +1287,7 @@ def build_warm_colored(
     )
     accent = colors.HexColor(accent_hex)
     story: list = []
-    if contact.strip():
-        story.append(Paragraph(_para_markup(contact), ParagraphStyle("waC", parent=body, fontName=head_f, fontSize=12)))
-        story.append(Spacer(1, 12))
+    _append_contact_block(story, contact, body_f=body_f, head_f=head_f, name_size=12, trailing_spacer=12)
     wa_h = ParagraphStyle("waH", parent=heading, textColor=accent, fontSize=10, fontName=head_f)
     border = colors.HexColor("#fed7aa") if accent_hex.startswith("#c") or accent_hex.startswith("#d") else colors.HexColor("#fecaca")
     for title, content in (("PROFILE", professional_summary), ("EXPERIENCE", professional_experience), ("SKILLS", skills), ("EDUCATION", education), ("OTHER", other)):
@@ -1180,19 +1314,17 @@ def build_warm_colored(
 
 def _contact_header(contact: str, body_f: str, head_f: str, accent_hex: str) -> list:
     story: list = []
-    if not sanitize_for_pdf(contact or "").strip():
-        return story
-    name_st = ParagraphStyle(
-        "ModName",
-        fontName=head_f,
-        fontSize=16,
-        leading=19,
-        textColor=colors.HexColor("#0f172a"),
-        spaceAfter=2,
+    _append_contact_block(
+        story,
+        contact,
+        body_f=body_f,
+        head_f=head_f,
+        name_size=16,
+        trailing_spacer=6,
     )
-    story.append(Paragraph(format_contact_header_markup(contact, name_size=16), name_st))
+    if not story:
+        return story
     accent = colors.HexColor(accent_hex)
-    story.append(Spacer(1, 6))
     story.append(Table([[""]], colWidths=[MODERN_CONTENT_WIDTH], rowHeights=[2]))
     story[-1].setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), accent)]))
     story.append(Spacer(1, 10))
@@ -1267,18 +1399,26 @@ def build_modern_split(
     education: str,
     other: str,
 ) -> bytes:
-    _, head_f, body, body_sm, heading = _styles(accent_hex)
+    body_f, head_f, body, body_sm, heading = _styles(accent_hex)
     left_w = 2.25 * inch
     left_flowables: list = [
         Paragraph(f"<b><font color='{accent_hex}'>CONTACT</font></b>", body_sm),
         Spacer(1, 6),
-        Paragraph(_para_markup(contact) if contact.strip() else "—", body_sm),
-        Spacer(1, 10),
+    ]
+    _append_contact_block(
+        left_flowables,
+        contact,
+        body_f=body_f,
+        head_f=head_f,
+        name_size=10,
+        trailing_spacer=10,
+    )
+    left_flowables.append(
         Paragraph(
             f"<b><font color='{accent_hex}'>SKILLS</font></b><br/><br/>{_para_markup(skills) if skills.strip() else '—'}",
             body_sm,
-        ),
-    ]
+        )
+    )
     if education.strip():
         left_flowables.extend(
             [
@@ -1456,13 +1596,8 @@ def build_modern_line(
     story: list = []
     raw = sanitize_for_pdf(contact or "").strip()
     if raw:
-        story.append(
-            Paragraph(
-                format_contact_header_markup(contact, name_size=15),
-                ParagraphStyle("LineName", fontName=head_f, fontSize=15, leading=18, textColor=colors.HexColor("#0f172a")),
-            )
-        )
-        story.append(Spacer(1, 8))
+        _append_contact_block(story, contact, body_f=body_f, head_f=head_f, name_size=15, trailing_spacer=8)
+    if sanitize_for_pdf(contact or "").strip():
         story.append(Table([[""]], colWidths=[MODERN_CONTENT_WIDTH], rowHeights=[0.5]))
         story[-1].setStyle(TableStyle([("LINEBELOW", (0, 0), (-1, -1), 0.5, muted)]))
         story.append(Spacer(1, 10))
