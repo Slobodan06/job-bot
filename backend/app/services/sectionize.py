@@ -71,6 +71,130 @@ _OTHER_TAIL_IN_EDUCATION_RE = re.compile(
     r"^[-•*–—]\s*.*\bcertificat",
     re.I,
 )
+_EDU_DEGREE_RE = re.compile(
+    r"\b(bachelor|master|doctor|ph\.?\s*d|b\.?\s*s|b\.?\s*a|m\.?\s*s|m\.?\s*a|"
+    r"associate|diploma|degree|computer science|licenciatura|grado)\b",
+    re.I,
+)
+_EDU_DATE_RE = re.compile(
+    r"(\d{1,2}/\d{4}|\d{4})\s*[–\-—|/to]+\s*(\d{1,2}/\d{4}|\d{4}|present|current)",
+    re.I,
+)
+_MISPLACED_JOB_TITLE_RE = re.compile(
+    r"\b(developer|engineer|manager|lead|specialist|architect|consultant|analyst|"
+    r"director|coordinator|head|principal|automation)\b",
+    re.I,
+)
+_BULLET_RE = re.compile(r"^[\-\u2022\u25cf\u25cb\u25aa\u25e6*•·]\s*")
+
+
+def _is_misplaced_job_title_line(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped or _EDU_DEGREE_RE.search(stripped) or _EDU_DATE_RE.search(stripped):
+        return False
+    if stripped.endswith(".") or len(stripped) > 100:
+        return False
+    return bool(_MISPLACED_JOB_TITLE_RE.search(stripped))
+
+
+def _is_education_location_line(line: str) -> bool:
+    stripped = line.strip().rstrip(",")
+    if _EDU_DATE_RE.search(stripped) or _EDU_DEGREE_RE.search(stripped):
+        return False
+    if len(stripped) > 48:
+        return False
+    if re.match(r"^[A-Za-zÀ-ÿ0-9\s.'-]+,\s*[A-Za-zÀ-ÿ0-9\s.'-]+$", stripped):
+        return True
+    return bool(re.match(r"^(United States|United State|USA|US|U\.S\.?)$", stripped, re.I))
+
+
+def _orphan_job_insert_indices(lines: list[str], pair_count: int) -> list[int]:
+    """Insert misplaced job headers before the first bullet after each date block (skip the first date)."""
+    if pair_count <= 0:
+        return []
+    date_indices = [i for i, line in enumerate(lines) if _EDU_DATE_RE.search(line.strip())]
+    if len(date_indices) < 2:
+        return []
+    target_dates = date_indices[1 : 1 + pair_count]
+    if len(target_dates) < pair_count:
+        target_dates = date_indices[-pair_count:]
+    insert_points: list[int] = []
+    for date_idx in target_dates[:pair_count]:
+        j = date_idx + 1
+        while j < len(lines):
+            line = lines[j].strip()
+            if _BULLET_RE.match(line):
+                insert_points.append(j)
+                break
+            if _is_misplaced_job_title_line(line):
+                break
+            j += 1
+    return insert_points
+
+
+def _separate_misplaced_jobs_from_education(education: str, experience: str) -> tuple[str, str]:
+    """Two-column PDFs often dump job titles into the education bucket — move them back."""
+    if not education.strip():
+        return education, experience
+    lines = [line.strip() for line in education.splitlines() if line.strip()]
+    degree_idx = next((i for i, line in enumerate(lines) if _EDU_DEGREE_RE.search(line)), None)
+    if degree_idx is None:
+        return education, experience
+
+    prefix = lines[:degree_idx]
+    suffix = lines[degree_idx:]
+    edu_meta: list[str] = []
+    job_lines: list[str] = []
+    i = 0
+    while i < len(prefix):
+        line = prefix[i]
+        if _is_misplaced_job_title_line(line):
+            job_lines.append(line)
+            if (
+                i + 1 < len(prefix)
+                and not _is_misplaced_job_title_line(prefix[i + 1])
+                and not _EDU_DATE_RE.search(prefix[i + 1])
+                and not _EDU_DEGREE_RE.search(prefix[i + 1])
+                and len(prefix[i + 1]) < 90
+                and not prefix[i + 1].endswith(".")
+            ):
+                job_lines.append(prefix[i + 1])
+                i += 2
+            else:
+                i += 1
+        elif line.rstrip().endswith(",") and i + 1 < len(prefix):
+            nxt = prefix[i + 1]
+            if not _is_misplaced_job_title_line(nxt):
+                edu_meta.append(f"{line.rstrip(',')} {nxt}".strip())
+                i += 2
+            else:
+                i += 1
+        elif _EDU_DATE_RE.search(line) or _is_education_location_line(line):
+            edu_meta.append(line)
+            i += 1
+        else:
+            i += 1
+
+    clean_education = "\n".join([*edu_meta, *suffix]).strip()
+    if not job_lines:
+        return clean_education, experience
+
+    pairs: list[list[str]] = []
+    i = 0
+    while i < len(job_lines):
+        if i + 1 < len(job_lines):
+            pairs.append([job_lines[i], job_lines[i + 1]])
+            i += 2
+        else:
+            pairs.append([job_lines[i]])
+            i += 1
+
+    exp_lines = [line for line in experience.splitlines() if line.strip()]
+    insert_points = _orphan_job_insert_indices(exp_lines, len(pairs))
+    for pair, insert_idx in zip(reversed(pairs), reversed(insert_points)):
+        exp_lines.insert(insert_idx, "\n".join(pair))
+    merged_experience = "\n".join(exp_lines).strip()
+    return clean_education, merged_experience
 
 
 def _partition_education_and_other(education: str, other: str) -> tuple[str, str]:
@@ -149,6 +273,7 @@ def parse_resume_sections(text: str) -> ParsedResume:
         contact = ""
 
     education, other = _partition_education_and_other(education, other)
+    education, experience = _separate_misplaced_jobs_from_education(education, experience)
 
     return ParsedResume(
         contact=contact,

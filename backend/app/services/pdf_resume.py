@@ -571,8 +571,18 @@ def _peel_meta_from_line(line: str) -> tuple[str, list[str]]:
 def _render_experience_block(lines: list[str]) -> str:
     if not lines:
         return ""
-    title = lines[0]
     meta: list[str] = []
+    if _BULLET_RE.match(lines[0]):
+        title = "Professional Experience"
+        embedded_meta, skip_lines = _meta_from_bullet_first_block(lines)
+        meta.extend(embedded_meta)
+        body_lines = [line for i, line in enumerate(lines) if i not in skip_lines]
+    else:
+        title = lines[0]
+        body_lines = lines[1:]
+        if body_lines and _looks_like_company_line(body_lines[0]):
+            meta.append(body_lines[0].strip())
+            body_lines = body_lines[1:]
     body: list[str] = []
     bullets: list[str] = []
     current_bullet: str | None = None
@@ -583,12 +593,14 @@ def _render_experience_block(lines: list[str]) -> str:
             bullets.append(current_bullet.strip())
             current_bullet = None
 
-    for line in lines[1:]:
+    for line in body_lines:
         if _is_education_date_line(line):
             flush_bullet()
             meta.append(line.strip())
             continue
         if _looks_like_exp_location(line):
+            if title == line.strip() or (meta and line.strip() in title):
+                continue
             flush_bullet()
             meta.append(line.strip())
             continue
@@ -883,19 +895,134 @@ def format_other_markup(content: str) -> str:
     return _strip_trailing_breaks("".join(parts))
 
 
+def _block_has_date(block: list[str]) -> bool:
+    return any(_is_education_date_line(line) for line in block)
+
+
+def _looks_like_company_line(line: str) -> bool:
+    stripped = line.strip()
+    if (
+        not stripped
+        or _BULLET_RE.match(stripped)
+        or _is_education_date_line(stripped)
+        or _looks_like_job_title_line(stripped)
+        or stripped.endswith(".")
+        or len(stripped) > 90
+    ):
+        return False
+    return True
+
+
+def _infer_title_from_bullet_block(block: list[str]) -> str | None:
+    """Two-column PDFs may omit the role title; do not treat company/location as the title."""
+    return None
+
+
+def _meta_from_bullet_first_block(block: list[str]) -> tuple[list[str], set[int]]:
+    """Collect date and company/location lines embedded inside a bullet-first block."""
+    meta: list[str] = []
+    skip: set[int] = set()
+    for i, line in enumerate(block):
+        if not _is_education_date_line(line):
+            continue
+        meta.append(line.strip())
+        skip.add(i)
+        j = i + 1
+        company_parts: list[str] = []
+        while j < len(block):
+            nxt = block[j].strip()
+            if _BULLET_RE.match(nxt) or _is_education_date_line(nxt) or _looks_like_job_title_line(nxt):
+                break
+            if len(nxt) < 50 and not nxt.endswith("."):
+                company_parts.append(nxt.rstrip(","))
+                skip.add(j)
+                j += 1
+            else:
+                break
+        if company_parts:
+            meta.append(" ".join(company_parts))
+        break
+    return meta, skip
+
+
+def _pop_trailing_date_meta(block: list[str]) -> list[str]:
+    meta: list[str] = []
+    while block and (_is_education_date_line(block[-1]) or _looks_like_exp_location(block[-1])):
+        meta.insert(0, block.pop())
+    return meta
+
+
+def _insert_date_meta_after_company(block: list[str], meta: list[str]) -> None:
+    insert_at = 1
+    if len(block) > 1 and _looks_like_company_line(block[1]):
+        insert_at = 2
+    for offset, line in enumerate(meta):
+        block.insert(insert_at + offset, line)
+
+
+def _rebalance_experience_date_groups(blocks: list[list[str]]) -> list[list[str]]:
+    """Reassign trailing date meta when a two-column PDF leaves one role without dates."""
+    blocks = [list(block) for block in blocks]
+    titled = [i for i, block in enumerate(blocks) if block and _looks_like_job_title_line(block[0])]
+    if len(titled) < 2:
+        return blocks
+
+    groups = [_pop_trailing_date_meta(blocks[idx]) for idx in titled]
+    pooled = [group for group in groups if group]
+    if not pooled:
+        return blocks
+
+    if len(pooled) == len(titled):
+        for idx, meta in zip(titled, groups):
+            if meta:
+                _insert_date_meta_after_company(blocks[idx], meta)
+        return blocks
+
+    if len(pooled) == len(titled) - 1:
+        skip_index = 1 if len(titled) == 4 else (len(titled) - 1) // 2
+        pool_iter = iter(pooled)
+        for slot, idx in enumerate(titled):
+            if slot == skip_index:
+                continue
+            meta = next(pool_iter, None)
+            if meta:
+                _insert_date_meta_after_company(blocks[idx], meta)
+        return blocks
+
+    for idx, meta in zip(titled, groups):
+        if meta:
+            _insert_date_meta_after_company(blocks[idx], meta)
+    return blocks
+
+
 def _split_experience_lines(text: str) -> list[list[str]]:
     lines = [line.strip() for line in text.split("\n") if line.strip()]
     blocks: list[list[str]] = []
     current: list[str] = []
-    for line in lines:
-        if _looks_like_job_title_line(line) and current:
-            blocks.append(current)
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if _looks_like_job_title_line(line):
+            if current:
+                blocks.append(current)
             current = [line]
+            if i + 1 < len(lines):
+                nxt = lines[i + 1]
+                if _looks_like_company_line(nxt):
+                    current.append(nxt)
+                    i += 1
+        elif _is_education_date_line(line):
+            if _block_has_date(current):
+                blocks.append(current)
+                current = [line]
+            else:
+                current.append(line)
         else:
             current.append(line)
+        i += 1
     if current:
         blocks.append(current)
-    return blocks
+    return _rebalance_experience_date_groups(blocks)
 
 
 def _section_body_markup(title: str, content: str) -> str:
