@@ -2,7 +2,7 @@ import { Navigate, useLocation } from "react-router-dom";
 import { Center, Loader } from "@mantine/core";
 
 import { useAuth, getPostAuthPath } from "../auth/AuthContext";
-import { userCanBuild, userHasTemplate } from "../auth/api";
+import { userCanBuild } from "../auth/api";
 
 export function GuestRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, loading, user } = useAuth();
@@ -94,10 +94,6 @@ export function BuilderRoute({ children }: { children: React.ReactNode }) {
     return <Navigate to="/pending-access" replace />;
   }
 
-  if (!userHasTemplate(user)) {
-    return <Navigate to="/templates" replace />;
-  }
-
   return children;
 }
 
@@ -117,7 +113,7 @@ export function OwnerRoute({ children }: { children: React.ReactNode }) {
   }
 
   if (user.role !== "owner") {
-    return <Navigate to={userCanBuild(user) ? (userHasTemplate(user) ? "/builder" : "/templates") : "/pending-access"} replace />;
+    return <Navigate to={userCanBuild(user) ? "/builder" : "/pending-access"} replace />;
   }
 
   return children;

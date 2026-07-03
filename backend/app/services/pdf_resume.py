@@ -155,6 +155,35 @@ def _looks_like_contact_detail(line: str) -> bool:
     return False
 
 
+def line_is_factual_contact(line: str) -> bool:
+    """True for email, phone, URL, and similar lines that must not be invented by tailoring."""
+    stripped = _strip_leading_bullet(line)
+    if not stripped:
+        return False
+    if _is_link_label_line(stripped):
+        return True
+    return _looks_like_contact_detail(stripped)
+
+
+def merge_tailored_contact_block(tailored_contact: str, original_contact: str) -> str:
+    """Keep job-targeted name/title lines from AI; preserve source email, phone, and links exactly."""
+    tail_lines = [line.strip() for line in (tailored_contact or "").splitlines() if line.strip()]
+    orig_lines = [line.strip() for line in (original_contact or "").splitlines() if line.strip()]
+    factual = [line for line in orig_lines if line_is_factual_contact(line)]
+    non_factual_tail = [line for line in tail_lines if not line_is_factual_contact(line)]
+    if not non_factual_tail and orig_lines:
+        non_factual_tail = [line for line in orig_lines if not line_is_factual_contact(line)]
+    merged: list[str] = []
+    seen: set[str] = set()
+    for line in non_factual_tail + factual:
+        key = line.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(line)
+    return "\n".join(merged)
+
+
 def _is_link_label_line(line: str) -> bool:
     label = line.strip().lower().rstrip(": ")
     return label in _LINK_LABELS
@@ -411,6 +440,7 @@ def merge_profile_links_into_contact(
     full_text: str,
     *,
     pdf_bytes: bytes | None = None,
+    docx_bytes: bytes | None = None,
 ) -> str:
     """Pull profile URLs from PDF hyperlinks, header/footer text, and the contact block."""
     parsed = parse_contact(contact)
@@ -457,6 +487,18 @@ def merge_profile_links_into_contact(
 
     if pdf_bytes:
         for label, url in _extract_http_links_from_pdf(pdf_bytes):
+            key = url.lower().rstrip("/")
+            if key in known:
+                continue
+            if label == "LinkedIn" and "linkedin.com" not in key:
+                continue
+            known.add(key)
+            extras.append(f"{label}\n{url}")
+
+    if docx_bytes:
+        from app.services.docx_resume import extract_http_links_from_docx
+
+        for label, url in extract_http_links_from_docx(docx_bytes):
             key = url.lower().rstrip("/")
             if key in known:
                 continue
@@ -1023,6 +1065,99 @@ def _split_experience_lines(text: str) -> list[list[str]]:
     if current:
         blocks.append(current)
     return _rebalance_experience_date_groups(blocks)
+
+
+def split_experience_line_blocks(text: str) -> list[list[str]]:
+    """Public API: group experience plain-text lines into per-role blocks."""
+    return _split_experience_lines(text)
+
+
+_BULLET_LINE_RE = re.compile(r"^[\-•*–—]\s+")
+
+
+def _partition_bullets_for_role_blocks(bullets: list[str], counts: list[int]) -> list[list[str]]:
+    if not counts:
+        return [bullets] if bullets else []
+    out: list[list[str]] = []
+    pos = 0
+    for count in counts:
+        chunk = bullets[pos : pos + count] if count > 0 else []
+        out.append(chunk)
+        pos += max(count, 0)
+    if pos < len(bullets) and out:
+        extras = bullets[pos:]
+        for i, bullet in enumerate(extras):
+            out[i % len(out)].append(bullet)
+    return out
+
+
+def merge_experience_headers_with_bullets(source: str, tailored: str) -> str:
+    """
+    Keep company/title/location/date lines from source; replace only bullet lines
+    with tailored bullets in order.
+    """
+    source = (source or "").strip()
+    tailored = (tailored or "").strip()
+    if not source:
+        return tailored
+    if not tailored:
+        return source
+
+    source_blocks = split_experience_line_blocks(source)
+    tailored_bullets = [
+        line.strip()
+        for line in tailored.splitlines()
+        if line.strip() and _BULLET_LINE_RE.match(line.strip())
+    ]
+    if not tailored_bullets:
+        return source
+
+    bullet_counts = [
+        sum(1 for line in block if _BULLET_LINE_RE.match(line.strip()))
+        for block in source_blocks
+    ]
+    bullets_by_block = _partition_bullets_for_role_blocks(tailored_bullets, bullet_counts)
+
+    out: list[str] = []
+    for block_i, block in enumerate(source_blocks):
+        headers = [line for line in block if not _BULLET_LINE_RE.match(line.strip())]
+        source_bullets = [line for line in block if _BULLET_LINE_RE.match(line.strip())]
+        new_bullets = bullets_by_block[block_i] if block_i < len(bullets_by_block) else []
+        if not new_bullets:
+            new_bullets = source_bullets
+        out.extend(headers)
+        out.extend(new_bullets)
+        if block_i < len(source_blocks) - 1:
+            out.append("")
+    return "\n".join(out).strip()
+
+
+def merge_skills_preserving_labels(source: str, tailored: str) -> str:
+    """One output line per source line; keep category labels from the uploaded resume."""
+    source_lines = [line.strip() for line in (source or "").splitlines() if line.strip()]
+    tailored_lines = [line.strip() for line in (tailored or "").splitlines() if line.strip()]
+    if not source_lines:
+        return "\n".join(tailored_lines)
+    if not tailored_lines:
+        return "\n".join(source_lines)
+
+    merged: list[str] = []
+    for i, src in enumerate(source_lines):
+        if i >= len(tailored_lines):
+            merged.append(src)
+            continue
+        tailored_line = tailored_lines[i]
+        label_match = re.match(r"^([^:]+:)\s*(.*)$", src)
+        if not label_match:
+            merged.append(tailored_line)
+            continue
+        label = label_match.group(1)
+        tailored_match = re.match(r"^([^:]+:)\s*(.*)$", tailored_line)
+        if tailored_match:
+            merged.append(f"{label} {tailored_match.group(2).strip()}".strip())
+        else:
+            merged.append(f"{label} {tailored_line}".strip())
+    return "\n".join(merged)
 
 
 def _section_body_markup(title: str, content: str) -> str:

@@ -9,11 +9,32 @@ from dataclasses import dataclass
 from openai import AsyncOpenAI
 
 from app.schemas import TailorResponse
-from app.services.pdf_inplace import apply_tailored_sections_to_pdf, output_pdf_filename
-from app.services.template_catalog import build_template_pdf, get_template_meta
-from app.services.pdf_text_util import sanitize_for_pdf
-from app.services.pdf_resume import merge_profile_links_into_contact
-from app.services.sectionize import ParsedResume, parse_resume_sections
+from app.services.docx_convert import convert_docx_bytes_to_pdf, pdf_download_filename
+from app.services.docx_resume import (
+    apply_tailored_sections_to_docx,
+    output_docx_filename,
+    parse_resume_from_docx,
+)
+from app.services.pdf_resume import (
+    merge_experience_headers_with_bullets,
+    merge_profile_links_into_contact,
+    merge_skills_preserving_labels,
+    split_experience_line_blocks,
+)
+from app.services.sectionize import ParsedResume
+
+_BULLET_LINE_RE = re.compile(r"^[\-•*–—]\s+")
+_YEARS_OF_EXPERIENCE_RE = re.compile(
+    r"\b(\d+\+\s*(?:years?|yrs?)(?:\s+of\s+(?:professional\s+)?experience)?|"
+    r"\d+\s+years?(?:\s+of\s+(?:professional\s+)?experience)?)\b",
+    re.I,
+)
+_METRIC_SNIPPET_RE = re.compile(
+    r"\d+(?:\.\d+)?\s*(?:%|percent|x\b|X\b|k\+|K\+|m\+|M\+)|"
+    r"(?:reduced|increased|improved|cut|decreased|accelerated|grew|lowered|boosted|saved|"
+    r"delivered|processed|scaled)[^.!?\n]{0,70}\d+",
+    re.I,
+)
 
 def _tailor_max_tokens() -> int:
     raw = os.getenv("OPENAI_TAILOR_MAX_TOKENS", "16384").strip()
@@ -25,11 +46,11 @@ def _tailor_max_tokens() -> int:
 
 
 def _tailor_temperature() -> float:
-    raw = os.getenv("OPENAI_TAILOR_TEMPERATURE", "0.52").strip()
+    raw = os.getenv("OPENAI_TAILOR_TEMPERATURE", "0.62").strip()
     try:
         t = float(raw)
     except ValueError:
-        t = 0.52
+        t = 0.62
     return max(0.0, min(t, 1.5))
 
 
@@ -93,39 +114,255 @@ def extract_keywords(job_description: str, top_k: int = 28) -> list[str]:
 
 @dataclass
 class TailoredSections:
+    contact: str
     professional_summary: str
     professional_experience: str
     skills: str
+    education: str
+    other: str
 
 
-def _source_section_stats(parsed: ParsedResume) -> dict[str, int]:
+def _source_section_stats(parsed: ParsedResume) -> dict[str, int | list[int]]:
     exp = (parsed.professional_experience or "").strip()
     skills = (parsed.skills or "").strip()
     bullets = len(re.findall(r"^[\-•*–—]\s", exp, re.M))
     roles = len(re.findall(r"\n\s*\n", exp)) + (1 if exp else 0)
     skill_lines = len([line for line in skills.splitlines() if line.strip()])
+    per_role = _experience_bullets_per_role(exp)
     return {
         "experience_chars": len(exp),
         "experience_bullets": bullets,
         "experience_roles_est": roles,
+        "experience_bullets_per_role": per_role,
         "skills_chars": len(skills),
         "skills_lines": skill_lines,
     }
+
+
+def _experience_bullets_per_role(experience: str) -> list[int]:
+    blocks = split_experience_line_blocks(experience or "")
+    if not blocks:
+        return []
+    return [
+        sum(1 for line in block if _BULLET_LINE_RE.match(line.strip()))
+        for block in blocks
+    ]
+
+
+def _partition_flat_bullets(bullets: list[str], counts: list[int]) -> list[list[str]]:
+    if not counts:
+        return [bullets] if bullets else []
+    out: list[list[str]] = []
+    pos = 0
+    for count in counts:
+        chunk = bullets[pos : pos + count] if count > 0 else []
+        out.append(chunk)
+        pos += max(count, 0)
+    if pos < len(bullets) and out:
+        for i, bullet in enumerate(bullets[pos:]):
+            out[i % len(out)].append(bullet)
+    return out
+
+
+def _tailored_bullets_per_role(tailored_experience: str, role_counts: list[int]) -> list[int]:
+    bullets = [
+        line.strip()
+        for line in (tailored_experience or "").splitlines()
+        if line.strip() and _BULLET_LINE_RE.match(line.strip())
+    ]
+    return [len(part) for part in _partition_flat_bullets(bullets, role_counts)]
+
+
+def extract_years_of_experience(*texts: str) -> str | None:
+    """Find a years-of-experience phrase from profile, summary, or contact."""
+    for text in texts:
+        if not text:
+            continue
+        match = _YEARS_OF_EXPERIENCE_RE.search(text)
+        if match:
+            return match.group(1).strip()
+    return None
+
+
+def extract_source_metrics(*texts: str, limit: int = 12) -> list[str]:
+    """Collect quantified results from the source resume to reuse in tailored bullets."""
+    seen: set[str] = set()
+    metrics: list[str] = []
+    for text in texts:
+        if not text:
+            continue
+        for match in _METRIC_SNIPPET_RE.finditer(text):
+            snippet = re.sub(r"\s+", " ", match.group(0)).strip(" ,;.")
+            key = snippet.lower()
+            if len(snippet) < 4 or key in seen:
+                continue
+            seen.add(key)
+            metrics.append(snippet)
+            if len(metrics) >= limit:
+                return metrics
+    return metrics
+
+
+def ensure_years_in_summary(summary: str, source_summary: str, contact: str = "") -> str:
+    """Keep the profile's years-of-experience phrase in the tailored summary."""
+    summary = (summary or "").strip()
+    if not summary:
+        return summary
+    years = extract_years_of_experience(source_summary, contact)
+    if not years:
+        return summary
+    if extract_years_of_experience(summary):
+        return summary
+    years_phrase = years if re.search(r"experience|exp", years, re.I) else f"{years} of experience"
+    parts = re.split(r"(?<=[.!?])\s+", summary, maxsplit=1)
+    first = parts[0].rstrip(".")
+    rest = parts[1].strip() if len(parts) > 1 else ""
+    if re.search(r"\b(with|bringing)\b", first, re.I):
+        first = f"{first}, {years_phrase}"
+    else:
+        first = f"{first} with {years_phrase}"
+    return f"{first}. {rest}".strip() if rest else f"{first}."
 
 
 def _tailor_volume_ok(parsed: ParsedResume, tailored: TailoredSections) -> bool:
     stats = _source_section_stats(parsed)
     out_exp = len(tailored.professional_experience.strip())
     out_sk = len(tailored.skills.strip())
-    if stats["experience_chars"] > 600 and out_exp < stats["experience_chars"] * 0.45:
+    out_sum = len(tailored.professional_summary.strip())
+    if stats["experience_chars"] > 600 and out_exp < stats["experience_chars"] * 0.35:
         return False
-    if stats["experience_bullets"] >= 6:
+    if stats["experience_bullets"] >= 4:
         out_bullets = len(re.findall(r"^[\-•*–—]\s", tailored.professional_experience, re.M))
-        if out_bullets < max(4, int(stats["experience_bullets"] * 0.55)):
+        if out_bullets < max(4, int(stats["experience_bullets"] * 0.65)):
             return False
-    if stats["skills_chars"] > 80 and out_sk < stats["skills_chars"] * 0.4:
+    if stats["skills_chars"] > 80 and out_sk < stats["skills_chars"] * 0.55:
+        return False
+    if (parsed.professional_summary or "").strip() and out_sum < max(200, len(parsed.professional_summary.strip()) * 0.55):
         return False
     return True
+
+
+def _meaningful_lines(text: str, *, min_len: int = 24) -> list[str]:
+    lines: list[str] = []
+    for raw in (text or "").replace("\r\n", "\n").split("\n"):
+        stripped = raw.strip()
+        if len(stripped) >= min_len:
+            lines.append(stripped)
+    if lines:
+        return lines
+    for sentence in re.split(r"(?<=[.!?])\s+", (text or "").strip()):
+        s = sentence.strip()
+        if len(s) >= min_len:
+            lines.append(s)
+    return lines
+
+
+def _verbatim_line_overlap(source: str, tailored: str) -> float:
+    src_lines = [line.lower() for line in _meaningful_lines(source)]
+    if not src_lines:
+        return 0.0
+    tailored_lower = (tailored or "").lower()
+    hits = sum(1 for line in src_lines if line in tailored_lower)
+    return hits / len(src_lines)
+
+
+def _bullet_bodies(text: str) -> list[str]:
+    bodies: list[str] = []
+    for raw in (text or "").replace("\r\n", "\n").split("\n"):
+        stripped = raw.strip()
+        if not stripped:
+            continue
+        if re.match(r"^[\-•*–—]\s+", stripped):
+            body = re.sub(r"^[\-•*–—]\s+", "", stripped).strip().lower()
+            if len(body) >= 20:
+                bodies.append(body)
+    return bodies
+
+
+def _bullet_verbatim_overlap(source: str, tailored: str) -> float:
+    src = _bullet_bodies(source)
+    if not src:
+        return 0.0
+    tail = set(_bullet_bodies(tailored))
+    if not tail:
+        return 1.0
+    hits = sum(1 for body in src if body in tail)
+    return hits / len(src)
+
+
+def _bullets_with_metrics(text: str) -> int:
+    count = 0
+    for body in _bullet_bodies(text):
+        if _METRIC_SNIPPET_RE.search(body):
+            count += 1
+    return count
+
+
+def _tailor_metrics_ok(parsed: ParsedResume, tailored: TailoredSections) -> bool:
+    src_metrics = len(extract_source_metrics(parsed.professional_experience, parsed.professional_summary))
+    if src_metrics == 0:
+        return _bullets_with_metrics(tailored.professional_experience) >= 2
+    src_bullets = max(1, len(_bullet_bodies(parsed.professional_experience)))
+    out_metrics = _bullets_with_metrics(tailored.professional_experience)
+    min_required = max(2, min(src_metrics, int(src_bullets * 0.35)))
+    return out_metrics >= min_required
+
+
+def _tailor_rewrite_aggressive_enough(parsed: ParsedResume, tailored: TailoredSections) -> bool:
+    """Reject light edits — editable sections must be substantially rewritten for the JD."""
+    if _verbatim_line_overlap(parsed.professional_summary, tailored.professional_summary) > 0.15:
+        return False
+    if _bullet_verbatim_overlap(parsed.professional_experience, tailored.professional_experience) > 0.12:
+        return False
+    if _verbatim_line_overlap(parsed.skills, tailored.skills) > 0.25:
+        return False
+    return True
+
+
+def _tailor_quality_ok(parsed: ParsedResume, tailored: TailoredSections) -> bool:
+    return (
+        _tailor_volume_ok(parsed, tailored)
+        and _tailor_rewrite_aggressive_enough(parsed, tailored)
+        and _tailor_metrics_ok(parsed, tailored)
+    )
+
+
+def build_docx_highlight_keywords(
+    job_description: str,
+    parsed: ParsedResume,
+    tailored: TailoredSections,
+) -> list[str]:
+    """Terms to bold in experience bullets only: JD keywords, tech, and source metrics."""
+    terms: list[str] = []
+    seen: set[str] = set()
+
+    def _add(term: str) -> None:
+        cleaned = re.sub(r"\s+", " ", (term or "").strip(" ,;."))
+        if len(cleaned) < 3:
+            return
+        key = cleaned.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        terms.append(cleaned)
+
+    for kw in extract_keywords(job_description, top_k=36):
+        _add(kw)
+
+    for metric in extract_source_metrics(parsed.professional_experience, parsed.professional_summary, limit=16):
+        _add(metric)
+
+    for body in _bullet_bodies(tailored.professional_experience or parsed.professional_experience):
+        for match in re.finditer(
+            r"\b(?:React(?:\.js)?|Angular|Vue(?:\.js)?|Node(?:\.js)?|TypeScript|JavaScript|Python|"
+            r"Java|AWS|Azure|GCP|Docker|Kubernetes|Terraform|CI/CD|PostgreSQL|MongoDB|Redis|"
+            r"GraphQL|REST(?:ful)?|FastAPI|Django|Flask|\.NET|Next(?:\.js)?|OpenAI)\b",
+            body,
+            re.I,
+        ):
+            _add(match.group(0))
+
+    return sorted(terms, key=len, reverse=True)
 
 
 def _skills_as_categorized_lines(text: str) -> str:
@@ -163,13 +400,6 @@ def _offline_tailor_structured(parsed: ParsedResume, jd: str) -> TailoredSection
     exp = (parsed.professional_experience or "").strip()
     if not exp:
         exp = "[Paste your roles and bullets under Professional Experience in the source resume.]"
-    professional_experience = (
-        exp
-        + "\n\n[Expand each role with additional truthful bullets inferred only from lines above; "
-        "mirror posting phrasing where it matches real work — "
-        + kline
-        + "]"
-    )
 
     sk = (parsed.skills or "").strip()
     if sk:
@@ -190,56 +420,68 @@ def _offline_tailor_structured(parsed: ParsedResume, jd: str) -> TailoredSection
         )
 
     return TailoredSections(
+        contact=(parsed.contact or "").strip(),
         professional_summary=professional_summary.strip(),
-        professional_experience=professional_experience.strip(),
+        professional_experience=exp,
         skills=_skills_as_categorized_lines(skills_raw),
+        education=(parsed.education or "").strip(),
+        other=(parsed.other or "").strip(),
     )
 
 
-STRUCTURED_SYSTEM = """You are an ATS-aware resume editor optimizing for ONE target job posting.
-You receive that job description and JSON with resume sections from the candidate's uploaded CV:
-professional_summary, professional_experience, skills (rewrite these three), plus reference_education
-and reference_other (context only — do not output separate keys for those).
+STRUCTURED_SYSTEM = """You are an expert ATS resume strategist. Maximize this candidate's score for the job posting.
+The candidate uploaded a Word resume; you receive source sections as JSON. Facts must stay truthful; wording must be NEW.
 
 Return ONLY a JSON object with exactly these keys (all strings, use \\n for line breaks inside values):
-"professional_summary", "professional_experience", "skills"
+"contact", "professional_summary", "professional_experience", "skills", "education", "other"
 
-Truth and ethics:
-- Preserve factual truth from the candidate's source only: employers, tenure, titles, stacks they actually used. Do NOT invent employers, titles, dates, certifications, metrics, products, or tools never evidenced or strongly implied by the source.
-- If a section is empty, infer concise content consistent with other sections (still no fabrication).
+Editable sections — FULL REWRITE for this job (not light edits):
+- professional_summary (profile)
+- professional_experience (bullet lines only)
+- skills (skill lists only; keep category labels)
 
-Coverage (critical — do not under-generate):
-- **Include EVERY role** listed in source professional_experience. Never drop, merge away, or skip a position.
-- For each role, preserve job title, employer, dates, and location lines from the source (you may rephrase titles slightly but not change facts).
-- **Bullet volume**: when the source role has N bullets, output at least max(4, N) rewritten bullets for that role. When source experience is rich (many bullets), aim for 6–12 bullets per role.
-- **Skills completeness**: every tool, language, framework, and platform explicitly named in source skills MUST appear somewhere in your rebuilt skills lines (reordered and grouped for the job). Add JD-aligned terms only when truthful. Do not shrink a rich skills section.
+Frozen sections — copy verbatim from SOURCE_SECTIONS_JSON:
+- contact, education, other
 
-Job-first targeting (critical):
-- Read the job description before writing. Prioritize vocabulary, domains, outcomes, scale, compliance, stack, user types, and success criteria that the posting emphasizes.
-- **Do NOT copy source bullet wording.** Each "- " bullet must be **fresh sentences** optimized for THIS role while reflecting the same underlying responsibilities and tech.
-- **Forbidden pattern**: reproducing ~70%+ of an original bullet with only a short suffix about the industry or employer. Rewrite the whole bullet so leadership, scope, and impact read differently while staying honest.
-- Vary openings (verbs and structure) across bullets and across roles so positions do not read like copy-paste with employer names swapped.
+ATS optimization (primary goal):
+- Write completely fresh summary sentences and bullets optimized for THIS job description.
+- FORBIDDEN: tweaking a few words, synonym swaps, or keeping source phrasing/sentence structure.
+- REQUIRED: mirror the job description's role title, responsibilities, qualifications, tools, and domain language.
+- Front-load keywords recruiters and ATS systems scan for; use exact JD phrases when the candidate's background supports them.
+- Every bullet: strong action verb + scope + methods/stack + measurable outcome (%, time saved, volume, scale, speed).
+- Reuse quantified results from the source resume when rewriting bullets; do not drop real numbers/percentages.
+- Reorder skills within each category so JD-matched tools appear first; add truthful JD-aligned terms from the candidate's experience.
+
+Experience volume (ATS):
+- Use BULLETS_PER_ROLE in the user message as a baseline per job, not a maximum.
+- Add 2–4 extra "- " bullets per role when the job description supports truthful, metric-rich achievements.
+- Prefer more JD-aligned bullets over keeping the original count; never pad with generic filler.
+
+Truth boundaries:
+- NEVER invent employers, schools, degrees, dates, certifications, or tools not evidenced in the source.
+- You MAY fully rewrite sentences, merge/split bullets, reframe achievements, and emphasize JD-relevant work.
+
+contact:
+- Return source contact EXACTLY unchanged.
 
 professional_summary:
-- 5–8 substantive sentences when the résumé is rich. Tie background explicitly to what the posting asks for (domain, seniority, stack, outcomes).
+- Write 5–8 NEW sentences from scratch for this posting (not a edit of the source summary).
+- Open with fit for THIS role: target title phrasing from the JD, seniority, core stack, domain, and outcomes.
+- If the source profile states years of experience (e.g. "10+ years"), keep that exact figure in the summary opening.
 
 professional_experience:
-- Use "- " bullets only (plain text).
-- For EACH role from the source: job title line, employer line, then dates and location when present (separate lines), then bullets—preserve structure but **rewrite all bullet content for the job**.
-- Each bullet should answer how that work maps to the posting's problems (platform, reliability, UX, APIs, commerce, data, collaboration as relevant)—using **new phrasing**, not appended clichés.
+- Output ONLY accomplishment bullets starting with "- " (one bullet per line).
+- Do NOT include company names, titles, locations, or dates — those stay in the Word file.
+- Cover EVERY role from the source in order; blank line between roles is optional.
+- Rewrite EVERY bullet from scratch for the JD; include metrics (%, counts, latency, throughput) in most bullets.
+- Reuse source metrics when present; only use numbers evidenced in the source — never invent statistics.
 
 skills:
-- **Fully rebuild for the target job** while retaining all verified tools from the source.
-- MUST be categorized lines only (no bullets, no markdown). One category per line:
-  Frontend: …
-  Backend: …
-  Database: …
-  DevOps & cloud: … (when relevant)
-  AI & data: … (when relevant)
-  E-commerce / CMS: … (when relevant)
-  Plus other categories as needed (Mobile, Security, Monitoring, Testing/QA).
-- **Reorder categories** so the **most JD-relevant category appears first** (when sensible). Within each line, list **job-aligned tools and phrases first** when truthful, then other verified skills from the résumé.
-- Aim for **6–14 distinct items per line** where supported; weave JD terminology where accurate.
+- Same number of lines and SAME category labels as source (e.g. "Frontend:", "DevOps & Cloud:").
+- Fully rewrite the comma-separated lists after each label for the JD; reorder to prioritize posting keywords.
+
+education / other:
+- Return source text EXACTLY unchanged.
 
 No markdown fences, no commentary outside JSON."""
 
@@ -255,173 +497,221 @@ def _parse_json_object(raw: str) -> dict:
 async def _llm_tailor_structured(parsed: ParsedResume, jd: str, api_key: str) -> TailoredSections:
     client = AsyncOpenAI(api_key=api_key)
     stats = _source_section_stats(parsed)
+    keywords = extract_keywords(jd, top_k=32)
+    keyword_line = ", ".join(keywords[:24])
+    years = extract_years_of_experience(parsed.professional_summary, parsed.contact)
+    source_metrics = extract_source_metrics(
+        parsed.professional_experience,
+        parsed.professional_summary,
+    )
+    per_role = stats.get("experience_bullets_per_role") or []
+    per_role_text = ", ".join(str(n) for n in per_role) if per_role else str(stats["experience_bullets"])
+    preserve_lines: list[str] = []
+    if years:
+        preserve_lines.append(f'- Years of experience (keep in summary): "{years}"')
+    if source_metrics:
+        preserve_lines.append(
+            "- Source metrics to reuse in rewritten bullets when relevant:\n  "
+            + "\n  ".join(f"• {m}" for m in source_metrics[:10])
+        )
+    preserve_block = "\n".join(preserve_lines) + "\n\n" if preserve_lines else ""
     payload = {
+        "contact": parsed.contact,
         "professional_summary": parsed.professional_summary,
         "professional_experience": parsed.professional_experience,
         "skills": parsed.skills,
-        "reference_education": parsed.education,
-        "reference_other": parsed.other,
+        "education": parsed.education,
+        "other": parsed.other,
     }
     user_intro = (
-        "TARGET JOB — rewrite aggressively for THIS posting only.\n"
-        "- Experience: include EVERY role from source; rewrite every bullet in new words (same facts/tech).\n"
-        "- Skills: keep ALL source tools/skills, reordered for this JD; add JD terms only when truthful.\n"
+        "TARGET JOB — fully rewrite profile/summary, every experience bullet, and all skill lists for ATS match.\n"
+        "- Do NOT lightly edit source sentences. Write new content aligned to the job description.\n"
+        "- Do NOT change contact, education, or other — return those verbatim from source.\n"
+        "- Experience: output ONLY \"- \" bullet lines (no company/title/location/date headers).\n"
+        "- Include measurable results in most bullets (%, speed, scale, cost, time saved) using SOURCE metrics when available.\n"
+        "- Skills: same line count and category labels as source; fully rewrite list text for the JD.\n"
+        f"- BULLETS_PER_ROLE (baseline per job, in order — add more when the JD supports it): {per_role_text}\n"
+        f"- Add extra JD-focused bullets with metrics; exceeding the baseline improves ATS match.\n"
         f"- Source stats: ~{stats['experience_roles_est']} roles, ~{stats['experience_bullets']} bullets, "
-        f"{stats['skills_lines']} skills lines — output must not be shorter than a thorough rewrite of that material.\n\n"
-        "JOB DESCRIPTION:\n"
+        f"{stats['skills_lines']} skills lines.\n"
+        f"- ATS keywords to weave naturally (when truthful): {keyword_line}\n\n"
+        + preserve_block
+        + "JOB DESCRIPTION:\n"
         + jd.strip()
         + "\n\nSOURCE_SECTIONS_JSON:\n"
         + json.dumps(payload, ensure_ascii=False)
     )
-    completion = await client.chat.completions.create(
-        model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
-        temperature=_tailor_temperature(),
-        max_tokens=_tailor_max_tokens(),
-        response_format={"type": "json_object"},
-        messages=[
-            {"role": "system", "content": STRUCTURED_SYSTEM},
-            {"role": "user", "content": user_intro},
-        ],
-    )
-    raw = completion.choices[0].message.content or "{}"
-    data = _parse_json_object(raw)
-    tailored = TailoredSections(
-        professional_summary=str(data.get("professional_summary", "")).strip(),
-        professional_experience=str(data.get("professional_experience", "")).strip(),
-        skills=_skills_as_categorized_lines(str(data.get("skills", ""))),
-    )
-    if _tailor_volume_ok(parsed, tailored):
-        return tailored
+
+    async def _call(user_content: str, temp_boost: float = 0.0) -> TailoredSections:
+        completion = await client.chat.completions.create(
+            model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+            temperature=min(_tailor_temperature() + temp_boost, 0.72),
+            max_tokens=_tailor_max_tokens(),
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": STRUCTURED_SYSTEM},
+                {"role": "user", "content": user_content},
+            ],
+        )
+        raw = completion.choices[0].message.content or "{}"
+        data = _parse_json_object(raw)
+        return TailoredSections(
+            contact=str(data.get("contact", "")).strip(),
+            professional_summary=str(data.get("professional_summary", "")).strip(),
+            professional_experience=str(data.get("professional_experience", "")).strip(),
+            skills=_skills_as_categorized_lines(str(data.get("skills", ""))),
+            education=str(data.get("education", "")).strip(),
+            other=str(data.get("other", "")).strip(),
+        )
+
+    tailored = await _call(user_intro)
+    if _tailor_quality_ok(parsed, tailored):
+        return _ensure_source_sections(parsed, tailored)
 
     retry_msg = (
         user_intro
-        + "\n\nYour previous JSON was too short or omitted source material. "
-        "Return a FULL rewrite: every employer/role from professional_experience, "
-        f"at least {max(4, stats['experience_bullets'])} total bullets when the source supports it, "
-        "and every skill/tool from source skills reorganized for the job."
+        + "\n\nYour previous JSON was too short, too similar to source, lacked metrics, or changed frozen sections. "
+        "FULLY REWRITE summary, skills, and experience bullets in new sentences for this job — "
+        "do not reuse source phrasing. Return contact, education, and other verbatim. "
+        f"Include at least {max(4, stats['experience_bullets'])} total \"- \" bullets; "
+        f"exceed baseline BULLETS_PER_ROLE ({per_role_text}) where the JD supports extra achievements; "
+        f"most bullets need % or numeric results. JD keywords: {keyword_line}."
     )
-    completion = await client.chat.completions.create(
-        model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
-        temperature=min(_tailor_temperature() + 0.05, 0.65),
-        max_tokens=_tailor_max_tokens(),
-        response_format={"type": "json_object"},
-        messages=[
-            {"role": "system", "content": STRUCTURED_SYSTEM},
-            {"role": "user", "content": retry_msg},
-        ],
+    tailored = await _call(retry_msg, temp_boost=0.08)
+    if _tailor_quality_ok(parsed, tailored):
+        return _ensure_source_sections(parsed, tailored)
+
+    retry_msg2 = (
+        retry_msg
+        + "\n\nStill too close to the source resume. Replace every summary sentence and every bullet with "
+        "completely different wording while keeping the same facts, employers, and tools."
     )
-    raw = completion.choices[0].message.content or "{}"
-    data = _parse_json_object(raw)
+    tailored = await _call(retry_msg2, temp_boost=0.12)
+    return _ensure_source_sections(parsed, tailored)
+
+
+def _ensure_source_sections(parsed: ParsedResume, tailored: TailoredSections) -> TailoredSections:
+    """Never drop editable sections the model omitted; keep frozen sections from source."""
     return TailoredSections(
-        professional_summary=str(data.get("professional_summary", "")).strip(),
-        professional_experience=str(data.get("professional_experience", "")).strip(),
-        skills=_skills_as_categorized_lines(str(data.get("skills", ""))),
+        contact=(parsed.contact or "").strip(),
+        professional_summary=tailored.professional_summary.strip() or parsed.professional_summary.strip(),
+        professional_experience=tailored.professional_experience.strip() or parsed.professional_experience.strip(),
+        skills=_skills_as_categorized_lines(tailored.skills or parsed.skills),
+        education=(parsed.education or "").strip(),
+        other=(parsed.other or "").strip(),
     )
 
 
-def _assemble_plain(parsed: ParsedResume, t: TailoredSections) -> str:
+def _assemble_plain(t: TailoredSections) -> str:
     parts: list[str] = []
-    if parsed.contact.strip():
-        parts.append(parsed.contact.strip())
-    parts.append("PROFESSIONAL SUMMARY\n" + t.professional_summary.strip())
-    parts.append("PROFESSIONAL EXPERIENCE\n" + t.professional_experience.strip())
-    parts.append("SKILLS\n" + t.skills.strip())
-    if parsed.education.strip():
-        parts.append("EDUCATION\n" + parsed.education.strip())
-    if parsed.other.strip():
-        parts.append("ADDITIONAL\n" + parsed.other.strip())
+    if t.contact.strip():
+        parts.append(t.contact.strip())
+    if t.professional_summary.strip():
+        parts.append("PROFESSIONAL SUMMARY\n" + t.professional_summary.strip())
+    if t.professional_experience.strip():
+        parts.append("PROFESSIONAL EXPERIENCE\n" + t.professional_experience.strip())
+    if t.skills.strip():
+        parts.append("SKILLS\n" + t.skills.strip())
+    if t.education.strip():
+        parts.append("EDUCATION\n" + t.education.strip())
+    if t.other.strip():
+        parts.append("ADDITIONAL\n" + t.other.strip())
     return "\n\n".join(parts)
+
+
+def _finalize_tailored(parsed: ParsedResume, tailored: TailoredSections) -> TailoredSections:
+    """Merge AI rewrites into experience/skills layout; freeze header, education, other."""
+    exp_merged = merge_experience_headers_with_bullets(
+        parsed.professional_experience,
+        tailored.professional_experience,
+    )
+    skills_merged = merge_skills_preserving_labels(parsed.skills, tailored.skills)
+    summary = ensure_years_in_summary(
+        tailored.professional_summary.strip() or parsed.professional_summary.strip(),
+        parsed.professional_summary,
+        parsed.contact,
+    )
+    return TailoredSections(
+        contact=(parsed.contact or "").strip(),
+        professional_summary=summary,
+        professional_experience=exp_merged.strip() or parsed.professional_experience.strip(),
+        skills=_skills_as_categorized_lines(skills_merged or tailored.skills or parsed.skills),
+        education=(parsed.education or "").strip(),
+        other=(parsed.other or "").strip(),
+    )
 
 
 def _default_tips_llm() -> list[str]:
     return [
-        "Editable resumes work best when they use clear section headings (Summary, Experience, Skills).",
-        "The AI must rewrite bullets in new words for the posting—verify facts and tweak phrasing before you submit.",
-        "Skills lines are prioritized for this job—add or trim tools so every claim is truthful.",
-        "If wording still resembles your upload too closely, shorten the pasted JD to the must-haves or set OPENAI_TAILOR_TEMPERATURE slightly higher (e.g. 0.55).",
-        "Raise OPENAI_TAILOR_MAX_TOKENS if responses truncate.",
+        "Summary, skills, and experience are fully rewritten for the job; bold highlights apply to Experience bullets only.",
+        "Verify employers, schools, dates, and contact details before submitting; AI must not invent credentials.",
+        "If wording still feels too close to your original, retry or raise OPENAI_TAILOR_MAX_TOKENS.",
     ]
 
 
 def _default_tips_offline() -> list[str]:
     return [
-        "Set OPENAI_API_KEY for AI-rewritten sections; offline mode adds keyword alignment notes.",
-        "Use clear section headers (Profile/Summary, Experience, Skills) in your source file for best text splitting.",
-        "Skills use category lines (Frontend:, Backend:, …); review each line before sending applications.",
+        "Set OPENAI_API_KEY for full AI resume rewrites; offline mode adds keyword alignment notes only.",
+        "Use clear section headers in your .docx (Summary, Experience, Skills, Education) for best results.",
+        "Review headline, education, and contact lines before sending applications.",
     ]
 
 
-def _build_pdf_sync(
+def _build_docx_sync(
     *,
-    source_pdf_bytes: bytes | None,
+    source_docx_bytes: bytes,
+    section_header_indices: dict[str, int],
+    section_body_indices: dict[str, list[int]],
+    contact_paragraph_indices: list[int],
+    experience_table_rows: list,
+    source_sections: ParsedResume,
     original_filename: str,
-    parsed: ParsedResume,
     tailored: TailoredSections,
-    template_key: str,
-) -> tuple[str, str, bool, str, str]:
-    """
-    Returns (base64_pdf, download_filename, used_inplace_on_upload, template_key, template_label).
-
-    In-place PDF edits are opt-in (USE_PDF_INPLACE=1): Helvetica-based viewers often
-    showed '?' for bullets/dashes; FiraGO is used when enabled, but the default is a
-    fresh Unicode-safe PDF (ReportLab + FiraGO) using the member's chosen layout.
-    """
-    download_name = output_pdf_filename(original_filename)
-    pdf_tailored = TailoredSections(
-        sanitize_for_pdf(tailored.professional_summary),
-        sanitize_for_pdf(tailored.professional_experience),
-        sanitize_for_pdf(tailored.skills),
+    highlight_keywords: list[str] | None = None,
+) -> tuple[str, str, bool]:
+    """Returns (base64_docx, download_filename, used_inplace_on_upload)."""
+    download_name = output_docx_filename(original_filename)
+    inplace = apply_tailored_sections_to_docx(
+        source_docx_bytes,
+        contact=tailored.contact,
+        professional_summary=tailored.professional_summary,
+        professional_experience=tailored.professional_experience,
+        skills=tailored.skills,
+        education=tailored.education,
+        other=tailored.other,
+        section_header_indices=section_header_indices,
+        section_body_indices=section_body_indices,
+        contact_paragraph_indices=contact_paragraph_indices,
+        experience_table_rows=experience_table_rows,
+        highlight_keywords=highlight_keywords,
+        source_sections=source_sections,
+        original_filename=original_filename,
     )
-    use_inplace = os.getenv("USE_PDF_INPLACE", "").strip().lower() in ("1", "true", "yes")
-    if use_inplace and source_pdf_bytes:
-        inplace = apply_tailored_sections_to_pdf(
-            source_pdf_bytes,
-            professional_summary=pdf_tailored.professional_summary,
-            professional_experience=pdf_tailored.professional_experience,
-            skills=pdf_tailored.skills,
-            parsed=parsed,
-            original_filename=original_filename,
-        )
-        if inplace is not None:
-            data, name = inplace
-            return (
-                base64.b64encode(data).decode("ascii"),
-                name,
-                True,
-                "inplace",
-                "Original PDF (in-place edits)",
-            )
-    pdf_bytes, tmpl_key, tmpl_label = build_template_pdf(
-        template_key,
-        contact=sanitize_for_pdf(
-            merge_profile_links_into_contact(
-                parsed.contact,
-                "",
-                pdf_bytes=source_pdf_bytes,
-            )
-        ),
-        professional_summary=pdf_tailored.professional_summary,
-        professional_experience=pdf_tailored.professional_experience,
-        skills=pdf_tailored.skills,
-        education=sanitize_for_pdf(parsed.education),
-        other=sanitize_for_pdf(parsed.other),
-    )
-    return base64.b64encode(pdf_bytes).decode("ascii"), download_name, False, tmpl_key, tmpl_label
+    if inplace is not None:
+        data, name = inplace
+        return base64.b64encode(data).decode("ascii"), name, True
+    return "", download_name, False
 
 
 async def tailor_resume(
     resume_text: str,
     job_description: str,
     *,
-    source_pdf_bytes: bytes | None = None,
-    original_filename: str = "resume.pdf",
-    template_key: str = "",
+    source_docx_bytes: bytes,
+    original_filename: str = "resume.docx",
 ) -> TailorResponse:
-    parsed = parse_resume_sections(resume_text)
+    docx_doc = parse_resume_from_docx(source_docx_bytes)
+    parsed = docx_doc.parsed
+    resume_text = docx_doc.plain_text
+    docx_section_header_indices = docx_doc.section_header_indices
+    docx_section_body_indices = docx_doc.section_body_indices
+    contact_paragraph_indices = docx_doc.contact_paragraph_indices
+    experience_table_rows = docx_doc.experience_table_rows
+
     enriched_contact = merge_profile_links_into_contact(
         parsed.contact,
         resume_text,
-        pdf_bytes=source_pdf_bytes,
+        docx_bytes=source_docx_bytes,
     )
     parsed = ParsedResume(
         contact=enriched_contact,
@@ -443,6 +733,7 @@ async def tailor_resume(
                 tailored.professional_summary.strip()
                 or tailored.professional_experience.strip()
                 or tailored.skills.strip()
+                or tailored.contact.strip()
             ):
                 raise ValueError("empty structured sections")
             used_llm = True
@@ -455,51 +746,74 @@ async def tailor_resume(
         tailored = _offline_tailor_structured(parsed, job_description)
         tips = _default_tips_offline()
 
-    tailored = TailoredSections(
-        professional_summary=tailored.professional_summary,
-        professional_experience=tailored.professional_experience,
-        skills=_skills_as_categorized_lines(tailored.skills),
-    )
-    full_text = _assemble_plain(parsed, tailored)
+    tailored = _finalize_tailored(parsed, tailored)
+    highlight_keywords = build_docx_highlight_keywords(job_description, parsed, tailored)
+    full_text = _assemble_plain(tailored)
 
+    docx_b64 = ""
+    docx_download_name = output_docx_filename(original_filename)
     pdf_b64 = ""
-    download_name = output_pdf_filename(original_filename)
-    pdf_template_key = template_key
-    pdf_template_label = ""
-    if template_key:
-        try:
-            pdf_template_label = get_template_meta(template_key)["label"]
-        except KeyError:
-            pdf_template_label = template_key
+    pdf_download_name = pdf_download_filename(docx_download_name)
+    used_docx_inplace = False
 
-    if template_key:
+    if docx_section_header_indices or contact_paragraph_indices or experience_table_rows:
         try:
-            pdf_b64, download_name, used_inplace, pdf_template_key, pdf_template_label = await asyncio.to_thread(
-                _build_pdf_sync,
-                source_pdf_bytes=source_pdf_bytes,
+            docx_b64, docx_download_name, used_docx_inplace = await asyncio.to_thread(
+                _build_docx_sync,
+                source_docx_bytes=source_docx_bytes,
+                section_header_indices=docx_section_header_indices,
+                section_body_indices=docx_section_body_indices,
+                contact_paragraph_indices=contact_paragraph_indices,
+                experience_table_rows=experience_table_rows,
+                source_sections=parsed,
                 original_filename=original_filename,
-                parsed=parsed,
                 tailored=tailored,
-                template_key=template_key,
+                highlight_keywords=highlight_keywords,
             )
-            if not used_inplace and source_pdf_bytes:
+            if used_docx_inplace and docx_b64:
+                pdf_result = await asyncio.to_thread(
+                    convert_docx_bytes_to_pdf,
+                    base64.b64decode(docx_b64),
+                    original_filename=docx_download_name,
+                )
+                if pdf_result is not None:
+                    pdf_bytes, pdf_download_name = pdf_result
+                    pdf_b64 = base64.b64encode(pdf_bytes).decode("ascii")
+                    tips = [
+                        *tips,
+                        "A PDF version of your tailored resume is ready to download.",
+                    ]
+            if used_docx_inplace:
                 tips = [
                     *tips,
-                    "Your tailored CV was exported using your chosen template layout.",
+                    "Your Word file keeps original formatting; JD keywords and metrics are bolded in Experience only.",
+                ]
+            else:
+                tips = [
+                    *tips,
+                    "Could not map every section in your .docx. Use clear headers (Summary, Experience, Skills, Education) or copy sections below.",
                 ]
         except Exception:
-            tips = [*tips, "PDF export failed; tailored text sections are still available below. Retry or contact support."]
+            tips = [*tips, "Word export failed; tailored text sections are still available below."]
+        if docx_b64 and not pdf_b64:
+            tips = [
+                *tips,
+                "PDF export needs Microsoft Word (docx2pdf) or LibreOffice installed on the server.",
+            ]
 
     return TailorResponse(
         tailored_resume=full_text,
+        tailored_contact=tailored.contact,
         tailored_summary=tailored.professional_summary,
         tailored_experience=tailored.professional_experience,
         tailored_skills=tailored.skills,
+        tailored_education=tailored.education,
+        tailored_other=tailored.other,
+        docx_base64=docx_b64,
+        download_filename=docx_download_name,
         pdf_base64=pdf_b64,
-        download_filename=download_name,
+        pdf_download_filename=pdf_download_name,
         keywords_highlighted=keywords,
         ats_tips=tips,
         used_llm=used_llm,
-        pdf_template_key=pdf_template_key,
-        pdf_template_label=pdf_template_label,
     )

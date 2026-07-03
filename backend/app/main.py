@@ -88,29 +88,27 @@ async def tailor(
     raw = await resume.read()
     if not raw:
         raise HTTPException(status_code=400, detail="Resume file is empty.")
+    name = resume.filename or "resume.docx"
+    lower_name = name.lower()
+    if not lower_name.endswith(".docx"):
+        raise HTTPException(
+            status_code=400,
+            detail="Upload a Word resume (.docx). Your file is used as the layout template.",
+        )
     try:
-        resume_text = extract_text_from_bytes(resume.filename or "resume.pdf", raw)
+        resume_text = extract_text_from_bytes(name, raw)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     if not resume_text.strip():
         raise HTTPException(
             status_code=400,
-            detail="Could not extract text from the resume. Try TXT or a different PDF/DOCX export.",
-        )
-    name = resume.filename or "resume.pdf"
-    pdf_bytes = raw if name.lower().endswith(".pdf") else None
-    template_key = (_user.get("cv_template_key") or "").strip()
-    if not template_key:
-        raise HTTPException(
-            status_code=403,
-            detail="Select a CV template before generating resumes.",
+            detail="Could not extract text from the resume. Use a .docx with clear sections.",
         )
     return await tailor_resume(
         resume_text,
         job_description,
-        source_pdf_bytes=pdf_bytes,
+        source_docx_bytes=raw,
         original_filename=name,
-        template_key=template_key,
     )
 
 

@@ -158,16 +158,19 @@ export const adminApi = {
 
 export type TailorResponse = {
   tailored_resume: string;
+  tailored_contact: string;
   tailored_summary: string;
   tailored_experience: string;
   tailored_skills: string;
-  pdf_base64: string;
+  tailored_education: string;
+  tailored_other: string;
+  docx_base64: string;
   download_filename: string;
+  pdf_base64: string;
+  pdf_download_filename: string;
   keywords_highlighted: string[];
   ats_tips: string[];
   used_llm: boolean;
-  pdf_template_key: string;
-  pdf_template_label: string;
 };
 
 export const tailorApi = {

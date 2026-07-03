@@ -13,7 +13,7 @@ import {
   Title,
   UnstyledButton,
 } from "@mantine/core";
-import { IconChevronDown, IconFileCv, IconLayoutGrid, IconLogout, IconUser, IconUsers } from "@tabler/icons-react";
+import { IconChevronDown, IconFileCv, IconLogout, IconUser, IconUsers } from "@tabler/icons-react";
 import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
 
 import { useAuth } from "../auth/AuthContext";
@@ -129,9 +129,6 @@ export function AppLayout() {
                       <>
                         <Menu.Item leftSection={<IconFileCv size={16} />} component={Link} to="/builder">
                           Resume builder
-                        </Menu.Item>
-                        <Menu.Item leftSection={<IconLayoutGrid size={16} />} component={Link} to="/templates">
-                          CV template{user.cv_template_label ? `: ${user.cv_template_label}` : "s"}
                         </Menu.Item>
                       </>
                     ) : null}

@@ -216,7 +216,7 @@ def _partition_education_and_other(education: str, other: str) -> tuple[str, str
     return edu, "\n\n".join(other_parts)
 
 
-def _match_section_header(line: str, *, in_contact: bool = False) -> str | None:
+def match_section_header(line: str, *, in_contact: bool = False) -> str | None:
     s = line.strip()
     if len(s) > 80:
         return None
@@ -249,7 +249,7 @@ def parse_resume_sections(text: str) -> ParsedResume:
     for line in lines:
         stripped = line.strip()
         if stripped:
-            sec = _match_section_header(stripped, in_contact=(current == "contact"))
+            sec = match_section_header(stripped, in_contact=(current == "contact"))
             if sec:
                 current = sec
                 if sec == "other":

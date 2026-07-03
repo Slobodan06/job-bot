@@ -5,7 +5,6 @@ import {
   getStoredToken,
   setStoredToken,
   userCanBuild,
-  userHasTemplate,
   type AuthResult,
   type User,
 } from "./api";
@@ -120,9 +119,6 @@ export function getPostAuthPath(user: User | null, status?: AuthResult["status"]
   }
   if (status === "pending_access" || (user && user.email_verified && !userCanBuild(user))) {
     return "/pending-access";
-  }
-  if (user && userCanBuild(user) && !userHasTemplate(user)) {
-    return "/templates";
   }
   if (user && userCanBuild(user)) {
     return "/builder";

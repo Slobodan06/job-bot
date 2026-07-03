@@ -3,13 +3,11 @@ import {
   ActionIcon,
   Alert,
   Badge,
-  Box,
   Button,
   Container,
   Divider,
   Group,
   List,
-  Modal,
   Paper,
   rem,
   ScrollArea,
@@ -23,29 +21,24 @@ import {
 } from "@mantine/core";
 import { useDisclosure, useMediaQuery } from "@mantine/hooks";
 import { notifications } from "@mantine/notifications";
-import { Dropzone, MIME_TYPES } from "@mantine/dropzone";
+import { Dropzone } from "@mantine/dropzone";
 import {
   IconAlertCircle,
   IconBriefcase,
   IconCheck,
   IconCopy,
   IconDownload,
-  IconExternalLink,
   IconEye,
   IconFileCv,
-  IconLayoutGrid,
-  IconMaximize,
   IconSparkles,
   IconUpload,
   IconUser,
   IconWriting,
   IconX,
 } from "@tabler/icons-react";
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { tailorApi, type TailorResponse } from "../auth/api";
-import { useAuth } from "../auth/AuthContext";
 
 import {
   parseExperienceCardMeta,
@@ -53,36 +46,40 @@ import {
   splitExperienceBlocks,
   splitSkillsParts,
 } from "../formatResumeSections";
-const UploadedPdfPreview = lazy(() =>
-  import("../UploadedPdfPreview").then((m) => ({ default: m.UploadedPdfPreview })),
-);
 
-const ACCEPT = [
-  MIME_TYPES.pdf,
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  "application/msword",
-  "text/plain",
-  "text/markdown",
-];
+const ACCEPT = ["application/vnd.openxmlformats-officedocument.wordprocessingml.document"];
 
 export default function HomePage() {
-  const { user } = useAuth();
   const [file, setFile] = useState<File | null>(null);
   const [jobDescription, setJobDescription] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<TailorResponse | null>(null);
   const [resultPanelOpen, { open: openResultPanel, toggle: toggleResultPanel }] = useDisclosure(true);
-  const [pdfPreviewOpen, { open: openPdfPreview, close: closePdfPreview }] = useDisclosure(false);
+  const [tailoredDocxUrl, setTailoredDocxUrl] = useState<string | null>(null);
   const [tailoredPdfUrl, setTailoredPdfUrl] = useState<string | null>(null);
-  const [uploadPdfUrl, setUploadPdfUrl] = useState<string | null>(null);
-  const [uploadPlainText, setUploadPlainText] = useState<string | null>(null);
-  const [uploadPlainLoading, setUploadPlainLoading] = useState(false);
   const isNarrow = useMediaQuery("(max-width: 62em)");
 
   useEffect(() => {
-    if (!result) closePdfPreview();
-  }, [result, closePdfPreview]);
+    if (!result?.docx_base64) {
+      setTailoredDocxUrl(null);
+      return;
+    }
+    try {
+      const binary = atob(result.docx_base64);
+      const len = binary.length;
+      const bytes = new Uint8Array(len);
+      for (let i = 0; i < len; i += 1) bytes[i] = binary.charCodeAt(i);
+      const blob = new Blob([bytes], {
+        type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      });
+      const url = URL.createObjectURL(blob);
+      setTailoredDocxUrl(url);
+      return () => URL.revokeObjectURL(url);
+    } catch {
+      setTailoredDocxUrl(null);
+    }
+  }, [result?.docx_base64]);
 
   useEffect(() => {
     if (!result?.pdf_base64) {
@@ -103,42 +100,6 @@ export default function HomePage() {
     }
   }, [result?.pdf_base64]);
 
-  useEffect(() => {
-    if (!file) {
-      setUploadPdfUrl(null);
-      setUploadPlainText(null);
-      setUploadPlainLoading(false);
-      return;
-    }
-    const name = file.name.toLowerCase();
-    if (name.endsWith(".pdf")) {
-      const url = URL.createObjectURL(file);
-      setUploadPdfUrl(url);
-      setUploadPlainText(null);
-      setUploadPlainLoading(false);
-      return () => URL.revokeObjectURL(url);
-    }
-    if (name.endsWith(".txt") || name.endsWith(".md")) {
-      setUploadPdfUrl(null);
-      setUploadPlainLoading(true);
-      setUploadPlainText(null);
-      const reader = new FileReader();
-      reader.onload = () => {
-        setUploadPlainText(typeof reader.result === "string" ? reader.result : "");
-        setUploadPlainLoading(false);
-      };
-      reader.onerror = () => {
-        setUploadPlainText("(Could not read this file.)");
-        setUploadPlainLoading(false);
-      };
-      reader.readAsText(file);
-      return () => reader.abort();
-    }
-    setUploadPdfUrl(null);
-    setUploadPlainText(null);
-    setUploadPlainLoading(false);
-  }, [file]);
-
   const canSubmit = useMemo(
     () => Boolean(file && jobDescription.trim().length > 20),
     [file, jobDescription],
@@ -147,7 +108,7 @@ export default function HomePage() {
   const onRejectFiles = useCallback(() => {
     notifications.show({
       title: "Unsupported file",
-      message: "Use PDF, DOCX, TXT, or Markdown (max 15 MB).",
+      message: "Use a Word resume (.docx, max 15 MB).",
       color: "red",
       icon: <IconX size={18} />,
     });
@@ -220,75 +181,55 @@ export default function HomePage() {
     return { parts, segments };
   }, [result?.tailored_skills]);
 
-  const activeTemplateLabel = result?.pdf_template_label || user?.cv_template_label || "";
-
-  const pdfExportPanel =
-    result && tailoredPdfUrl ? (
+  const docxExportPanel =
+    result && tailoredDocxUrl ? (
       <Paper withBorder radius="md" p="md" bg="dark.7">
         <Stack gap="sm">
-          <Group justify="space-between" align="flex-start" wrap="wrap" gap="sm">
-            <Stack gap={4}>
-              <Text fw={600} size="sm">
-                Your tailored CV (PDF)
-              </Text>
-              <Text size="xs" c="dimmed" maw={520}>
-                Built from your uploaded resume, job description, and{" "}
-                {activeTemplateLabel ? (
-                  <>
-                    the <strong>{activeTemplateLabel}</strong> template.
-                  </>
-                ) : (
-                  "your selected CV template."
-                )}
-              </Text>
-            </Stack>
-            {activeTemplateLabel ? (
-              <Badge size="md" variant="outline" color="cyan" leftSection={<IconLayoutGrid size={12} />}>
-                {activeTemplateLabel}
-              </Badge>
-            ) : null}
-          </Group>
-          <Group wrap="wrap" gap="sm">
+          <Stack gap={4}>
+            <Text fw={600} size="sm">
+              Your tailored resume
+            </Text>
+            <Text size="xs" c="dimmed" maw={520}>
+              Built from your uploaded .docx template. Text is updated in place so fonts, spacing, and layout stay the same.
+            </Text>
+          </Stack>
+          <Group gap="sm">
             <Button
               component="a"
-              href={tailoredPdfUrl}
-              download={result.download_filename || "resume.pdf"}
+              href={tailoredDocxUrl}
+              download={result.download_filename || "resume-tailored.docx"}
               leftSection={<IconDownload size={18} />}
               variant="filled"
               color="teal"
               size="sm"
             >
-              Download tailored CV
+              Download Word (.docx)
             </Button>
-            <Button
-              variant="light"
-              color="teal"
-              leftSection={<IconMaximize size={18} />}
-              onClick={openPdfPreview}
-              size="sm"
-            >
-              Larger preview
-            </Button>
+            {tailoredPdfUrl ? (
+              <Button
+                component="a"
+                href={tailoredPdfUrl}
+                download={result.pdf_download_filename || "resume-tailored.pdf"}
+                leftSection={<IconDownload size={18} />}
+                variant="light"
+                color="teal"
+                size="sm"
+              >
+                Download PDF
+              </Button>
+            ) : null}
           </Group>
-          <Paper withBorder radius="md" p={0} style={{ overflow: "hidden", background: "var(--mantine-color-dark-9)" }}>
-            <Box
-              component="iframe"
-              title="Tailored resume PDF preview"
-              src={tailoredPdfUrl}
-              style={{
-                display: "block",
-                width: "100%",
-                height: "clamp(240px, 42dvh, 520px)",
-                border: 0,
-              }}
-            />
-          </Paper>
+          {!tailoredPdfUrl ? (
+            <Text size="xs" c="dimmed">
+              PDF conversion requires Microsoft Word or LibreOffice on the server. The Word file is always available.
+            </Text>
+          ) : null}
         </Stack>
       </Paper>
-    ) : result && !tailoredPdfUrl ? (
-      <Alert variant="light" color="orange" title="PDF export unavailable" icon={<IconAlertCircle size={18} />}>
-        Tailored text sections were generated, but the PDF could not be built. Retry in a moment or switch to another
-        CV template.
+    ) : result && !tailoredDocxUrl ? (
+      <Alert variant="light" color="orange" title="Word export unavailable" icon={<IconAlertCircle size={18} />}>
+        Tailored text sections were generated, but the .docx could not be updated. Add clear section headers (Summary,
+        Experience, Skills, Education) to your template and try again.
       </Alert>
     ) : null;
 
@@ -312,33 +253,6 @@ export default function HomePage() {
             </Button>
           ) : null}
         </Group>
-
-        {user?.cv_template_label ? (
-          <Paper withBorder radius="md" p="md" bg="dark.8">
-            <Group justify="space-between" align="flex-start" wrap="wrap" gap="sm">
-              <Stack gap={4} style={{ flex: 1 }}>
-                <Group gap="xs">
-                  <ThemeIcon size="sm" variant="light" color="cyan" radius="sm">
-                    <IconLayoutGrid size={16} stroke={1.5} />
-                  </ThemeIcon>
-                  <Text size="sm" fw={600}>
-                    Current CV template
-                  </Text>
-                  <Badge color="cyan" variant="light" size="sm">
-                    {user.cv_template_label}
-                  </Badge>
-                </Group>
-                <Text size="xs" c="dimmed" maw={520}>
-                  Your download combines this layout with tailored content from your uploaded resume and the job
-                  description.
-                </Text>
-              </Stack>
-              <Button component={Link} to="/templates" variant="subtle" color="gray" size="compact-sm">
-                Change template
-              </Button>
-            </Group>
-          </Paper>
-        ) : null}
 
         <Dropzone
           onDrop={(files) => {
@@ -378,7 +292,7 @@ export default function HomePage() {
                 Drop your resume here
               </Text>
               <Text size="xs" c="dimmed" ta={{ base: "center", xs: "left" }} lineClamp={3}>
-                PDF, DOCX, TXT, or Markdown — tap to browse on mobile
+                Word resume (.docx) — your file is the layout template
               </Text>
             </Stack>
           </Group>
@@ -412,66 +326,10 @@ export default function HomePage() {
                 </Group>
               </Accordion.Control>
               <Accordion.Panel>
-                {uploadPdfUrl ? (
-                  <Stack gap="xs">
-                    <Group justify="space-between" align="flex-start" wrap="wrap" gap="xs">
-                      <Text size="xs" c="dimmed" maw={520}>
-                        Preview shows pages only (no thumbnails). Use{" "}
-                        <Text component="span" fw={600}>
-                          Open full size in new tab
-                        </Text>{" "}
-                        for your browser’s PDF zoom and print controls.
-                      </Text>
-                      <Button
-                        component="a"
-                        href={uploadPdfUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        size="compact-sm"
-                        variant="light"
-                        color="teal"
-                        leftSection={<IconExternalLink size={16} />}
-                      >
-                        Open full size in new tab
-                      </Button>
-                    </Group>
-                    <Paper withBorder p={0} radius="md" style={{ overflow: "hidden" }}>
-                      <Suspense
-                        fallback={
-                          <Text py="xl" ta="center" size="sm" c="dimmed">
-                            Loading PDF viewer…
-                          </Text>
-                        }
-                      >
-                        <UploadedPdfPreview fileUrl={uploadPdfUrl} />
-                      </Suspense>
-                    </Paper>
-                  </Stack>
-                ) : uploadPlainLoading ? (
-                  <Text size="sm" c="dimmed">
-                    Loading text…
-                  </Text>
-                ) : uploadPlainText !== null ? (
-                  <ScrollArea h={560} type="auto" offsetScrollbars scrollbarSize={8}>
-                    <Text
-                      component="pre"
-                      fz="xs"
-                      ff="monospace"
-                      style={{
-                        whiteSpace: "pre-wrap",
-                        wordBreak: "break-word",
-                        margin: 0,
-                      }}
-                    >
-                      {uploadPlainText}
-                    </Text>
-                  </ScrollArea>
-                ) : (
-                  <Alert color="gray" variant="light" title="No in-browser preview for this format">
-                    Word (.doc / .docx) files are processed on the server. To preview the upload here, save as PDF or
-                    plain text, or continue and open your tailored sections on the right after generating.
-                  </Alert>
-                )}
+                <Alert color="gray" variant="light" title="Your .docx is the template">
+                  Upload a Word resume with clear section headings. After generating, download your template with headline,
+                  summary, experience, skills, education, and extras rewritten for the job.
+                </Alert>
               </Accordion.Panel>
             </Accordion.Item>
           </Accordion>
@@ -503,11 +361,11 @@ export default function HomePage() {
             variant="gradient"
             gradient={{ from: "teal", to: "cyan", deg: 105 }}
           >
-            {loading ? "Tailoring…" : "Generate tailored CV & PDF"}
+            {loading ? "Tailoring…" : "Generate tailored resume"}
           </Button>
           {!canSubmit && !loading ? (
             <Text size="xs" c="dimmed" ta="center">
-              Add your resume, a job description (20+ characters), and your chosen CV template to generate.
+              Add a .docx resume and a job description (20+ characters) to generate.
             </Text>
           ) : null}
         </Stack>
@@ -565,9 +423,38 @@ export default function HomePage() {
             </Group>
           ) : null}
 
-          {pdfExportPanel}
+          {docxExportPanel}
 
           <Stack gap="md">
+            <Paper withBorder radius="md" p="md" bg="dark.7">
+              <Group justify="space-between" align="flex-start" wrap="nowrap" gap="sm" mb="xs">
+                <Group gap="xs">
+                  <ThemeIcon size={36} radius="md" variant="light" color="yellow">
+                    <IconFileCv size={20} stroke={1.25} />
+                  </ThemeIcon>
+                  <Title order={3} size="h5">
+                    Header / title
+                  </Title>
+                </Group>
+                <Tooltip label="Copy header">
+                  <ActionIcon
+                    variant="light"
+                    color="yellow"
+                    size="lg"
+                    radius="md"
+                    onClick={() => copySection(result.tailored_contact, "Header")}
+                    aria-label="Copy header"
+                    disabled={!result.tailored_contact?.trim()}
+                  >
+                    <IconCopy size={18} />
+                  </ActionIcon>
+                </Tooltip>
+              </Group>
+              <Text size="sm" c="gray.1" style={{ whiteSpace: "pre-wrap", lineHeight: 1.65 }}>
+                {result.tailored_contact?.trim() || "—"}
+              </Text>
+            </Paper>
+
             <Paper withBorder radius="md" p="md" bg="dark.7">
               <Group justify="space-between" align="flex-start" wrap="nowrap" gap="sm" mb="xs">
                 <Group gap="xs">
@@ -575,7 +462,7 @@ export default function HomePage() {
                     <IconUser size={20} stroke={1.25} />
                   </ThemeIcon>
                   <Title order={3} size="h5">
-                    Profile / summary
+                    Professional summary
                   </Title>
                 </Group>
                 <Tooltip label="Copy profile">
@@ -823,6 +710,56 @@ export default function HomePage() {
                 ) : null}
               </Stack>
             </Paper>
+
+            {result.tailored_education?.trim() ? (
+              <Paper withBorder radius="md" p="md" bg="dark.7">
+                <Group justify="space-between" align="flex-start" wrap="nowrap" gap="sm" mb="xs">
+                  <Title order={3} size="h5">
+                    Education
+                  </Title>
+                  <Tooltip label="Copy education">
+                    <ActionIcon
+                      variant="light"
+                      color="indigo"
+                      size="lg"
+                      radius="md"
+                      onClick={() => copySection(result.tailored_education, "Education")}
+                      aria-label="Copy education"
+                    >
+                      <IconCopy size={18} />
+                    </ActionIcon>
+                  </Tooltip>
+                </Group>
+                <Text size="sm" c="gray.1" style={{ whiteSpace: "pre-wrap", lineHeight: 1.65 }}>
+                  {result.tailored_education}
+                </Text>
+              </Paper>
+            ) : null}
+
+            {result.tailored_other?.trim() ? (
+              <Paper withBorder radius="md" p="md" bg="dark.7">
+                <Group justify="space-between" align="flex-start" wrap="nowrap" gap="sm" mb="xs">
+                  <Title order={3} size="h5">
+                    Additional
+                  </Title>
+                  <Tooltip label="Copy additional sections">
+                    <ActionIcon
+                      variant="light"
+                      color="gray"
+                      size="lg"
+                      radius="md"
+                      onClick={() => copySection(result.tailored_other, "Additional")}
+                      aria-label="Copy additional"
+                    >
+                      <IconCopy size={18} />
+                    </ActionIcon>
+                  </Tooltip>
+                </Group>
+                <Text size="sm" c="gray.1" style={{ whiteSpace: "pre-wrap", lineHeight: 1.65 }}>
+                  {result.tailored_other}
+                </Text>
+              </Paper>
+            ) : null}
           </Stack>
 
           <Accordion variant="contained" radius="md">
@@ -884,7 +821,7 @@ export default function HomePage() {
           <IconFileCv size={32} stroke={1.25} />
         </ThemeIcon>
             <Text ta="center" maw={380} c="dimmed" size="sm">
-          Upload your resume, paste a job description, and generate a tailored CV PDF in your chosen template.
+                  Upload a Word resume (.docx), paste a job description, and get a complete resume tailored for that role.
         </Text>
       </Stack>
     </Paper>
@@ -892,50 +829,8 @@ export default function HomePage() {
 
   const resultColumn = resultColumnFull ?? resultColumnPlaceholder;
 
-  const pdfName = result?.download_filename || "resume.pdf";
-
   return (
-    <>
-      <Modal
-        opened={pdfPreviewOpen && Boolean(tailoredPdfUrl)}
-        onClose={closePdfPreview}
-        title={activeTemplateLabel ? `Tailored CV — ${activeTemplateLabel}` : pdfName}
-        fullScreen
-        padding="md"
-      >
-        <Stack gap="md" style={{ display: "flex", flexDirection: "column", height: "calc(100dvh - 5rem)" }}>
-          {tailoredPdfUrl ? (
-            <Box
-              component="iframe"
-              title="Tailored resume full preview"
-              src={tailoredPdfUrl}
-              style={{
-                width: "100%",
-                flex: 1,
-                minHeight: 0,
-                height: "calc(100dvh - 9rem)",
-                border: 0,
-                borderRadius: "var(--mantine-radius-md)",
-              }}
-            />
-          ) : null}
-          <Group justify="flex-end" wrap="wrap" gap="sm">
-            <Button variant="default" onClick={closePdfPreview}>
-              Close
-            </Button>
-            <Button
-              component="a"
-              href={tailoredPdfUrl ?? undefined}
-              download={pdfName}
-              leftSection={<IconDownload size={18} />}
-              color="teal"
-            >
-              Download
-            </Button>
-          </Group>
-        </Stack>
-      </Modal>
-      <Container size="xl" py={{ base: "md", sm: "lg", md: "xl" }} px={{ base: "sm", sm: "md" }}>
+    <Container size="xl" py={{ base: "md", sm: "lg", md: "xl" }} px={{ base: "sm", sm: "md" }}>
         {isNarrow && result && !resultPanelOpen ? (
           <Stack gap="md">{inputColumn}</Stack>
         ) : (
@@ -946,6 +841,5 @@ export default function HomePage() {
         )}
 
       </Container>
-    </>
   );
 }
