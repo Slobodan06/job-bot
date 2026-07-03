@@ -242,6 +242,8 @@ def _replace_paragraph_text_with_highlights(
 
 
 def _sync_paragraph_runs(dup_para: Paragraph, src_para: Paragraph) -> None:
+    if dup_para._element is src_para._element:
+        return
     dup_el = dup_para._element
     for child in list(dup_el):
         if child.tag == qn("w:r"):
@@ -551,10 +553,12 @@ def _detect_table_layout(doc: Document) -> tuple[list[int], list[int], list[Expe
         first = row_label.split("|", 1)[0].strip()
         if _TABLE_EDUCATION_RE.match(first):
             break
-        content_cell = exp_table.rows[ri].cells[0]
+        row = exp_table.rows[ri]
+        content_cols = _unique_content_col_indices(row)
+        content_cell = row.cells[content_cols[0]]
         if not content_cell.text.strip():
             continue
-        exp_rows.append(ExperienceRowRef(table_idx=table_idx, row_idx=ri))
+        exp_rows.append(ExperienceRowRef(table_idx=table_idx, row_idx=ri, content_cols=content_cols))
 
     if not exp_rows and not summary_indices and not skills_indices:
         return None
@@ -721,8 +725,23 @@ def _update_experience_table_rows(
                 _sync_cell_paragraphs(row_cells[col], cell)
 
 
+def _unique_content_col_indices(row) -> tuple[int, ...]:
+    """Column indices for editable content, deduped when Word merges cells (same tc repeated)."""
+    cols: list[int] = []
+    seen_tc: set[int] = set()
+    for ci, cell in enumerate(row.cells):
+        tc_id = id(cell._tc)
+        if tc_id in seen_tc:
+            continue
+        seen_tc.add(tc_id)
+        cols.append(ci)
+    return tuple(cols[:1] if cols else (0,))
+
+
 def _sync_cell_paragraphs(dup_cell, source_cell) -> None:
     """Mirror paragraph runs (including bold highlights) into duplicate merged cells."""
+    if dup_cell._tc is source_cell._tc:
+        return
     src_paras = source_cell.paragraphs
     dup_paras = dup_cell.paragraphs
     for i, src_para in enumerate(src_paras):
