@@ -143,6 +143,19 @@ def _replace_paragraph_text_inplace(paragraph: Paragraph, text: str) -> None:
         paragraph.add_run(text)
 
 
+def _replace_paragraph_text_plain(paragraph: Paragraph, text: str) -> None:
+    """Replace paragraph text without keyword bolding; clear explicit run bold."""
+    if paragraph.runs:
+        paragraph.runs[0].text = text
+        paragraph.runs[0].bold = False
+        for run in paragraph.runs[1:]:
+            run.text = ""
+            run.bold = False
+    else:
+        run = paragraph.add_run(text)
+        run.bold = False
+
+
 _HIGHLIGHT_METRIC_RE = re.compile(
     r"\d+(?:\.\d+)?\s*(?:%|percent\b)|"
     r"\b\d+\+\b|"
@@ -399,10 +412,28 @@ def _update_experience_bullets_only(
                 anchor = _clone_and_insert_after(anchor, template, line, highlight_terms)
 
 
+def _apply_paragraph_text(
+    paragraph: Paragraph,
+    text: str,
+    *,
+    highlight_terms: list[str] | None = None,
+    plain: bool = False,
+) -> None:
+    if plain:
+        _replace_paragraph_text_plain(paragraph, text)
+    elif highlight_terms:
+        _replace_paragraph_text_with_highlights(paragraph, text, highlight_terms)
+    else:
+        _replace_paragraph_text_inplace(paragraph, text)
+
+
 def _update_lines_index_preserving(
     doc: Document,
     indices: list[int],
     new_text: str,
+    *,
+    highlight_terms: list[str] | None = None,
+    plain: bool = False,
 ) -> None:
     """
     Update paragraph i with line i only — preserves structure, styles, and extra paragraphs.
@@ -413,7 +444,12 @@ def _update_lines_index_preserving(
     if not lines or not indices:
         return
     if len(indices) == 1 and len(lines) > 1:
-        _replace_paragraph_text_inplace(doc.paragraphs[indices[0]], " ".join(lines))
+        _apply_paragraph_text(
+            doc.paragraphs[indices[0]],
+            " ".join(lines),
+            highlight_terms=highlight_terms,
+            plain=plain,
+        )
         return
     line_i = 0
     for idx in indices:
@@ -427,7 +463,7 @@ def _update_lines_index_preserving(
         if existing and _BULLET_CHAR_RE.match(existing) and not _BULLET_CHAR_RE.match(line):
             line = _format_bullet_line(_BULLET_CHAR_RE.match(existing).group(0), line)
         display = _display_line_for_paragraph(line, para)
-        _replace_paragraph_text_inplace(para, display)
+        _apply_paragraph_text(para, display, highlight_terms=highlight_terms, plain=plain)
         line_i += 1
 
 
@@ -931,6 +967,10 @@ def _update_section_inplace(
         return
     if section_name == "professional_experience":
         _update_experience_bullets_only(doc, indices, new_text, highlight_terms)
+    elif section_name == "skills":
+        _update_lines_index_preserving(doc, indices, new_text, plain=True)
+    elif section_name == "professional_summary":
+        _update_lines_index_preserving(doc, indices, new_text, highlight_terms=highlight_terms)
     else:
         _update_lines_index_preserving(doc, indices, new_text)
 
@@ -1225,7 +1265,7 @@ def apply_tailored_sections_to_docx(
             indices,
             text,
             fallbacks[section_name],
-            None,
+            highlights if section_name == "professional_summary" else None,
         )
 
     # Contact/header block is never modified — name, title, email, phone, links stay as uploaded.

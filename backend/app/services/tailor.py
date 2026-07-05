@@ -332,7 +332,7 @@ def build_docx_highlight_keywords(
     parsed: ParsedResume,
     tailored: TailoredSections,
 ) -> list[str]:
-    """Terms to bold in experience bullets only: JD keywords, tech, and source metrics."""
+    """Terms to bold in profile and experience only: JD keywords, tech, and source metrics."""
     terms: list[str] = []
     seen: set[str] = set()
 
@@ -361,6 +361,16 @@ def build_docx_highlight_keywords(
             re.I,
         ):
             _add(match.group(0))
+
+    summary_text = tailored.professional_summary or parsed.professional_summary or ""
+    for match in re.finditer(
+        r"\b(?:React(?:\.js)?|Angular|Vue(?:\.js)?|Node(?:\.js)?|TypeScript|JavaScript|Python|"
+        r"Java|AWS|Azure|GCP|Docker|Kubernetes|Terraform|CI/CD|PostgreSQL|MongoDB|Redis|"
+        r"GraphQL|REST(?:ful)?|FastAPI|Django|Flask|\.NET|Next(?:\.js)?|OpenAI|Shopify)\b",
+        summary_text,
+        re.I,
+    ):
+        _add(match.group(0))
 
     return sorted(terms, key=len, reverse=True)
 
@@ -643,7 +653,7 @@ def _finalize_tailored(parsed: ParsedResume, tailored: TailoredSections) -> Tail
 
 def _default_tips_llm() -> list[str]:
     return [
-        "Summary, skills, and experience are fully rewritten for the job; bold highlights apply to Experience bullets only.",
+        "Summary and experience are fully rewritten for the job; JD keywords and metrics are bolded in Profile and Experience only.",
         "Verify employers, schools, dates, and contact details before submitting; AI must not invent credentials.",
         "If wording still feels too close to your original, retry or raise OPENAI_TAILOR_MAX_TOKENS.",
     ]
@@ -786,7 +796,7 @@ async def tailor_resume(
             if used_docx_inplace:
                 tips = [
                     *tips,
-                    "Your Word file keeps original formatting; JD keywords and metrics are bolded in Experience only.",
+                    "Your Word file keeps original formatting; JD keywords and metrics are bolded in Profile and Experience only.",
                 ]
             else:
                 tips = [
