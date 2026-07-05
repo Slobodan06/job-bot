@@ -14,6 +14,9 @@ from docx.text.paragraph import Paragraph
 
 from app.services.pdf_resume import (
     line_is_factual_contact,
+    primary_role_header_from_block,
+    split_experience_line_blocks,
+    _looks_like_role_header_line,
 )
 from app.services.sectionize import (
     ParsedResume,
@@ -394,6 +397,20 @@ def _partition_bullets_by_block_counts(bullets: list[str], counts: list[int]) ->
     return out
 
 
+def _primary_role_header_index(para_block: list[int], paragraphs: list[Paragraph]) -> int | None:
+    for idx in para_block:
+        text = _paragraph_text(paragraphs[idx]).strip()
+        if not text or _is_bullet_paragraph(paragraphs[idx]):
+            continue
+        if _is_experience_role_start(paragraphs[idx], text):
+            return idx
+    for idx in para_block:
+        text = _paragraph_text(paragraphs[idx]).strip()
+        if text and not _is_bullet_paragraph(paragraphs[idx]):
+            return idx
+    return None
+
+
 def _update_experience_bullets_only(
     doc: Document,
     indices: list[int],
@@ -401,14 +418,15 @@ def _update_experience_bullets_only(
     highlight_terms: list[str] | None = None,
 ) -> None:
     """
-    Update ONLY list/bullet paragraphs in each role block.
-    Company name, title, location, dates, and other non-bullet lines are never modified.
+    Update job titles and bullet paragraphs in each role block.
+    Company, location, and dates stay unchanged (title segment only is swapped).
     """
     if not indices or not new_text.strip():
         return
 
     paragraphs = _all_document_paragraphs(doc)
     para_blocks = _group_experience_paragraph_indices(doc, indices)
+    merged_blocks = split_experience_line_blocks(new_text)
     bullet_counts = [
         sum(1 for idx in block if _is_bullet_paragraph(paragraphs[idx]))
         for block in para_blocks
@@ -417,6 +435,16 @@ def _update_experience_bullets_only(
     bullets_per_block = _partition_bullets_by_block_counts(llm_bullets, bullet_counts)
 
     for block_i, para_block in enumerate(para_blocks):
+        header_idx = _primary_role_header_index(para_block, paragraphs)
+        if header_idx is not None and block_i < len(merged_blocks):
+            header_line = primary_role_header_from_block(merged_blocks[block_i])
+            if header_line:
+                _replace_paragraph_text_with_highlights(
+                    paragraphs[header_idx],
+                    header_line,
+                    highlight_terms,
+                )
+
         bullet_indices = [idx for idx in para_block if _is_bullet_paragraph(paragraphs[idx])]
         if not bullet_indices:
             bullet_indices = [
@@ -750,10 +778,11 @@ def _update_experience_table_rows(
     new_text: str,
     highlight_terms: list[str] | None = None,
 ) -> None:
-    """Update bullet paragraphs inside experience table rows; title/company/date cells stay frozen."""
+    """Update role titles and bullet paragraphs inside experience table rows."""
     if not rows or not new_text.strip():
         return
 
+    merged_blocks = split_experience_line_blocks(new_text)
     bullet_counts = []
     for ref in rows:
         cell = doc.tables[ref.table_idx].rows[ref.row_idx].cells[ref.content_cols[0]]
@@ -764,6 +793,17 @@ def _update_experience_table_rows(
 
     for row_i, ref in enumerate(rows):
         cell = doc.tables[ref.table_idx].rows[ref.row_idx].cells[ref.content_cols[0]]
+        if row_i < len(merged_blocks):
+            header_line = primary_role_header_from_block(merged_blocks[row_i])
+            if header_line:
+                for para in cell.paragraphs:
+                    text = _paragraph_text(para).strip()
+                    if not text or _is_bulletish_text(text):
+                        continue
+                    if _is_experience_role_start(para, text) or "|" in text:
+                        _replace_paragraph_text_with_highlights(para, header_line, highlight_terms)
+                        break
+
         bullet_indices = _cell_bullet_paragraph_indices(cell)
         if not bullet_indices:
             continue
@@ -897,20 +937,17 @@ def parse_resume_from_docx(data: bytes) -> DocxResumeDocument:
                     plain_lines.append(line)
                 continue
             if current == "contact":
-                if line_is_factual_contact(stripped) or re.search(
-                    r"https?://|linkedin\.com|github\.com", stripped, re.I
-                ):
+                implicit = implicit_section_after_contact(stripped)
+                if implicit is None and _is_experience_role_start(paragraph, stripped):
+                    implicit = "professional_experience"
+                if implicit is None and _is_bullet_paragraph(paragraph):
+                    implicit = "professional_experience"
+                if implicit:
+                    current = implicit
+                elif line_is_factual_contact(stripped) and not _looks_like_role_header_line(stripped):
                     contact_ready = True
                 elif not contact_ready and len(stripped) < 80 and not _is_bullet_paragraph(paragraph):
                     contact_ready = True
-                else:
-                    implicit = implicit_section_after_contact(stripped)
-                    if implicit is None and _is_experience_role_start(paragraph, stripped):
-                        implicit = "professional_experience"
-                    if implicit is None and _is_bullet_paragraph(paragraph):
-                        implicit = "professional_experience"
-                    if implicit:
-                        current = implicit
             elif current == "professional_summary":
                 implicit = implicit_section_after_contact(stripped)
                 if implicit is None and _is_experience_role_start(paragraph, stripped):

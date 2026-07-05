@@ -1092,13 +1092,114 @@ def _partition_bullets_for_role_blocks(bullets: list[str], counts: list[int]) ->
     return out
 
 
-def merge_experience_headers_with_bullets(source: str, tailored: str) -> str:
+_ROLE_HEADER_DATE_RE = re.compile(
+    r"\b\d{1,2}/\d{4}\s*[–\-—]\s*(\d{1,2}/\d{4}|present|current)\b",
+    re.I,
+)
+_ROLE_HEADER_TITLE_RE = re.compile(
+    r"\b(developer|engineer|manager|lead|specialist|architect|consultant|analyst|"
+    r"director|coordinator|head|principal|designer|operations?)\b",
+    re.I,
+)
+
+
+def _looks_like_role_header_line(line: str) -> bool:
+    stripped = (line or "").strip()
+    if not stripped or _BULLET_LINE_RE.match(stripped):
+        return False
+    if _ROLE_HEADER_DATE_RE.search(stripped):
+        return True
+    if "|" in stripped and len(stripped) < 140:
+        return True
+    return bool(_ROLE_HEADER_TITLE_RE.search(stripped) and len(stripped) < 100)
+
+
+def primary_role_header_from_block(block: list[str]) -> str | None:
+    """First job header line in a role block (title/company/location/dates)."""
+    for line in block:
+        stripped = line.strip()
+        if not stripped or _BULLET_LINE_RE.match(stripped):
+            continue
+        if _looks_like_role_header_line(stripped):
+            return stripped
+    for line in block:
+        stripped = line.strip()
+        if stripped and not _BULLET_LINE_RE.match(stripped):
+            return stripped
+    return None
+
+
+def replace_role_title_in_header(header_line: str, new_title: str) -> str:
+    """Swap only the job-title segment; keep company, location, and dates from source."""
+    title = (new_title or "").strip()
+    if not title:
+        return header_line
+    stripped = (header_line or "").strip()
+    if "|" in stripped:
+        _, rest = stripped.split("|", 1)
+        return f"{title} | {rest.lstrip()}"
+    if stripped.endswith("|"):
+        return f"{title} |"
+    return title
+
+
+def parse_experience_role_titles(experience: str) -> list[str]:
+    """Extract the title portion from each role header line in order."""
+    titles: list[str] = []
+    for block in split_experience_line_blocks(experience or ""):
+        header = primary_role_header_from_block(block)
+        if not header:
+            continue
+        if "|" in header:
+            titles.append(header.split("|", 1)[0].strip())
+        else:
+            titles.append(header.rstrip("|").strip())
+    return titles
+
+
+def merge_experience_role_titles(source: str, tailored_titles: list[str]) -> str:
+    """Apply JD-tailored job titles while preserving company, location, and dates."""
+    source = (source or "").strip()
+    if not source or not tailored_titles:
+        return source
+    blocks = split_experience_line_blocks(source)
+    if not blocks:
+        return source
+
+    out: list[str] = []
+    for block_i, block in enumerate(blocks):
+        new_block = list(block)
+        if block_i < len(tailored_titles) and tailored_titles[block_i].strip():
+            new_title = tailored_titles[block_i].strip()
+            for line_i, line in enumerate(new_block):
+                if _BULLET_LINE_RE.match(line.strip()):
+                    break
+                if _looks_like_role_header_line(line):
+                    new_block[line_i] = replace_role_title_in_header(line, new_title)
+                    break
+                if line_i == 0:
+                    new_block[line_i] = new_title
+                    break
+        out.extend(new_block)
+        if block_i < len(blocks) - 1:
+            out.append("")
+    return "\n".join(out).strip()
+
+
+def merge_experience_headers_with_bullets(
+    source: str,
+    tailored: str,
+    *,
+    tailored_role_titles: list[str] | None = None,
+) -> str:
     """
-    Keep company/title/location/date lines from source; replace only bullet lines
-    with tailored bullets in order.
+    Keep company/location/date lines from source; replace job titles and bullet lines
+    with tailored content in order.
     """
     source = (source or "").strip()
     tailored = (tailored or "").strip()
+    if tailored_role_titles:
+        source = merge_experience_role_titles(source, tailored_role_titles)
     if not source:
         return tailored
     if not tailored:

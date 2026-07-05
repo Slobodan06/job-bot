@@ -19,6 +19,7 @@ from app.services.pdf_resume import (
     merge_experience_headers_with_bullets,
     merge_profile_links_into_contact,
     merge_skills_preserving_labels,
+    parse_experience_role_titles,
     split_experience_line_blocks,
 )
 from app.services.sectionize import ParsedResume
@@ -121,6 +122,7 @@ class TailoredSections:
     skills: str
     education: str
     other: str
+    experience_role_titles: str = ""
 
 
 def _source_section_stats(parsed: ParsedResume) -> dict[str, int | list[int]]:
@@ -444,11 +446,12 @@ STRUCTURED_SYSTEM = """You are an expert ATS resume strategist. Maximize this ca
 The candidate uploaded a Word resume; you receive source sections as JSON. Facts must stay truthful; wording must be NEW.
 
 Return ONLY a JSON object with exactly these keys (all strings, use \\n for line breaks inside values):
-"contact", "professional_summary", "professional_experience", "skills", "education", "other"
+"contact", "professional_summary", "professional_experience", "experience_role_titles", "skills", "education", "other"
 
 Editable sections — FULL REWRITE for this job (not light edits):
 - professional_summary (profile)
 - professional_experience (bullet lines only)
+- experience_role_titles (job titles only, one per role)
 - skills (skill lists only; keep category labels)
 
 Frozen sections — copy verbatim from SOURCE_SECTIONS_JSON:
@@ -487,6 +490,12 @@ professional_experience:
 - Rewrite EVERY bullet from scratch for the JD; include metrics (%, counts, latency, throughput) in most bullets.
 - Reuse source metrics when present; only use numbers evidenced in the source — never invent statistics.
 
+experience_role_titles:
+- One job title per role, in the SAME order as the source experience (one title per line).
+- Title text ONLY — no company, city, country, or dates.
+- Rewrite each title to align with the target job description while staying truthful to the work performed.
+- Keep seniority realistic; do not invent employers or responsibilities.
+
 skills:
 - Same number of lines and SAME category labels as source (e.g. "Frontend:", "DevOps & Cloud:").
 - Fully rewrite the comma-separated lists after each label for the JD; reorder to prioritize posting keywords.
@@ -517,6 +526,8 @@ async def _llm_tailor_structured(parsed: ParsedResume, jd: str, api_key: str) ->
     )
     per_role = stats.get("experience_bullets_per_role") or []
     per_role_text = ", ".join(str(n) for n in per_role) if per_role else str(stats["experience_bullets"])
+    source_titles = parse_experience_role_titles(parsed.professional_experience)
+    source_titles_text = "\n".join(source_titles) if source_titles else "(none detected)"
     preserve_lines: list[str] = []
     if years:
         preserve_lines.append(f'- Years of experience (keep in summary): "{years}"')
@@ -542,6 +553,7 @@ async def _llm_tailor_structured(parsed: ParsedResume, jd: str, api_key: str) ->
         "- Include measurable results in most bullets (%, speed, scale, cost, time saved) using SOURCE metrics when available.\n"
         "- Skills: same line count and category labels as source; fully rewrite list text for the JD.\n"
         f"- BULLETS_PER_ROLE (baseline per job, in order — add more when the JD supports it): {per_role_text}\n"
+        f"- SOURCE_ROLE_TITLES (rewrite one JD-aligned title per line, same order):\n{source_titles_text}\n"
         f"- Add extra JD-focused bullets with metrics; exceeding the baseline improves ATS match.\n"
         f"- Source stats: ~{stats['experience_roles_est']} roles, ~{stats['experience_bullets']} bullets, "
         f"{stats['skills_lines']} skills lines.\n"
@@ -573,6 +585,7 @@ async def _llm_tailor_structured(parsed: ParsedResume, jd: str, api_key: str) ->
             skills=_skills_as_categorized_lines(str(data.get("skills", ""))),
             education=str(data.get("education", "")).strip(),
             other=str(data.get("other", "")).strip(),
+            experience_role_titles=str(data.get("experience_role_titles", "")).strip(),
         )
 
     tailored = await _call(user_intro)
@@ -630,11 +643,17 @@ def _assemble_plain(t: TailoredSections) -> str:
     return "\n\n".join(parts)
 
 
+def _parse_role_titles_list(text: str) -> list[str]:
+    return [line.strip() for line in (text or "").replace("\r\n", "\n").splitlines() if line.strip()]
+
+
 def _finalize_tailored(parsed: ParsedResume, tailored: TailoredSections) -> TailoredSections:
-    """Merge AI rewrites into experience/skills layout; freeze header, education, other."""
+    """Merge AI rewrites into experience/skills layout; freeze contact, education, other."""
+    role_titles = _parse_role_titles_list(tailored.experience_role_titles)
     exp_merged = merge_experience_headers_with_bullets(
         parsed.professional_experience,
         tailored.professional_experience,
+        tailored_role_titles=role_titles or None,
     )
     skills_merged = merge_skills_preserving_labels(parsed.skills, tailored.skills)
     summary = ensure_years_in_summary(
@@ -654,7 +673,7 @@ def _finalize_tailored(parsed: ParsedResume, tailored: TailoredSections) -> Tail
 
 def _default_tips_llm() -> list[str]:
     return [
-        "Summary and experience are fully rewritten for the job; JD keywords and metrics are bolded in Profile and Experience only.",
+        "Summary and experience are fully rewritten for the job; role titles, bullets, and JD keywords are bolded in Profile and Experience only.",
         "Verify employers, schools, dates, and contact details before submitting; AI must not invent credentials.",
         "If wording still feels too close to your original, retry or raise OPENAI_TAILOR_MAX_TOKENS.",
     ]
