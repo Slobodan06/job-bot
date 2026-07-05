@@ -19,6 +19,8 @@ from app.services.sectionize import (
     ParsedResume,
     _partition_education_and_other,
     _separate_misplaced_jobs_from_education,
+    implicit_section_after_contact,
+    is_pure_section_header,
     match_section_header,
     parse_resume_sections,
 )
@@ -32,7 +34,8 @@ _TAILOR_HEADER_SECTIONS = (
 )
 _FROZEN_DOCX_SECTIONS = frozenset({"education", "other"})
 _EDITABLE_DOCX_SECTIONS = frozenset({"professional_summary", "professional_experience", "skills"})
-_BULLET_CHAR_RE = re.compile(r"^[\-•*–—\u2022]\s*")
+_BULLET_CHARS = r"\-•*–—\u2022\u25cf\u25cb\u25aa\u25e6\u00b7\u2219"
+_BULLET_CHAR_RE = re.compile(rf"^[{_BULLET_CHARS}]\s*")
 _SKILL_CATEGORY_RE = re.compile(
     r"^[\-•*–—\u2022]?\s*(language|frontend|backend|ai/?ml|database|testing|devops|cloud|practices|tools|"
     r"frameworks?|platforms?|methodolog\w*)\s*:",
@@ -65,7 +68,7 @@ class DocxResumeDocument:
     experience_table_rows: list[ExperienceRowRef] = field(default_factory=list)
 
 
-_BULLET_PREFIX_RE = re.compile(r"^[\-•*–—]\s+")
+_BULLET_PREFIX_RE = re.compile(rf"^[{_BULLET_CHARS}]\s+")
 _ROLE_START_RE = re.compile(
     r"\b\d{1,2}/\d{4}\s*[–\-—]\s*(\d{1,2}/\d{4}|present|current)\b",
     re.I,
@@ -74,6 +77,25 @@ _ROLE_START_RE = re.compile(
 
 def _looks_like_docx(data: bytes) -> bool:
     return data[:2] == b"PK"
+
+
+def _document_has_textboxes(document_xml: str) -> bool:
+    return "txbxContent" in document_xml or "v:textbox" in document_xml or "wps:txbx" in document_xml
+
+
+def _all_document_paragraphs(doc: Document) -> list[Paragraph]:
+    """Body/table paragraphs plus text-box paragraphs (Canva/PDF-export templates)."""
+    paragraphs = list(doc.paragraphs)
+    seen = {id(p._element) for p in paragraphs}
+    for p_el in doc.element.xpath(".//*[local-name()='txbxContent']//w:p"):
+        if id(p_el) not in seen:
+            seen.add(id(p_el))
+            paragraphs.append(Paragraph(p_el, doc))
+    return paragraphs
+
+
+def _paragraph_at(doc: Document, index: int) -> Paragraph:
+    return _all_document_paragraphs(doc)[index]
 
 
 def _paragraph_text(paragraph: Paragraph) -> str:
@@ -335,10 +357,11 @@ def _is_experience_role_start(paragraph: Paragraph, text: str) -> bool:
 def _group_experience_paragraph_indices(doc: Document, indices: list[int]) -> list[list[int]]:
     if not indices:
         return []
+    paragraphs = _all_document_paragraphs(doc)
     blocks: list[list[int]] = []
     current: list[int] = []
     for idx in indices:
-        para = doc.paragraphs[idx]
+        para = paragraphs[idx]
         text = _paragraph_text(para).strip()
         if current and text and _is_experience_role_start(para, text):
             blocks.append(current)
@@ -384,16 +407,23 @@ def _update_experience_bullets_only(
     if not indices or not new_text.strip():
         return
 
+    paragraphs = _all_document_paragraphs(doc)
     para_blocks = _group_experience_paragraph_indices(doc, indices)
     bullet_counts = [
-        sum(1 for idx in block if _is_bullet_paragraph(doc.paragraphs[idx]))
+        sum(1 for idx in block if _is_bullet_paragraph(paragraphs[idx]))
         for block in para_blocks
     ]
     llm_bullets = _bullet_lines(new_text)
     bullets_per_block = _partition_bullets_by_block_counts(llm_bullets, bullet_counts)
 
     for block_i, para_block in enumerate(para_blocks):
-        bullet_indices = [idx for idx in para_block if _is_bullet_paragraph(doc.paragraphs[idx])]
+        bullet_indices = [idx for idx in para_block if _is_bullet_paragraph(paragraphs[idx])]
+        if not bullet_indices:
+            bullet_indices = [
+                idx
+                for idx in para_block
+                if _BULLET_CHAR_RE.match(_paragraph_text(paragraphs[idx]).strip())
+            ]
         if not bullet_indices:
             continue
         new_bullets = bullets_per_block[block_i] if block_i < len(bullets_per_block) else []
@@ -401,13 +431,13 @@ def _update_experience_bullets_only(
         for bi, idx in enumerate(bullet_indices):
             if bi >= len(new_bullets):
                 break
-            para = doc.paragraphs[idx]
+            para = paragraphs[idx]
             display = _display_line_for_paragraph(new_bullets[bi], para)
             _replace_paragraph_text_with_highlights(para, display, highlight_terms)
 
         if len(new_bullets) > len(bullet_indices):
-            anchor = doc.paragraphs[bullet_indices[-1]]
-            template = doc.paragraphs[bullet_indices[0]]
+            anchor = paragraphs[bullet_indices[-1]]
+            template = paragraphs[bullet_indices[0]]
             for line in new_bullets[len(bullet_indices) :]:
                 anchor = _clone_and_insert_after(anchor, template, line, highlight_terms)
 
@@ -443,9 +473,10 @@ def _update_lines_index_preserving(
     lines = _split_tailored_lines(new_text)
     if not lines or not indices:
         return
+    paragraphs = _all_document_paragraphs(doc)
     if len(indices) == 1 and len(lines) > 1:
         _apply_paragraph_text(
-            doc.paragraphs[indices[0]],
+            paragraphs[indices[0]],
             " ".join(lines),
             highlight_terms=highlight_terms,
             plain=plain,
@@ -453,9 +484,9 @@ def _update_lines_index_preserving(
         return
     line_i = 0
     for idx in indices:
-        if line_i >= len(lines) or idx >= len(doc.paragraphs):
+        if line_i >= len(lines) or idx >= len(paragraphs):
             break
-        para = doc.paragraphs[idx]
+        para = paragraphs[idx]
         existing = _paragraph_text(para).strip()
         if not existing:
             continue
@@ -830,6 +861,7 @@ def parse_resume_from_docx(data: bytes) -> DocxResumeDocument:
         raise ValueError("Not a valid .docx file (expected a ZIP-based Word document).")
 
     doc = Document(BytesIO(data))
+    paragraphs = _all_document_paragraphs(doc)
     buckets: dict[str, list[str]] = {
         "contact": [],
         "professional_summary": [],
@@ -843,8 +875,9 @@ def parse_resume_from_docx(data: bytes) -> DocxResumeDocument:
     contact_paragraph_indices: list[int] = []
     current = "contact"
     plain_lines: list[str] = []
+    contact_ready = False
 
-    for idx, paragraph in enumerate(doc.paragraphs):
+    for idx, paragraph in enumerate(paragraphs):
         line = _line_from_paragraph(paragraph)
         if line:
             stripped = line.strip()
@@ -852,11 +885,48 @@ def parse_resume_from_docx(data: bytes) -> DocxResumeDocument:
             if sec:
                 current = sec
                 section_header_indices[sec] = idx
+                if is_pure_section_header(stripped):
+                    if sec == "other":
+                        buckets[current].append(line)
+                        body_indices[current].append(idx)
+                        plain_lines.append(line)
+                    continue
                 if sec == "other":
                     buckets[current].append(line)
                     body_indices[current].append(idx)
                     plain_lines.append(line)
                 continue
+            if current == "contact":
+                if line_is_factual_contact(stripped) or re.search(
+                    r"https?://|linkedin\.com|github\.com", stripped, re.I
+                ):
+                    contact_ready = True
+                elif not contact_ready and len(stripped) < 80 and not _is_bullet_paragraph(paragraph):
+                    contact_ready = True
+                else:
+                    implicit = implicit_section_after_contact(stripped)
+                    if implicit is None and _is_experience_role_start(paragraph, stripped):
+                        implicit = "professional_experience"
+                    if implicit is None and _is_bullet_paragraph(paragraph):
+                        implicit = "professional_experience"
+                    if implicit:
+                        current = implicit
+            elif current == "professional_summary":
+                implicit = implicit_section_after_contact(stripped)
+                if implicit is None and _is_experience_role_start(paragraph, stripped):
+                    implicit = "professional_experience"
+                if implicit is None and _is_bullet_paragraph(paragraph):
+                    implicit = "professional_experience"
+                if implicit == "professional_experience":
+                    current = implicit
+            elif current == "professional_experience":
+                implicit = implicit_section_after_contact(stripped)
+                if implicit in ("skills", "education"):
+                    current = implicit
+            elif current == "education":
+                implicit = implicit_section_after_contact(stripped)
+                if implicit == "skills":
+                    current = implicit
             buckets[current].append(line)
             body_indices[current].append(idx)
             plain_lines.append(line)
@@ -933,19 +1003,20 @@ def _update_contact_inplace(
     contact_indices: list[int],
     new_text: str,
 ) -> None:
-    valid_indices = [i for i in contact_indices if i < len(doc.paragraphs)]
+    paragraphs = _all_document_paragraphs(doc)
+    valid_indices = [i for i in contact_indices if i < len(paragraphs)]
     if not valid_indices:
         return
 
     new_lines = [line for line in _split_tailored_lines(new_text) if not line_is_factual_contact(line)]
     header_indices = [
-        i for i in valid_indices if not line_is_factual_contact(_paragraph_text(doc.paragraphs[i]))
+        i for i in valid_indices if not line_is_factual_contact(_paragraph_text(paragraphs[i]))
     ]
     new_i = 0
     for idx in header_indices:
         if new_i >= len(new_lines):
             break
-        para = doc.paragraphs[idx]
+        para = paragraphs[idx]
         _replace_paragraph_text_inplace(
             para,
             _display_line_for_paragraph(new_lines[new_i], para),
@@ -1181,16 +1252,19 @@ def _restore_frozen_docx_parts(
                 data = preserved[item.filename]
             elif item.filename == "word/document.xml":
                 mod_document = data.decode("utf-8")
-                merged_document = _merge_document_xml_preserving_layout(
-                    orig_document,
-                    mod_document,
-                    editable_paragraph_indices=editable_paragraph_indices,
-                    editable_table_index=editable_table_index,
-                )
-                if merged_document is not None:
-                    data = merged_document.encode("utf-8")
-                elif header_table:
-                    data = _replace_first_table_xml(mod_document, header_table).encode("utf-8")
+                if _document_has_textboxes(orig_document):
+                    data = mod_document.encode("utf-8")
+                else:
+                    merged_document = _merge_document_xml_preserving_layout(
+                        orig_document,
+                        mod_document,
+                        editable_paragraph_indices=editable_paragraph_indices,
+                        editable_table_index=editable_table_index,
+                    )
+                    if merged_document is not None:
+                        data = merged_document.encode("utf-8")
+                    elif header_table:
+                        data = _replace_first_table_xml(mod_document, header_table).encode("utf-8")
             out_zip.writestr(item, data)
 
         for name, data in preserved.items():

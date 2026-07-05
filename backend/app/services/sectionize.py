@@ -87,6 +87,19 @@ _MISPLACED_JOB_TITLE_RE = re.compile(
     re.I,
 )
 _BULLET_RE = re.compile(r"^[\-\u2022\u25cf\u25cb\u25aa\u25e6*•·]\s*")
+_ROLE_START_RE = re.compile(
+    r"\b\d{1,2}/\d{4}\s*[–\-—]\s*(\d{1,2}/\d{4}|present|current)\b",
+    re.I,
+)
+_SKILL_CATEGORY_RE = re.compile(
+    r"^[\-•*–—\u2022]?\s*(language|frontend|backend|ai/?ml|database|testing|devops|cloud|practices|tools|"
+    r"frameworks?|platforms?|methodolog\w*|shopify|project\s+management)\s*:",
+    re.I,
+)
+_SHORT_SKILL_HEADER_RE = re.compile(
+    r"^(shopify|frontend|backend|database|tools|languages?|frameworks?|devops|cloud|testing)$",
+    re.I,
+)
 
 
 def _is_misplaced_job_title_line(line: str) -> bool:
@@ -217,6 +230,41 @@ def _partition_education_and_other(education: str, other: str) -> tuple[str, str
     return edu, "\n\n".join(other_parts)
 
 
+def is_pure_section_header(line: str) -> bool:
+    """True when the line is only a decorative section label (e.g. ABOUT, WORK EXPERIENCE)."""
+    stripped = line.strip()
+    if not stripped or len(stripped) > 60:
+        return False
+    return match_section_header(stripped, in_contact=True) is not None or match_section_header(
+        stripped, in_contact=False
+    ) is not None
+
+
+def implicit_section_after_contact(line: str) -> str | None:
+    """
+    Canva/text-box resumes often place ABOUT / WORK EXPERIENCE labels after the body text.
+    Infer summary/experience/skills/education while still in the contact bucket.
+    """
+    stripped = line.strip()
+    if not stripped or is_pure_section_header(stripped):
+        return None
+    if _BULLET_RE.match(stripped):
+        return "professional_experience"
+    if _ROLE_START_RE.search(stripped):
+        return "professional_experience"
+    if "|" in stripped and len(stripped) < 120 and _MISPLACED_JOB_TITLE_RE.search(stripped):
+        return "professional_experience"
+    if _SKILL_CATEGORY_RE.match(stripped) or _SHORT_SKILL_HEADER_RE.match(stripped):
+        return "skills"
+    if _EDU_DEGREE_RE.search(stripped) or (
+        _EDU_DATE_RE.search(stripped) and not _MISPLACED_JOB_TITLE_RE.search(stripped)
+    ):
+        return "education"
+    if len(stripped) > 50 and "|" not in stripped and not stripped.endswith(":"):
+        return "professional_summary"
+    return None
+
+
 def match_section_header(line: str, *, in_contact: bool = False) -> str | None:
     s = line.strip()
     if len(s) > 80:
@@ -247,15 +295,41 @@ def parse_resume_sections(text: str) -> ParsedResume:
         "other": [],
     }
     current = "contact"
+    contact_ready = False
     for line in lines:
         stripped = line.strip()
         if stripped:
             sec = match_section_header(stripped, in_contact=(current == "contact"))
             if sec:
                 current = sec
+                if is_pure_section_header(stripped):
+                    if sec == "other":
+                        buckets[current].append(line)
+                    continue
                 if sec == "other":
                     buckets[current].append(line)
                 continue
+            if current == "contact":
+                if re.search(r"@|\+\d|https?://|linkedin\.com|github\.com", stripped, re.I):
+                    contact_ready = True
+                elif not contact_ready and len(stripped) < 80:
+                    contact_ready = True
+                else:
+                    implicit = implicit_section_after_contact(stripped)
+                    if implicit:
+                        current = implicit
+            elif current == "professional_summary":
+                implicit = implicit_section_after_contact(stripped)
+                if implicit == "professional_experience":
+                    current = implicit
+            elif current == "professional_experience":
+                implicit = implicit_section_after_contact(stripped)
+                if implicit in ("skills", "education"):
+                    current = implicit
+            elif current == "education":
+                implicit = implicit_section_after_contact(stripped)
+                if implicit == "skills":
+                    current = implicit
         buckets[current].append(line)
 
     def join_bucket(key: str) -> str:

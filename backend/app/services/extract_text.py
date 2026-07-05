@@ -9,6 +9,20 @@ from io import BytesIO
 import fitz
 from docx import Document
 from docx.oxml.ns import qn
+from docx.text.paragraph import Paragraph
+
+_BULLET_CHARS = r"\-•*–—\u2022\u25cf\u25cb\u25aa\u25e6\u00b7\u2219"
+_BULLET_PREFIX_RE = re.compile(rf"^[{_BULLET_CHARS}]\s*")
+
+
+def _all_docx_paragraphs(doc: Document) -> list:
+    paragraphs = list(doc.paragraphs)
+    seen = {id(p._element) for p in paragraphs}
+    for p_el in doc.element.xpath(".//*[local-name()='txbxContent']//w:p"):
+        if id(p_el) not in seen:
+            seen.add(id(p_el))
+            paragraphs.append(Paragraph(p_el, doc))
+    return paragraphs
 
 
 def extract_text_from_bytes(filename: str, data: bytes) -> str:
@@ -62,13 +76,15 @@ def _paragraph_line(paragraph) -> str | None:
     style_name = paragraph.style.name if paragraph.style and paragraph.style.name else ""
     if re.search(r"list|bullet", style_name, re.I):
         return f"- {text}"
+    if _BULLET_PREFIX_RE.match(text):
+        return f"- {_BULLET_PREFIX_RE.sub('', text).strip()}"
     return text
 
 
 def _from_docx(data: bytes) -> str:
     doc = Document(BytesIO(data))
     parts: list[str] = []
-    for paragraph in doc.paragraphs:
+    for paragraph in _all_docx_paragraphs(doc):
         line = _paragraph_line(paragraph)
         if line:
             parts.append(line)

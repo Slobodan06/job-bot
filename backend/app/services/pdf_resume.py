@@ -1072,7 +1072,8 @@ def split_experience_line_blocks(text: str) -> list[list[str]]:
     return _split_experience_lines(text)
 
 
-_BULLET_LINE_RE = re.compile(r"^[\-•*–—]\s+")
+_BULLET_CHARS = r"\-•*–—\u2022\u25cf\u25cb\u25aa\u25e6\u00b7\u2219"
+_BULLET_LINE_RE = re.compile(rf"^[{_BULLET_CHARS}]\s+")
 
 
 def _partition_bullets_for_role_blocks(bullets: list[str], counts: list[int]) -> list[list[str]]:

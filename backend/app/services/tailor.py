@@ -23,7 +23,8 @@ from app.services.pdf_resume import (
 )
 from app.services.sectionize import ParsedResume
 
-_BULLET_LINE_RE = re.compile(r"^[\-•*–—]\s+")
+_BULLET_CHARS = r"\-•*–—\u2022\u25cf\u25cb\u25aa\u25e6\u00b7\u2219"
+_BULLET_LINE_RE = re.compile(rf"^[{_BULLET_CHARS}]\s+")
 _YEARS_OF_EXPERIENCE_RE = re.compile(
     r"\b(\d+\+\s*(?:years?|yrs?)(?:\s+of\s+(?:professional\s+)?experience)?|"
     r"\d+\s+years?(?:\s+of\s+(?:professional\s+)?experience)?)\b",
@@ -125,7 +126,7 @@ class TailoredSections:
 def _source_section_stats(parsed: ParsedResume) -> dict[str, int | list[int]]:
     exp = (parsed.professional_experience or "").strip()
     skills = (parsed.skills or "").strip()
-    bullets = len(re.findall(r"^[\-•*–—]\s", exp, re.M))
+    bullets = len(re.findall(rf"^[{_BULLET_CHARS}]\s", exp, re.M))
     roles = len(re.findall(r"\n\s*\n", exp)) + (1 if exp else 0)
     skill_lines = len([line for line in skills.splitlines() if line.strip()])
     per_role = _experience_bullets_per_role(exp)
@@ -232,7 +233,7 @@ def _tailor_volume_ok(parsed: ParsedResume, tailored: TailoredSections) -> bool:
     if stats["experience_chars"] > 600 and out_exp < stats["experience_chars"] * 0.35:
         return False
     if stats["experience_bullets"] >= 4:
-        out_bullets = len(re.findall(r"^[\-•*–—]\s", tailored.professional_experience, re.M))
+        out_bullets = len(re.findall(rf"^[{_BULLET_CHARS}]\s", tailored.professional_experience, re.M))
         if out_bullets < max(4, int(stats["experience_bullets"] * 0.65)):
             return False
     if stats["skills_chars"] > 80 and out_sk < stats["skills_chars"] * 0.55:
@@ -272,8 +273,8 @@ def _bullet_bodies(text: str) -> list[str]:
         stripped = raw.strip()
         if not stripped:
             continue
-        if re.match(r"^[\-•*–—]\s+", stripped):
-            body = re.sub(r"^[\-•*–—]\s+", "", stripped).strip().lower()
+        if re.match(rf"^[{_BULLET_CHARS}]\s+", stripped):
+            body = re.sub(rf"^[{_BULLET_CHARS}]\s+", "", stripped).strip().lower()
             if len(body) >= 20:
                 bodies.append(body)
     return bodies
