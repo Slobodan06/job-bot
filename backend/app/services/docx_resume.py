@@ -407,6 +407,7 @@ def _update_lines_index_preserving(
     """
     Update paragraph i with line i only — preserves structure, styles, and extra paragraphs.
     Paragraphs beyond len(new_lines) are left unchanged (no deletes, no clearing).
+    Empty spacer paragraphs are never modified.
     """
     lines = _split_tailored_lines(new_text)
     if not lines or not indices:
@@ -414,16 +415,20 @@ def _update_lines_index_preserving(
     if len(indices) == 1 and len(lines) > 1:
         _replace_paragraph_text_inplace(doc.paragraphs[indices[0]], " ".join(lines))
         return
-    for i, idx in enumerate(indices):
-        if i >= len(lines) or idx >= len(doc.paragraphs):
+    line_i = 0
+    for idx in indices:
+        if line_i >= len(lines) or idx >= len(doc.paragraphs):
             break
         para = doc.paragraphs[idx]
-        line = lines[i]
         existing = _paragraph_text(para).strip()
+        if not existing:
+            continue
+        line = lines[line_i]
         if existing and _BULLET_CHAR_RE.match(existing) and not _BULLET_CHAR_RE.match(line):
             line = _format_bullet_line(_BULLET_CHAR_RE.match(existing).group(0), line)
         display = _display_line_for_paragraph(line, para)
         _replace_paragraph_text_inplace(para, display)
+        line_i += 1
 
 
 def _reassign_trailing_education_indices(
@@ -1034,6 +1039,11 @@ def _split_document_body_children(document_xml: str) -> list[str] | None:
     return children or None
 
 
+def _paragraph_plain_text_from_xml(paragraph_xml: str) -> str:
+    parts = re.findall(r"<w:t[^>]*>(.*?)</w:t>", paragraph_xml, re.S)
+    return "".join(parts).strip()
+
+
 def _merge_document_xml_preserving_layout(
     original_xml: str,
     modified_xml: str,
@@ -1044,6 +1054,7 @@ def _merge_document_xml_preserving_layout(
     """
     Keep original page/body XML byte-for-byte for every frozen region; only swap in
     modified summary/skills paragraphs and the work-experience table.
+    Unchanged paragraphs inside editable sections keep original XML (column breaks, spacing).
     """
     orig_children = _split_document_body_children(original_xml)
     mod_children = _split_document_body_children(modified_xml)
@@ -1063,8 +1074,13 @@ def _merge_document_xml_preserving_layout(
             tbl_idx += 1
             continue
         if o_child.startswith("<w:p"):
-            use_modified = para_idx in editable_paragraph_indices
-            merged_parts.append(m_child if use_modified else o_child)
+            if para_idx in editable_paragraph_indices:
+                if _paragraph_plain_text_from_xml(o_child) == _paragraph_plain_text_from_xml(m_child):
+                    merged_parts.append(o_child)
+                else:
+                    merged_parts.append(m_child)
+            else:
+                merged_parts.append(o_child)
             para_idx += 1
             continue
         merged_parts.append(o_child)

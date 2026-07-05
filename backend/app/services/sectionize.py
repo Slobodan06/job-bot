@@ -36,7 +36,7 @@ _SECTION_HEADERS: list[tuple[str, re.Pattern[str]]] = [
     (
         "skills",
         re.compile(
-            r"^technical\s+skills\b|^core\s+competencies\b|^key\s+skills\b|^skills\b|^expertise\b|^competencies\b|"
+            r"^technical\s+skills\b|^core\s+competencies\b|^core\s+skills\b|^key\s+skills\b|^skills\b|^expertise\b|^competencies\b|"
             r"^tools\b|^technologies\b",
             re.I,
         ),
@@ -58,6 +58,7 @@ _SECTION_HEADERS: list[tuple[str, re.Pattern[str]]] = [
             r"^certifications?\s*:?\s*$|^certification\s*:?\s*$|^certificates?\s*:?\s*$|^licenses?\s*:?\s*$|^courses?\s*:?\s*$|"
             r"^activities\s*:?\s*$|^extracurricular\s*:?\s*$|"
             r"^additional(\s+information|\s+details|\s+experience|\s+strengths)?\s*:?\s*$|"
+            r"^leadership(\s+&|\s+and)?\s+.*\b|"
             r"^hobbies\s*:?\s*$|"
             r"^portfolio\s*:?\s*$",
             re.I,
