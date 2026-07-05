@@ -931,27 +931,106 @@ def _update_section_inplace(
 
 
 def _first_table_xml(document_xml: str) -> str | None:
-    match = re.search(r"<w:tbl>.*?</w:tbl>", document_xml, re.S)
-    return match.group(0) if match else None
+    body_match = re.search(r"<w:body>(.*)</w:body>", document_xml, re.S)
+    if not body_match:
+        return None
+    inner = body_match.group(1)
+    pos = inner.find("<w:tbl")
+    if pos < 0:
+        return None
+    end = _find_w_element_end(inner, pos, "tbl")
+    return inner[pos:end] if end > pos else None
 
 
 def _replace_first_table_xml(document_xml: str, header_table_xml: str) -> str:
-    match = re.search(r"<w:tbl>.*?</w:tbl>", document_xml, re.S)
-    if not match:
+    body_match = re.search(r"(<w:body>)(.*?)(</w:body>)", document_xml, re.S)
+    if not body_match:
         return document_xml
-    return document_xml[: match.start()] + header_table_xml + document_xml[match.end() :]
+    inner = body_match.group(2)
+    pos = inner.find("<w:tbl")
+    if pos < 0:
+        return document_xml
+    end = _find_w_element_end(inner, pos, "tbl")
+    if end < 0:
+        return document_xml
+    new_inner = inner[:pos] + header_table_xml + inner[end:]
+    return (
+        document_xml[: body_match.start()]
+        + body_match.group(1)
+        + new_inner
+        + body_match.group(3)
+        + document_xml[body_match.end() :]
+    )
+
+
+def _find_w_element_end(xml: str, start: int, local_name: str) -> int:
+    """Return the end index of a <w:local_name ...>...</w:local_name> element."""
+    open_prefix = f"<w:{local_name}"
+    close_tag = f"</w:{local_name}>"
+    if not xml.startswith(open_prefix, start):
+        return -1
+    after = start + len(open_prefix)
+    if after >= len(xml) or xml[after] not in (">", " ", "/"):
+        return -1
+
+    pos = after
+    depth = 1
+    while pos < len(xml) and depth > 0:
+        next_open = _find_next_w_open(xml, pos, local_name)
+        next_close = xml.find(close_tag, pos)
+        if next_close < 0:
+            return -1
+        if next_open >= 0 and next_open < next_close:
+            depth += 1
+            pos = next_open + len(open_prefix)
+            continue
+        depth -= 1
+        pos = next_close + len(close_tag)
+    return pos
+
+
+def _find_next_w_open(xml: str, pos: int, local_name: str) -> int:
+    open_prefix = f"<w:{local_name}"
+    idx = pos
+    while True:
+        idx = xml.find(open_prefix, idx)
+        if idx < 0:
+            return -1
+        after = idx + len(open_prefix)
+        if after < len(xml) and xml[after] in (">", " ", "/"):
+            return idx
+        idx = after
 
 
 def _split_document_body_children(document_xml: str) -> list[str] | None:
     body_match = re.search(r"<w:body>(.*)</w:body>", document_xml, re.S)
     if not body_match:
         return None
+
     inner = body_match.group(1)
-    children = re.findall(
-        r"(<w:tbl>.*?</w:tbl>|<w:p>.*?</w:p>|<w:sectPr>.*?</w:sectPr>)",
-        inner,
-        re.S,
-    )
+    children: list[str] = []
+    pos = 0
+    length = len(inner)
+    while pos < length:
+        while pos < length and inner[pos].isspace():
+            pos += 1
+        if pos >= length:
+            break
+
+        if inner.startswith("<w:p", pos):
+            end = _find_w_element_end(inner, pos, "p")
+        elif inner.startswith("<w:tbl", pos):
+            end = _find_w_element_end(inner, pos, "tbl")
+        elif inner.startswith("<w:sectPr", pos):
+            end = _find_w_element_end(inner, pos, "sectPr")
+        else:
+            return None
+
+        if end < 0:
+            return None
+        children.append(inner[pos:end])
+        pos = end
+
     return children or None
 
 
