@@ -19,13 +19,28 @@ def pdf_download_filename(docx_filename: str) -> str:
     return f"{stem}.pdf"
 
 
+def _libreoffice_pdf_target() -> str:
+    custom = os.getenv("LIBREOFFICE_PDF_FILTER", "").strip()
+    if custom:
+        return custom
+    return 'pdf:writer_pdf_Export:{"SelectPdfVersion":1,"UseTaggedPDF":false}'
+
+
 def _libreoffice_commands(profile_dir: Path | None = None) -> list[list[str]]:
     env_path = os.getenv("LIBREOFFICE_PATH", "").strip()
     profile_flag: list[str] = []
     if profile_dir is not None:
         profile_flag = [f"-env:UserInstallation={profile_dir.resolve().as_uri()}"]
 
-    base_flags = ["--headless", "--norestore", "--nologo", "--nodefault", *profile_flag, "--convert-to", "pdf"]
+    base_flags = [
+        "--headless",
+        "--norestore",
+        "--nologo",
+        "--nodefault",
+        *profile_flag,
+        "--convert-to",
+        _libreoffice_pdf_target(),
+    ]
 
     if env_path:
         return [[env_path, *base_flags]]

@@ -942,12 +942,74 @@ def _replace_first_table_xml(document_xml: str, header_table_xml: str) -> str:
     return document_xml[: match.start()] + header_table_xml + document_xml[match.end() :]
 
 
-def _restore_frozen_docx_parts(original_bytes: bytes, modified_bytes: bytes) -> bytes:
+def _split_document_body_children(document_xml: str) -> list[str] | None:
+    body_match = re.search(r"<w:body>(.*)</w:body>", document_xml, re.S)
+    if not body_match:
+        return None
+    inner = body_match.group(1)
+    children = re.findall(
+        r"(<w:tbl>.*?</w:tbl>|<w:p>.*?</w:p>|<w:sectPr>.*?</w:sectPr>)",
+        inner,
+        re.S,
+    )
+    return children or None
+
+
+def _merge_document_xml_preserving_layout(
+    original_xml: str,
+    modified_xml: str,
+    *,
+    editable_paragraph_indices: set[int],
+    editable_table_index: int | None,
+) -> str | None:
+    """
+    Keep original page/body XML byte-for-byte for every frozen region; only swap in
+    modified summary/skills paragraphs and the work-experience table.
+    """
+    orig_children = _split_document_body_children(original_xml)
+    mod_children = _split_document_body_children(modified_xml)
+    if not orig_children or len(orig_children) != len(mod_children):
+        return None
+
+    para_idx = 0
+    tbl_idx = 0
+    merged_parts: list[str] = []
+    for o_child, m_child in zip(orig_children, mod_children):
+        if o_child.startswith("<w:sectPr"):
+            merged_parts.append(o_child)
+            continue
+        if o_child.startswith("<w:tbl"):
+            use_modified = editable_table_index is not None and tbl_idx == editable_table_index
+            merged_parts.append(m_child if use_modified else o_child)
+            tbl_idx += 1
+            continue
+        if o_child.startswith("<w:p"):
+            use_modified = para_idx in editable_paragraph_indices
+            merged_parts.append(m_child if use_modified else o_child)
+            para_idx += 1
+            continue
+        merged_parts.append(o_child)
+
+    body_match = re.search(r"(<w:body>).*?(</w:body>)", original_xml, re.S)
+    if not body_match:
+        return None
+    merged_body = body_match.group(1) + "".join(merged_parts) + body_match.group(2)
+    return original_xml[: body_match.start()] + merged_body + original_xml[body_match.end() :]
+
+
+def _restore_frozen_docx_parts(
+    original_bytes: bytes,
+    modified_bytes: bytes,
+    *,
+    editable_paragraph_indices: set[int] | None = None,
+    editable_table_index: int | None = None,
+) -> bytes:
     """
     python-docx save can strip package metadata and subtly alter header drawings.
     Restore header table + media/package parts from the upload so profile photos,
     round crops, fonts, and contact layout stay exactly as uploaded.
     """
+    editable_paragraph_indices = editable_paragraph_indices or set()
     with ZipFile(BytesIO(original_bytes)) as orig_zip:
         orig_names = set(orig_zip.namelist())
         orig_document = orig_zip.read("word/document.xml").decode("utf-8")
@@ -955,12 +1017,17 @@ def _restore_frozen_docx_parts(original_bytes: bytes, modified_bytes: bytes) -> 
 
         preserve_whole = [
             "[Content_Types].xml",
+            "_rels/.rels",
+            "docProps/core.xml",
+            "docProps/app.xml",
             "word/_rels/document.xml.rels",
             "word/styles.xml",
             "word/stylesWithEffects.xml",
             "word/theme/theme1.xml",
             "word/fontTable.xml",
             "word/webSettings.xml",
+            "word/settings.xml",
+            "word/numbering.xml",
         ]
         preserved: dict[str, bytes] = {}
         for name in preserve_whole:
@@ -977,9 +1044,18 @@ def _restore_frozen_docx_parts(original_bytes: bytes, modified_bytes: bytes) -> 
             data = mod_zip.read(item.filename)
             if item.filename in preserved:
                 data = preserved[item.filename]
-            elif item.filename == "word/document.xml" and header_table:
-                doc_xml = data.decode("utf-8")
-                data = _replace_first_table_xml(doc_xml, header_table).encode("utf-8")
+            elif item.filename == "word/document.xml":
+                mod_document = data.decode("utf-8")
+                merged_document = _merge_document_xml_preserving_layout(
+                    orig_document,
+                    mod_document,
+                    editable_paragraph_indices=editable_paragraph_indices,
+                    editable_table_index=editable_table_index,
+                )
+                if merged_document is not None:
+                    data = merged_document.encode("utf-8")
+                elif header_table:
+                    data = _replace_first_table_xml(mod_document, header_table).encode("utf-8")
             out_zip.writestr(item, data)
 
         for name, data in preserved.items():
@@ -1061,7 +1137,21 @@ def apply_tailored_sections_to_docx(
 
     out = BytesIO()
     doc.save(out)
-    merged = _restore_frozen_docx_parts(docx_bytes, out.getvalue())
+
+    editable_paragraph_indices: set[int] = set(section_body_indices.get("professional_summary", []))
+    editable_paragraph_indices.update(section_body_indices.get("skills", []))
+    editable_table_index: int | None = None
+    if exp_rows:
+        editable_table_index = exp_rows[0].table_idx
+    else:
+        editable_paragraph_indices.update(section_body_indices.get("professional_experience", []))
+
+    merged = _restore_frozen_docx_parts(
+        docx_bytes,
+        out.getvalue(),
+        editable_paragraph_indices=editable_paragraph_indices,
+        editable_table_index=editable_table_index,
+    )
     return merged, output_docx_filename(original_filename)
 
 

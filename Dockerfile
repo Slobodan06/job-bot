@@ -15,13 +15,18 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     FRONTEND_DIST=/app/static
 
 COPY backend/requirements.txt .
+COPY backend/docker/fonts-local.conf /etc/fonts/local.conf
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         antiword \
         libreoffice-writer \
         libreoffice-core \
+        fontconfig \
         fonts-liberation \
         fonts-dejavu-core \
+        fonts-crosextra-carlito \
+        fonts-crosextra-caladea \
+    && fc-cache -f \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --upgrade pip \
     && pip install -r requirements.txt
