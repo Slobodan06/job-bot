@@ -16,10 +16,18 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 COPY backend/requirements.txt .
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends antiword \
+    && apt-get install -y --no-install-recommends \
+        antiword \
+        libreoffice-writer \
+        libreoffice-core \
+        fonts-liberation \
+        fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --upgrade pip \
     && pip install -r requirements.txt
+
+ENV DOCX_PDF_CONVERTER=libreoffice \
+    HOME=/tmp
 
 COPY backend/app ./app
 COPY --from=frontend-build /src/frontend/dist /app/static

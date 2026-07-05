@@ -19,21 +19,27 @@ def pdf_download_filename(docx_filename: str) -> str:
     return f"{stem}.pdf"
 
 
-def _libreoffice_commands() -> list[list[str]]:
+def _libreoffice_commands(profile_dir: Path | None = None) -> list[list[str]]:
     env_path = os.getenv("LIBREOFFICE_PATH", "").strip()
+    profile_flag: list[str] = []
+    if profile_dir is not None:
+        profile_flag = [f"-env:UserInstallation={profile_dir.resolve().as_uri()}"]
+
+    base_flags = ["--headless", "--norestore", "--nologo", "--nodefault", *profile_flag, "--convert-to", "pdf"]
+
     if env_path:
-        return [[env_path, "--headless", "--convert-to", "pdf"]]
+        return [[env_path, *base_flags]]
 
     if sys.platform == "win32":
         candidates = [
             r"C:\Program Files\LibreOffice\program\soffice.exe",
             r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
         ]
-        return [[path, "--headless", "--convert-to", "pdf"] for path in candidates if Path(path).is_file()]
+        return [[path, *base_flags] for path in candidates if Path(path).is_file()]
 
     for cmd in ("libreoffice", "soffice"):
         if shutil.which(cmd):
-            return [[cmd, "--headless", "--convert-to", "pdf"]]
+            return [[cmd, *base_flags]]
     return []
 
 
@@ -51,7 +57,9 @@ def _convert_with_docx2pdf(docx_path: Path, pdf_path: Path) -> bool:
 
 def _convert_with_libreoffice(docx_path: Path, pdf_path: Path) -> bool:
     out_dir = pdf_path.parent
-    for base_cmd in _libreoffice_commands():
+    profile_dir = out_dir / "lo-profile"
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    for base_cmd in _libreoffice_commands(profile_dir):
         cmd = [*base_cmd, "--outdir", str(out_dir), str(docx_path)]
         try:
             proc = subprocess.run(
@@ -95,7 +103,8 @@ def convert_docx_bytes_to_pdf(
         docx_path.write_bytes(docx_bytes)
 
         converted = False
-        if mode in ("auto", "docx2pdf", "word"):
+        try_docx2pdf = mode in ("docx2pdf", "word") or (mode == "auto" and sys.platform == "win32")
+        if try_docx2pdf:
             converted = _convert_with_docx2pdf(docx_path, pdf_path)
         if not converted and mode in ("auto", "libreoffice", "soffice"):
             converted = _convert_with_libreoffice(docx_path, pdf_path)
