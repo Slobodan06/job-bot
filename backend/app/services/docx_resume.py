@@ -14,7 +14,9 @@ from docx.text.paragraph import Paragraph
 
 from app.services.pdf_resume import (
     line_is_factual_contact,
+    merge_experience_headers_with_bullets,
     replace_role_title_in_header,
+    sanitize_target_job_role,
     _looks_like_role_header_line,
 )
 from app.services.sectionize import (
@@ -470,11 +472,14 @@ def _update_experience_bullets_only(
         new_bullets = bullets_per_block[block_i] if block_i < len(bullets_per_block) else []
 
         for bi, idx in enumerate(bullet_indices):
-            if bi >= len(new_bullets):
-                break
-            para = paragraphs[idx]
-            display = _display_line_for_paragraph(new_bullets[bi], para)
-            _apply_paragraph_text(para, display, highlight_terms=highlight_terms, enable_bold=enable_bold)
+            if bi < len(new_bullets):
+                display = _display_line_for_paragraph(new_bullets[bi], paragraphs[idx])
+                _apply_paragraph_text(
+                    paragraphs[idx],
+                    display,
+                    highlight_terms=highlight_terms,
+                    enable_bold=enable_bold,
+                )
 
         if len(new_bullets) > len(bullet_indices):
             anchor = paragraphs[bullet_indices[-1]]
@@ -609,9 +614,10 @@ def _looks_like_skill_category_line(text: str) -> bool:
 
 
 def _cell_bullet_paragraph_indices(cell) -> list[int]:
+    """Bullet paragraphs in a table cell (● markers, list styles, or dash prefixes)."""
     indices: list[int] = []
     for idx, para in enumerate(cell.paragraphs):
-        if _is_bulletish_text(_paragraph_text(para)):
+        if _is_bullet_paragraph(para) or _is_bulletish_text(_paragraph_text(para)):
             indices.append(idx)
     return indices
 
@@ -868,15 +874,14 @@ def _update_experience_table_rows(
         prefix = _detect_bullet_prefix(cell)
 
         for bi, para_idx in enumerate(bullet_indices):
-            if bi >= len(new_bullets):
-                break
-            formatted = _format_bullet_line(prefix, new_bullets[bi])
-            _apply_paragraph_text(
-                cell.paragraphs[para_idx],
-                formatted,
-                highlight_terms=highlight_terms,
-                enable_bold=enable_bold,
-            )
+            if bi < len(new_bullets):
+                formatted = _format_bullet_line(prefix, new_bullets[bi])
+                _apply_paragraph_text(
+                    cell.paragraphs[para_idx],
+                    formatted,
+                    highlight_terms=highlight_terms,
+                    enable_bold=enable_bold,
+                )
 
         if len(new_bullets) > len(bullet_indices):
             anchor = cell.paragraphs[bullet_indices[-1]]
@@ -1093,6 +1098,73 @@ def parse_resume_from_docx(data: bytes) -> DocxResumeDocument:
     )
 
 
+def _detect_contact_header_role_line(text: str) -> bool:
+    """True for the headline job-title line under the candidate name (not email/phone/links)."""
+    stripped = (text or "").strip()
+    if not stripped or line_is_factual_contact(stripped):
+        return False
+    if _looks_like_role_header_line(stripped):
+        return True
+    if "|" in stripped and len(stripped) < 160:
+        return True
+    if re.search(
+        r"\b(engineer|developer|architect|consultant|manager|analyst|designer|specialist|lead|"
+        r"principal|scientist|programmer|full[\s-]?stack|software|devops|sre)\b",
+        stripped,
+        re.I,
+    ):
+        return len(stripped) < 120
+    return False
+
+
+def _update_contact_header_job_role(doc: Document, target_job_role: str) -> tuple[bool, set[int]]:
+    """
+    Replace only the CV headline role/title with the user-provided target role.
+    Name, email, phone, links, and layout stay unchanged.
+    """
+    role = (target_job_role or "").strip()
+    if not role:
+        return False, set()
+
+    updated_indices: set[int] = set()
+    table_updated = False
+    if doc.tables:
+        header_table = doc.tables[0]
+        seen_tc: set[int] = set()
+        for row in header_table.rows[:3]:
+            for cell in row.cells:
+                tc_id = id(cell._tc)
+                if tc_id in seen_tc:
+                    continue
+                seen_tc.add(tc_id)
+                for para in cell.paragraphs:
+                    text = _paragraph_text(para).strip()
+                    if not text or not _detect_contact_header_role_line(text):
+                        continue
+                    display = (
+                        replace_role_title_in_header(text, role)
+                        if "|" in text
+                        else role
+                    )
+                    _apply_role_header_text(para, display)
+                    table_updated = True
+                    break
+            if table_updated:
+                break
+
+    paragraphs = _all_document_paragraphs(doc)
+    for idx in range(min(8, len(paragraphs))):
+        text = _paragraph_text(paragraphs[idx]).strip()
+        if not text or not _detect_contact_header_role_line(text):
+            continue
+        display = replace_role_title_in_header(text, role) if "|" in text else role
+        _apply_role_header_text(paragraphs[idx], display)
+        if idx < len(doc.paragraphs):
+            updated_indices.add(idx)
+        break
+    return table_updated or bool(updated_indices), updated_indices
+
+
 def _update_contact_inplace(
     doc: Document,
     contact_indices: list[int],
@@ -1155,6 +1227,93 @@ def _update_section_inplace(
         )
     else:
         _update_lines_index_preserving(doc, indices, new_text)
+
+
+def _ensure_tailored_experience_has_bullets(tailored_experience: str, source_experience: str) -> str:
+    """Keep source bullet lines when the LLM returns headers only (prevents empty experience rows)."""
+    tailored = (tailored_experience or "").strip()
+    source = (source_experience or "").strip()
+    if not tailored or not source:
+        return tailored
+    if _bullet_lines(tailored):
+        return tailored
+    source_bullets = _bullet_lines(source)
+    if not source_bullets:
+        return tailored
+    return merge_experience_headers_with_bullets(source, tailored)
+
+
+def _count_body_level_paragraphs(document_xml: str) -> int:
+    children = _split_document_body_children(document_xml)
+    if not children:
+        return 0
+    return sum(1 for child in children if child.startswith("<w:p"))
+
+
+def _count_tables_in_document_xml(document_xml: str) -> int:
+    children = _split_document_body_children(document_xml)
+    if not children:
+        return 0
+    return sum(1 for child in children if child.startswith("<w:tbl"))
+
+
+def _build_editable_body_para_xml_map(
+    memory_doc: Document,
+    editable_paragraph_indices: set[int],
+) -> dict[int, str]:
+    """Body-level paragraph XML from the in-memory doc (summary/skills — not inside tables)."""
+    editable: dict[int, str] = {}
+    paragraphs = memory_doc.paragraphs
+    for idx in editable_paragraph_indices:
+        if 0 <= idx < len(paragraphs):
+            editable[idx] = paragraphs[idx]._element.xml
+    return editable
+
+
+def _rebuild_orig_document_selective(
+    orig_document_xml: str,
+    memory_doc: Document,
+    *,
+    editable_paragraph_indices: set[int],
+    editable_table_indices: set[int],
+) -> str | None:
+    """
+    Rebuild document.xml from the original upload layout, swapping only edited
+    body paragraphs and tables from the in-memory doc. Never adopts a flattened save().
+    """
+    orig_children = _split_document_body_children(orig_document_xml)
+    if not orig_children:
+        return None
+
+    editable_para_xml = _build_editable_body_para_xml_map(memory_doc, editable_paragraph_indices)
+    mem_tables = list(memory_doc.tables)
+
+    body_para_idx = 0
+    tbl_idx = 0
+    merged_parts: list[str] = []
+
+    for child in orig_children:
+        if child.startswith("<w:sectPr"):
+            merged_parts.append(child)
+            continue
+        if child.startswith("<w:tbl"):
+            if tbl_idx in editable_table_indices and tbl_idx < len(mem_tables):
+                merged_parts.append(mem_tables[tbl_idx]._element.xml)
+            else:
+                merged_parts.append(child)
+            tbl_idx += 1
+            continue
+        if child.startswith("<w:p"):
+            merged_parts.append(editable_para_xml.get(body_para_idx, child))
+            body_para_idx += 1
+            continue
+        merged_parts.append(child)
+
+    body_match = re.search(r"(<w:body>).*?(</w:body>)", orig_document_xml, re.S)
+    if not body_match:
+        return None
+    merged_body = body_match.group(1) + "".join(merged_parts) + body_match.group(2)
+    return orig_document_xml[: body_match.start()] + merged_body + orig_document_xml[body_match.end() :]
 
 
 def _first_table_xml(document_xml: str) -> str | None:
@@ -1374,6 +1533,8 @@ def _restore_frozen_docx_parts(
     *,
     editable_paragraph_indices: set[int] | None = None,
     editable_table_index: int | None = None,
+    memory_doc: Document | None = None,
+    editable_table_indices: set[int] | None = None,
 ) -> bytes:
     """
     python-docx save can strip package metadata and subtly alter header drawings.
@@ -1381,10 +1542,13 @@ def _restore_frozen_docx_parts(
     round crops, fonts, and contact layout stay exactly as uploaded.
     """
     editable_paragraph_indices = editable_paragraph_indices or set()
+    editable_table_indices = set(editable_table_indices or ())
+    if editable_table_index is not None:
+        editable_table_indices.add(editable_table_index)
+
     with ZipFile(BytesIO(original_bytes)) as orig_zip:
         orig_names = set(orig_zip.namelist())
         orig_document = orig_zip.read("word/document.xml").decode("utf-8")
-        header_table = _first_table_xml(orig_document)
 
         preserve_whole = [
             "[Content_Types].xml",
@@ -1416,29 +1580,77 @@ def _restore_frozen_docx_parts(
             if item.filename in preserved:
                 data = preserved[item.filename]
             elif item.filename == "word/document.xml":
-                mod_document = data.decode("utf-8")
-                if _document_has_textboxes(orig_document):
-                    data = mod_document.encode("utf-8")
-                else:
-                    merged_document = _merge_document_xml_preserving_layout(
+                if memory_doc is not None and not _document_has_textboxes(orig_document):
+                    rebuilt = _rebuild_orig_document_selective(
                         orig_document,
-                        mod_document,
+                        memory_doc,
                         editable_paragraph_indices=editable_paragraph_indices,
-                        editable_table_index=editable_table_index,
+                        editable_table_indices=editable_table_indices,
                     )
-                    if merged_document is not None:
-                        data = merged_document.encode("utf-8")
+                    if rebuilt is not None:
+                        data = rebuilt.encode("utf-8")
                     else:
+                        mod_document = data.decode("utf-8")
+                        orig_table_count = _count_tables_in_document_xml(orig_document)
+                        mod_table_count = _count_tables_in_document_xml(mod_document)
+                        if _document_has_textboxes(orig_document):
+                            data = mod_document.encode("utf-8")
+                        elif orig_table_count > 0 and mod_table_count < orig_table_count:
+                            fallback = _merge_document_xml_selective_fallback(
+                                orig_document,
+                                mod_document,
+                                editable_paragraph_indices=editable_paragraph_indices,
+                                editable_table_index=editable_table_index,
+                            )
+                            data = (fallback if fallback is not None else orig_document).encode("utf-8")
+                        else:
+                            merged_document = _merge_document_xml_preserving_layout(
+                                orig_document,
+                                mod_document,
+                                editable_paragraph_indices=editable_paragraph_indices,
+                                editable_table_index=editable_table_index,
+                            )
+                            if merged_document is not None:
+                                data = merged_document.encode("utf-8")
+                            else:
+                                fallback = _merge_document_xml_selective_fallback(
+                                    orig_document,
+                                    mod_document,
+                                    editable_paragraph_indices=editable_paragraph_indices,
+                                    editable_table_index=editable_table_index,
+                                )
+                                data = (fallback if fallback is not None else orig_document).encode("utf-8")
+                else:
+                    mod_document = data.decode("utf-8")
+                    orig_table_count = _count_tables_in_document_xml(orig_document)
+                    mod_table_count = _count_tables_in_document_xml(mod_document)
+                    if _document_has_textboxes(orig_document):
+                        data = mod_document.encode("utf-8")
+                    elif orig_table_count > 0 and mod_table_count < orig_table_count:
                         fallback = _merge_document_xml_selective_fallback(
                             orig_document,
                             mod_document,
                             editable_paragraph_indices=editable_paragraph_indices,
                             editable_table_index=editable_table_index,
                         )
-                        if fallback is not None:
-                            data = fallback.encode("utf-8")
-                        elif header_table:
-                            data = _replace_first_table_xml(mod_document, header_table).encode("utf-8")
+                        data = (fallback if fallback is not None else orig_document).encode("utf-8")
+                    else:
+                        merged_document = _merge_document_xml_preserving_layout(
+                            orig_document,
+                            mod_document,
+                            editable_paragraph_indices=editable_paragraph_indices,
+                            editable_table_index=editable_table_index,
+                        )
+                        if merged_document is not None:
+                            data = merged_document.encode("utf-8")
+                        else:
+                            fallback = _merge_document_xml_selective_fallback(
+                                orig_document,
+                                mod_document,
+                                editable_paragraph_indices=editable_paragraph_indices,
+                                editable_table_index=editable_table_index,
+                            )
+                            data = (fallback if fallback is not None else orig_document).encode("utf-8")
             out_zip.writestr(item, data)
 
         for name, data in preserved.items():
@@ -1466,6 +1678,7 @@ def apply_tailored_sections_to_docx(
     highlight_keywords: list[str] | None = None,
     skills_highlight_keywords: list[str] | None = None,
     experience_role_titles: list[str] | None = None,
+    target_job_role: str = "",
     enable_bold: bool = True,
 ) -> tuple[bytes, str] | None:
     exp_rows = experience_table_rows or []
@@ -1480,10 +1693,15 @@ def apply_tailored_sections_to_docx(
         else []
     )
     role_titles = [t.strip() for t in (experience_role_titles or []) if t and t.strip()]
+    header_role = sanitize_target_job_role(target_job_role) or (role_titles[0] if role_titles else "")
     if not _has_editable_docx_targets(section_body_indices, exp_rows):
         return None
 
     doc = Document(BytesIO(docx_bytes))
+    professional_experience = _ensure_tailored_experience_has_bullets(
+        professional_experience,
+        source_sections.professional_experience,
+    )
     fallbacks = {
         "contact": source_sections.contact,
         "professional_summary": source_sections.professional_summary,
@@ -1534,24 +1752,31 @@ def apply_tailored_sections_to_docx(
             enable_bold=enable_bold,
         )
 
-    # Contact/header block is never modified — name, title, email, phone, links stay as uploaded.
+    header_role_updated, header_para_indices = _update_contact_header_job_role(doc, header_role)
 
     out = BytesIO()
     doc.save(out)
 
     editable_paragraph_indices: set[int] = set(section_body_indices.get("professional_summary", []))
     editable_paragraph_indices.update(section_body_indices.get("skills", []))
+    editable_paragraph_indices.update(header_para_indices)
+    editable_table_indices: set[int] = set()
     editable_table_index: int | None = None
     if exp_rows:
         editable_table_index = exp_rows[0].table_idx
+        editable_table_indices.add(editable_table_index)
     else:
         editable_paragraph_indices.update(section_body_indices.get("professional_experience", []))
+    if header_role_updated and doc.tables:
+        editable_table_indices.add(0)
 
     merged = _restore_frozen_docx_parts(
         docx_bytes,
         out.getvalue(),
         editable_paragraph_indices=editable_paragraph_indices,
         editable_table_index=editable_table_index,
+        memory_doc=doc,
+        editable_table_indices=editable_table_indices,
     )
     return merged, output_docx_filename(original_filename)
 

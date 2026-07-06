@@ -852,6 +852,7 @@ def _build_docx_sync(
     tailored: TailoredSections,
     highlight_keywords: list[str] | None = None,
     skills_highlight_keywords: list[str] | None = None,
+    target_job_role: str = "",
     enable_bold: bool = True,
 ) -> tuple[str, str, bool]:
     """Returns (base64_docx, download_filename, used_inplace_on_upload)."""
@@ -871,6 +872,7 @@ def _build_docx_sync(
         highlight_keywords=highlight_keywords,
         skills_highlight_keywords=skills_highlight_keywords,
         experience_role_titles=_parse_role_titles_list(tailored.experience_role_titles),
+        target_job_role=target_job_role,
         enable_bold=enable_bold,
         source_sections=source_sections,
         original_filename=original_filename,
@@ -972,6 +974,7 @@ async def tailor_resume(
                 tailored=tailored,
                 highlight_keywords=highlight_keywords,
                 skills_highlight_keywords=skills_highlight_keywords,
+                target_job_role=target_job_role,
                 enable_bold=enable_bold,
             )
             if used_docx_inplace and docx_b64:
