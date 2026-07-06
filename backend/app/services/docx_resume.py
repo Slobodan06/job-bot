@@ -347,8 +347,40 @@ def _partition_header_and_bullet_lines(lines: list[str]) -> tuple[list[str], lis
     return headers, bullets
 
 
+def _detect_contact_header_role_line(text: str) -> bool:
+    """True for the headline job-title line under the candidate name (not email/phone/links)."""
+    stripped = (text or "").strip()
+    if not stripped or line_is_factual_contact(stripped):
+        return False
+    if _ROLE_START_RE.search(stripped):
+        return False
+    if _looks_like_role_header_line(stripped) and "|" in stripped:
+        return True
+    if "|" in stripped and len(stripped) < 160:
+        return bool(
+            re.search(
+                r"\b(engineer|developer|architect|consultant|manager|analyst|designer|specialist|lead|"
+                r"principal|scientist|programmer|full[\s-]?stack|software|devops|sre)\b",
+                stripped,
+                re.I,
+            )
+        )
+    if re.search(
+        r"\b(engineer|developer|architect|consultant|manager|analyst|designer|specialist|lead|"
+        r"principal|scientist|programmer|full[\s-]?stack|software|devops|sre)\b",
+        stripped,
+        re.I,
+    ):
+        return len(stripped) < 120
+    return False
+
+
 def _is_experience_role_start(paragraph: Paragraph, text: str) -> bool:
     if _is_bullet_paragraph(paragraph):
+        return False
+    if _detect_contact_header_role_line(text):
+        return False
+    if line_is_factual_contact(text):
         return False
     # In-role sub-headings (e.g. "DevOps & Cloud Engineering:") are not new employers.
     if text.rstrip().endswith(":") and "|" not in text and not _ROLE_START_RE.search(text):
@@ -362,7 +394,7 @@ def _is_experience_role_start(paragraph: Paragraph, text: str) -> bool:
         text,
         re.I,
     ):
-        return len(text) < 100 and "|" in text
+        return len(text) < 100 and ("|" in text or "\t" in text or _ROLE_START_RE.search(text))
     return False
 
 
@@ -425,6 +457,16 @@ def _apply_role_header_text(paragraph: Paragraph, text: str) -> None:
     _replace_paragraph_text_plain(paragraph, text)
 
 
+def _paragraph_bullet_prefix(paragraph: Paragraph) -> str:
+    text = _paragraph_text(paragraph).strip()
+    match = _BULLET_CHAR_RE.match(text)
+    if match:
+        return match.group(0).rstrip()
+    if _is_list_paragraph(paragraph):
+        return "•"
+    return "•"
+
+
 def _update_experience_bullets_only(
     doc: Document,
     indices: list[int],
@@ -453,11 +495,7 @@ def _update_experience_bullets_only(
         header_idx = _primary_role_header_index(para_block, paragraphs)
         if header_idx is not None and block_i < len(role_titles or []):
             existing = _paragraph_text(paragraphs[header_idx]).strip()
-            display = (
-                replace_role_title_in_header(existing, role_titles[block_i])
-                if "|" in existing
-                else role_titles[block_i]
-            )
+            display = replace_role_title_in_header(existing, role_titles[block_i])
             _apply_role_header_text(paragraphs[header_idx], display)
 
         bullet_indices = [idx for idx in para_block if _is_bullet_paragraph(paragraphs[idx])]
@@ -470,13 +508,14 @@ def _update_experience_bullets_only(
         if not bullet_indices:
             continue
         new_bullets = bullets_per_block[block_i] if block_i < len(bullets_per_block) else []
+        prefix = _paragraph_bullet_prefix(paragraphs[bullet_indices[0]]) if bullet_indices else "•"
 
         for bi, idx in enumerate(bullet_indices):
             if bi < len(new_bullets):
-                display = _display_line_for_paragraph(new_bullets[bi], paragraphs[idx])
+                formatted = _format_bullet_line(prefix, new_bullets[bi])
                 _apply_paragraph_text(
                     paragraphs[idx],
-                    display,
+                    formatted,
                     highlight_terms=highlight_terms,
                     enable_bold=enable_bold,
                 )
@@ -486,7 +525,10 @@ def _update_experience_bullets_only(
             template = paragraphs[bullet_indices[0]]
             for line in new_bullets[len(bullet_indices) :]:
                 anchor = _clone_and_insert_after(
-                    anchor, template, line, highlight_terms if enable_bold else None
+                    anchor,
+                    template,
+                    _format_bullet_line(prefix, line),
+                    highlight_terms if enable_bold else None,
                 )
 
 
@@ -562,6 +604,44 @@ def _update_lines_index_preserving(
             enable_bold=enable_bold,
         )
         line_i += 1
+
+
+def _normalize_section_body_indices(
+    body_indices: dict[str, list[int]],
+    section_header_indices: dict[str, int],
+    contact_paragraph_indices: list[int],
+) -> None:
+    """Keep each section's editable paragraphs strictly inside its header boundaries."""
+    contact_set = set(contact_paragraph_indices)
+    ordered_sections = (
+        "professional_summary",
+        "skills",
+        "professional_experience",
+        "education",
+        "other",
+    )
+    header_positions = {
+        name: section_header_indices[name]
+        for name in ordered_sections
+        if name in section_header_indices
+    }
+
+    for section in ordered_sections:
+        indices = body_indices.get(section, [])
+        if not indices:
+            continue
+        start = header_positions.get(section)
+        if start is not None:
+            indices = [i for i in indices if i > start]
+        later_headers = [
+            pos for name, pos in header_positions.items() if name != section and pos > (start or -1)
+        ]
+        if later_headers:
+            end = min(later_headers)
+            indices = [i for i in indices if i < end]
+        if section != "contact":
+            indices = [i for i in indices if i not in contact_set]
+        body_indices[section] = indices
 
 
 def _reassign_trailing_education_indices(
@@ -859,11 +939,7 @@ def _update_experience_table_rows(
                     continue
                 if title_updated:
                     break
-                display = (
-                    replace_role_title_in_header(text, new_title)
-                    if "|" in text
-                    else new_title
-                )
+                display = replace_role_title_in_header(text, new_title)
                 _apply_role_header_text(para, display)
                 title_updated = True
 
@@ -1000,11 +1076,19 @@ def parse_resume_from_docx(data: bytes) -> DocxResumeDocument:
                     plain_lines.append(line)
                 continue
             if current == "contact":
+                if line_is_factual_contact(stripped) or _detect_contact_header_role_line(stripped):
+                    buckets["contact"].append(line)
+                    body_indices["contact"].append(idx)
+                    contact_paragraph_indices.append(idx)
+                    plain_lines.append(line)
+                    contact_ready = True
+                    continue
                 implicit = implicit_section_after_contact(stripped)
                 if implicit is None and _is_experience_role_start(paragraph, stripped):
                     implicit = "professional_experience"
                 if implicit is None and _is_bullet_paragraph(paragraph):
-                    implicit = "professional_experience"
+                    if not line_is_factual_contact(stripped):
+                        implicit = "professional_experience"
                 if implicit:
                     current = implicit
                 elif line_is_factual_contact(stripped) and not _looks_like_role_header_line(stripped):
@@ -1074,6 +1158,11 @@ def parse_resume_from_docx(data: bytes) -> DocxResumeDocument:
         parsed = parse_resume_sections(plain_text)
 
     section_body_indices = {key: list(body_indices[key]) for key in _TAILOR_HEADER_SECTIONS}
+    _normalize_section_body_indices(
+        section_body_indices,
+        section_header_indices,
+        contact_paragraph_indices,
+    )
     _reassign_trailing_education_indices(section_body_indices, parsed)
 
     experience_table_rows: list[ExperienceRowRef] = []
@@ -1096,25 +1185,6 @@ def parse_resume_from_docx(data: bytes) -> DocxResumeDocument:
         contact_paragraph_indices=contact_paragraph_indices,
         experience_table_rows=experience_table_rows,
     )
-
-
-def _detect_contact_header_role_line(text: str) -> bool:
-    """True for the headline job-title line under the candidate name (not email/phone/links)."""
-    stripped = (text or "").strip()
-    if not stripped or line_is_factual_contact(stripped):
-        return False
-    if _looks_like_role_header_line(stripped):
-        return True
-    if "|" in stripped and len(stripped) < 160:
-        return True
-    if re.search(
-        r"\b(engineer|developer|architect|consultant|manager|analyst|designer|specialist|lead|"
-        r"principal|scientist|programmer|full[\s-]?stack|software|devops|sre)\b",
-        stripped,
-        re.I,
-    ):
-        return len(stripped) < 120
-    return False
 
 
 def _update_contact_header_job_role(doc: Document, target_job_role: str) -> tuple[bool, set[int]]:

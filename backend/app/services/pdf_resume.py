@@ -1169,6 +1169,14 @@ def replace_role_title_in_header(header_line: str, new_title: str) -> str:
         return f"{title} | {rest.lstrip()}"
     if stripped.endswith("|"):
         return f"{title} |"
+    if "\t" in stripped:
+        _, rest = stripped.split("\t", 1)
+        return f"{title}\t{rest.lstrip()}"
+    date_match = _ROLE_HEADER_DATE_RE.search(stripped)
+    if date_match:
+        rest = stripped[date_match.start() :].lstrip()
+        sep = "\t" if "\t" in stripped else " "
+        return f"{title}{sep}{rest}"
     return title
 
 
