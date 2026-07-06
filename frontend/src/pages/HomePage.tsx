@@ -4,6 +4,7 @@ import {
   Alert,
   Badge,
   Button,
+  Checkbox,
   Container,
   Divider,
   Group,
@@ -52,6 +53,7 @@ const ACCEPT = ["application/vnd.openxmlformats-officedocument.wordprocessingml.
 export default function HomePage() {
   const [file, setFile] = useState<File | null>(null);
   const [jobDescription, setJobDescription] = useState("");
+  const [enableBold, setEnableBold] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<TailorResponse | null>(null);
@@ -120,7 +122,7 @@ export default function HomePage() {
     setError(null);
     setResult(null);
     try {
-      const data = await tailorApi.tailor(file, jobDescription);
+      const data = await tailorApi.tailor(file, jobDescription, enableBold);
       setResult(data);
       if (isNarrow) openResultPanel();
     } catch (e) {
@@ -128,7 +130,7 @@ export default function HomePage() {
     } finally {
       setLoading(false);
     }
-  }, [file, jobDescription, isNarrow, openResultPanel]);
+  }, [file, jobDescription, enableBold, isNarrow, openResultPanel]);
 
   const copyResult = async () => {
     if (!result) return;
@@ -351,6 +353,12 @@ export default function HomePage() {
         />
 
         <Stack gap="sm">
+          <Checkbox
+            label="Bold important keywords in the Word download"
+            description="Highlights JD-critical terms in Profile, Experience, and top Skills. Uncheck for plain text only."
+            checked={enableBold}
+            onChange={(e) => setEnableBold(e.currentTarget.checked)}
+          />
           <Button
             fullWidth
             size="md"

@@ -31,3 +31,7 @@ class TailorResponse(BaseModel):
     keywords_highlighted: list[str] = Field(default_factory=list)
     ats_tips: list[str] = Field(default_factory=list)
     used_llm: bool = Field(False, description="True if OpenAI was used for section rewriting.")
+    enable_bold_applied: bool = Field(
+        True,
+        description="True when JD keyword bolding was applied to the downloaded Word file.",
+    )

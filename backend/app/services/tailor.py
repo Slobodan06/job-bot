@@ -797,6 +797,8 @@ def _finalize_tailored(
     parsed: ParsedResume,
     tailored: TailoredSections,
     job_description: str = "",
+    *,
+    role_count: int | None = None,
 ) -> TailoredSections:
     """Merge AI rewrites into experience/skills layout; freeze contact, education, other."""
     llm_titles = _parse_role_titles_list(tailored.experience_role_titles)
@@ -804,6 +806,7 @@ def _finalize_tailored(
         parsed.professional_experience,
         llm_titles,
         job_description,
+        expected_count=role_count,
     )
     exp_merged = merge_experience_headers_with_bullets(
         parsed.professional_experience,
@@ -855,6 +858,7 @@ def _build_docx_sync(
     tailored: TailoredSections,
     highlight_keywords: list[str] | None = None,
     skills_highlight_keywords: list[str] | None = None,
+    enable_bold: bool = True,
 ) -> tuple[str, str, bool]:
     """Returns (base64_docx, download_filename, used_inplace_on_upload)."""
     download_name = output_docx_filename(original_filename)
@@ -873,6 +877,7 @@ def _build_docx_sync(
         highlight_keywords=highlight_keywords,
         skills_highlight_keywords=skills_highlight_keywords,
         experience_role_titles=_parse_role_titles_list(tailored.experience_role_titles),
+        enable_bold=enable_bold,
         source_sections=source_sections,
         original_filename=original_filename,
     )
@@ -888,6 +893,7 @@ async def tailor_resume(
     *,
     source_docx_bytes: bytes,
     original_filename: str = "resume.docx",
+    enable_bold: bool = True,
 ) -> TailorResponse:
     docx_doc = parse_resume_from_docx(source_docx_bytes)
     parsed = docx_doc.parsed
@@ -896,6 +902,7 @@ async def tailor_resume(
     docx_section_body_indices = docx_doc.section_body_indices
     contact_paragraph_indices = docx_doc.contact_paragraph_indices
     experience_table_rows = docx_doc.experience_table_rows
+    role_count = len(experience_table_rows) if experience_table_rows else None
 
     enriched_contact = merge_profile_links_into_contact(
         parsed.contact,
@@ -935,9 +942,13 @@ async def tailor_resume(
         tailored = _offline_tailor_structured(parsed, job_description)
         tips = _default_tips_offline()
 
-    tailored = _finalize_tailored(parsed, tailored, job_description)
-    highlight_keywords = build_docx_highlight_keywords(job_description, parsed, tailored)
-    skills_highlight_keywords = build_skills_highlight_keywords(job_description, tailored.skills)
+    tailored = _finalize_tailored(
+        parsed, tailored, job_description, role_count=role_count
+    )
+    highlight_keywords = build_docx_highlight_keywords(job_description, parsed, tailored) if enable_bold else []
+    skills_highlight_keywords = (
+        build_skills_highlight_keywords(job_description, tailored.skills) if enable_bold else []
+    )
     full_text = _assemble_plain(tailored)
 
     docx_b64 = ""
@@ -960,6 +971,7 @@ async def tailor_resume(
                 tailored=tailored,
                 highlight_keywords=highlight_keywords,
                 skills_highlight_keywords=skills_highlight_keywords,
+                enable_bold=enable_bold,
             )
             if used_docx_inplace and docx_b64:
                 pdf_result = await asyncio.to_thread(
@@ -1007,4 +1019,5 @@ async def tailor_resume(
         keywords_highlighted=keywords,
         ats_tips=tips,
         used_llm=used_llm,
+        enable_bold_applied=enable_bold,
     )

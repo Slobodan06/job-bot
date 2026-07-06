@@ -171,13 +171,15 @@ export type TailorResponse = {
   keywords_highlighted: string[];
   ats_tips: string[];
   used_llm: boolean;
+  enable_bold_applied: boolean;
 };
 
 export const tailorApi = {
-  tailor(resume: File, jobDescription: string) {
+  tailor(resume: File, jobDescription: string, enableBold = true) {
     const body = new FormData();
     body.append("resume", resume);
     body.append("job_description", jobDescription);
+    body.append("enable_bold", enableBold ? "true" : "false");
     return apiFetch<TailorResponse>("/api/tailor", { method: "POST", body });
   },
 };

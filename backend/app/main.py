@@ -81,6 +81,7 @@ async def health() -> dict[str, str]:
 async def tailor(
     resume: UploadFile = File(...),
     job_description: str = Form(...),
+    enable_bold: str = Form("true"),
     _user: dict = Depends(get_builder_user),
 ) -> TailorResponse:
     if not job_description or not job_description.strip():
@@ -109,6 +110,7 @@ async def tailor(
         job_description,
         source_docx_bytes=raw,
         original_filename=name,
+        enable_bold=enable_bold.strip().lower() in ("1", "true", "yes", "on"),
     )
 
 

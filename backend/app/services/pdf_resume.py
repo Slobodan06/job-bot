@@ -548,7 +548,7 @@ _EXP_SUMMARY_START_RE = re.compile(
 )
 _EXP_ROLE_RE = re.compile(
     r"\b(developer|engineer|manager|director|designer|founder|co-founder|cto|lead|"
-    r"architect|consultant|specialist|analyst|coordinator|head|principal|autónomo)\b",
+    r"architect|consultant|specialist|analyst|coordinator|head|principal)\b",
     re.I,
 )
 
@@ -588,6 +588,9 @@ def _looks_like_job_title_line(line: str) -> bool:
     if _looks_like_summary_line(stripped):
         return False
     if _EXP_ROLE_RE.search(stripped) and len(stripped) < 120 and not stripped.rstrip().endswith("."):
+        # Single-token lines (e.g. company names) are not job titles.
+        if len(stripped.split()) == 1:
+            return False
         return True
     return False
 
@@ -1002,6 +1005,14 @@ def _insert_date_meta_after_company(block: list[str], meta: list[str]) -> None:
         block.insert(insert_at + offset, line)
 
 
+def _should_rebalance_experience_blocks(blocks: list[list[str]]) -> bool:
+    """Table-export resumes include bullets and trailing dates per role — skip PDF rebalance."""
+    for block in blocks:
+        if any(_BULLET_RE.match(line.strip()) for line in block):
+            return False
+    return True
+
+
 def _rebalance_experience_date_groups(blocks: list[list[str]]) -> list[list[str]]:
     """Reassign trailing date meta when a two-column PDF leaves one role without dates."""
     blocks = [list(block) for block in blocks]
@@ -1054,7 +1065,9 @@ def _split_experience_lines(text: str) -> list[list[str]]:
                     current.append(nxt)
                     i += 1
         elif _is_education_date_line(line):
-            if _block_has_date(current):
+            if current and any(_BULLET_RE.match(entry) for entry in current):
+                current.append(line)
+            elif _block_has_date(current):
                 blocks.append(current)
                 current = [line]
             else:
@@ -1064,7 +1077,9 @@ def _split_experience_lines(text: str) -> list[list[str]]:
         i += 1
     if current:
         blocks.append(current)
-    return _rebalance_experience_date_groups(blocks)
+    if _should_rebalance_experience_blocks(blocks):
+        return _rebalance_experience_date_groups(blocks)
+    return blocks
 
 
 def split_experience_line_blocks(text: str) -> list[list[str]]:
@@ -1157,7 +1172,7 @@ def replace_role_title_in_header(header_line: str, new_title: str) -> str:
     return title
 
 
-def parse_experience_role_titles(experience: str) -> list[str]:
+def parse_experience_role_titles(experience: str, *, expected_count: int | None = None) -> list[str]:
     """Extract the title portion from each role header line in order."""
     titles: list[str] = []
     for block in split_experience_line_blocks(experience or ""):
@@ -1168,6 +1183,8 @@ def parse_experience_role_titles(experience: str) -> list[str]:
             titles.append(header.split("|", 1)[0].strip())
         else:
             titles.append(header.rstrip("|").strip())
+    if expected_count and len(titles) != expected_count:
+        return titles[:expected_count] if len(titles) > expected_count else titles
     return titles
 
 
@@ -1224,14 +1241,19 @@ def resolve_tailored_role_titles(
     source_experience: str,
     llm_titles: list[str],
     job_description: str,
+    *,
+    expected_count: int | None = None,
 ) -> list[str]:
     """
     One JD-aligned title per work-experience role (same order as source).
     Uses LLM titles when complete; otherwise blends each source title with the JD role.
     """
-    source_titles = parse_experience_role_titles(source_experience)
+    source_titles = parse_experience_role_titles(source_experience, expected_count=expected_count)
     if not source_titles:
         return llm_titles
+
+    if expected_count and len(source_titles) != expected_count:
+        source_titles = source_titles[:expected_count]
 
     jd_role = extract_jd_target_role_title(job_description)
     if llm_titles and len(llm_titles) == len(source_titles):
@@ -1273,8 +1295,8 @@ def merge_experience_role_titles(source: str, tailored_titles: list[str]) -> str
                 if _looks_like_role_header_line(line):
                     new_block[line_i] = replace_role_title_in_header(line, new_title)
                     break
-                if line_i == 0:
-                    new_block[line_i] = new_title
+                if line_i == 0 and not _BULLET_LINE_RE.match(line):
+                    new_block[line_i] = new_title if "|" not in line else replace_role_title_in_header(line, new_title)
                     break
         out.extend(new_block)
         if block_i < len(blocks) - 1:

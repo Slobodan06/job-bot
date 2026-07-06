@@ -424,6 +424,7 @@ def _update_experience_bullets_only(
     new_text: str,
     highlight_terms: list[str] | None = None,
     role_titles: list[str] | None = None,
+    enable_bold: bool = True,
 ) -> None:
     """
     Update job titles and bullet paragraphs in each work-experience role block only.
@@ -445,11 +446,16 @@ def _update_experience_bullets_only(
         header_idx = _primary_role_header_index(para_block, paragraphs)
         if header_idx is not None and block_i < len(role_titles or []):
             existing = _paragraph_text(paragraphs[header_idx]).strip()
-            new_header = replace_role_title_in_header(existing, role_titles[block_i])
-            _replace_paragraph_text_with_highlights(
+            display = (
+                replace_role_title_in_header(existing, role_titles[block_i])
+                if "|" in existing
+                else role_titles[block_i]
+            )
+            _apply_paragraph_text(
                 paragraphs[header_idx],
-                new_header,
-                highlight_terms,
+                display,
+                highlight_terms=highlight_terms,
+                enable_bold=enable_bold,
             )
 
         bullet_indices = [idx for idx in para_block if _is_bullet_paragraph(paragraphs[idx])]
@@ -468,13 +474,15 @@ def _update_experience_bullets_only(
                 break
             para = paragraphs[idx]
             display = _display_line_for_paragraph(new_bullets[bi], para)
-            _replace_paragraph_text_with_highlights(para, display, highlight_terms)
+            _apply_paragraph_text(para, display, highlight_terms=highlight_terms, enable_bold=enable_bold)
 
         if len(new_bullets) > len(bullet_indices):
             anchor = paragraphs[bullet_indices[-1]]
             template = paragraphs[bullet_indices[0]]
             for line in new_bullets[len(bullet_indices) :]:
-                anchor = _clone_and_insert_after(anchor, template, line, highlight_terms)
+                anchor = _clone_and_insert_after(
+                    anchor, template, line, highlight_terms if enable_bold else None
+                )
 
 
 def _apply_paragraph_text(
@@ -484,8 +492,9 @@ def _apply_paragraph_text(
     highlight_terms: list[str] | None = None,
     plain: bool = False,
     selective_highlight: bool = False,
+    enable_bold: bool = True,
 ) -> None:
-    if plain:
+    if plain or not enable_bold:
         _replace_paragraph_text_plain(paragraph, text)
     elif highlight_terms:
         _replace_paragraph_text_with_highlights(
@@ -506,6 +515,7 @@ def _update_lines_index_preserving(
     highlight_terms: list[str] | None = None,
     plain: bool = False,
     selective_highlight: bool = False,
+    enable_bold: bool = True,
 ) -> None:
     """
     Update paragraph i with line i only — preserves structure, styles, and extra paragraphs.
@@ -523,6 +533,7 @@ def _update_lines_index_preserving(
             highlight_terms=highlight_terms,
             plain=plain,
             selective_highlight=selective_highlight,
+            enable_bold=enable_bold,
         )
         return
     line_i = 0
@@ -543,6 +554,7 @@ def _update_lines_index_preserving(
             highlight_terms=highlight_terms,
             plain=plain,
             selective_highlight=selective_highlight,
+            enable_bold=enable_bold,
         )
         line_i += 1
 
@@ -793,12 +805,30 @@ def _apply_table_layout_to_parse(
     return parsed, exp_rows, plain_text
 
 
+def parse_role_titles_from_table_rows(doc: Document, rows: list[ExperienceRowRef]) -> list[str]:
+    """One role title per experience table row — first non-bullet line in the content cell."""
+    titles: list[str] = []
+    for ref in rows:
+        cell = doc.tables[ref.table_idx].rows[ref.row_idx].cells[ref.content_cols[0]]
+        for para in cell.paragraphs:
+            text = _paragraph_text(para).strip()
+            if not text or _is_bulletish_text(text):
+                continue
+            if "|" in text:
+                titles.append(text.split("|", 1)[0].strip())
+            else:
+                titles.append(text)
+            break
+    return titles
+
+
 def _update_experience_table_rows(
     doc: Document,
     rows: list[ExperienceRowRef],
     new_text: str,
     highlight_terms: list[str] | None = None,
     role_titles: list[str] | None = None,
+    enable_bold: bool = True,
 ) -> None:
     """Update role titles and bullet paragraphs inside work-experience table rows only."""
     if not rows or not new_text.strip():
@@ -816,14 +846,20 @@ def _update_experience_table_rows(
         cell = doc.tables[ref.table_idx].rows[ref.row_idx].cells[ref.content_cols[0]]
         if row_i < len(role_titles or []):
             new_title = role_titles[row_i]
+            title_updated = False
             for para in cell.paragraphs:
                 text = _paragraph_text(para).strip()
                 if not text or _is_bulletish_text(text):
                     continue
-                if _is_experience_role_start(para, text) or _looks_like_role_header_line(text):
-                    updated = replace_role_title_in_header(text, new_title)
-                    _replace_paragraph_text_with_highlights(para, updated, highlight_terms)
+                if title_updated:
                     break
+                display = (
+                    replace_role_title_in_header(text, new_title)
+                    if "|" in text
+                    else new_title
+                )
+                _apply_paragraph_text(para, display, highlight_terms=highlight_terms, enable_bold=enable_bold)
+                title_updated = True
 
         bullet_indices = _cell_bullet_paragraph_indices(cell)
         if not bullet_indices:
@@ -835,10 +871,11 @@ def _update_experience_table_rows(
             if bi >= len(new_bullets):
                 break
             formatted = _format_bullet_line(prefix, new_bullets[bi])
-            _replace_paragraph_text_with_highlights(
+            _apply_paragraph_text(
                 cell.paragraphs[para_idx],
                 formatted,
-                highlight_terms,
+                highlight_terms=highlight_terms,
+                enable_bold=enable_bold,
             )
 
         if len(new_bullets) > len(bullet_indices):
@@ -849,7 +886,7 @@ def _update_experience_table_rows(
                     anchor,
                     template,
                     _format_bullet_line(prefix, line),
-                    highlight_terms,
+                    highlight_terms if enable_bold else None,
                 )
 
         for col in ref.content_cols[1:]:
@@ -1089,13 +1126,16 @@ def _update_section_inplace(
     new_text: str,
     source_text: str,
     highlight_terms: list[str] | None = None,
+    enable_bold: bool = True,
 ) -> None:
     if section_name in _FROZEN_DOCX_SECTIONS:
         return
     if section_name not in _EDITABLE_DOCX_SECTIONS:
         return
     if section_name == "professional_experience":
-        _update_experience_bullets_only(doc, indices, new_text, highlight_terms)
+        _update_experience_bullets_only(
+            doc, indices, new_text, highlight_terms, enable_bold=enable_bold
+        )
     elif section_name == "skills":
         _update_lines_index_preserving(
             doc,
@@ -1103,9 +1143,16 @@ def _update_section_inplace(
             new_text,
             highlight_terms=highlight_terms,
             selective_highlight=True,
+            enable_bold=enable_bold,
         )
     elif section_name == "professional_summary":
-        _update_lines_index_preserving(doc, indices, new_text, highlight_terms=highlight_terms)
+        _update_lines_index_preserving(
+            doc,
+            indices,
+            new_text,
+            highlight_terms=highlight_terms,
+            enable_bold=enable_bold,
+        )
     else:
         _update_lines_index_preserving(doc, indices, new_text)
 
@@ -1267,6 +1314,60 @@ def _merge_document_xml_preserving_layout(
     return original_xml[: body_match.start()] + merged_body + original_xml[body_match.end() :]
 
 
+def _merge_document_xml_selective_fallback(
+    original_xml: str,
+    modified_xml: str,
+    *,
+    editable_paragraph_indices: set[int],
+    editable_table_index: int | None,
+) -> str | None:
+    """
+    When python-docx save flattens tables, swap only editable paragraphs and the
+    experience table from the modified doc; keep header/contact tables from original.
+    """
+    orig_children = _split_document_body_children(original_xml)
+    mod_children = _split_document_body_children(modified_xml)
+    if not orig_children or not mod_children:
+        return None
+
+    mod_paragraphs = [child for child in mod_children if child.startswith("<w:p")]
+    mod_tables = [child for child in mod_children if child.startswith("<w:tbl")]
+
+    para_idx = 0
+    tbl_idx = 0
+    mod_para_idx = 0
+    mod_tbl_idx = 0
+    merged_parts: list[str] = []
+
+    for child in orig_children:
+        if child.startswith("<w:sectPr"):
+            merged_parts.append(child)
+            continue
+        if child.startswith("<w:tbl"):
+            if editable_table_index is not None and tbl_idx == editable_table_index and mod_tbl_idx < len(mod_tables):
+                merged_parts.append(mod_tables[mod_tbl_idx])
+                mod_tbl_idx += 1
+            else:
+                merged_parts.append(child)
+            tbl_idx += 1
+            continue
+        if child.startswith("<w:p"):
+            if para_idx in editable_paragraph_indices and mod_para_idx < len(mod_paragraphs):
+                merged_parts.append(mod_paragraphs[mod_para_idx])
+                mod_para_idx += 1
+            else:
+                merged_parts.append(child)
+            para_idx += 1
+            continue
+        merged_parts.append(child)
+
+    body_match = re.search(r"(<w:body>).*?(</w:body>)", original_xml, re.S)
+    if not body_match:
+        return None
+    merged_body = body_match.group(1) + "".join(merged_parts) + body_match.group(2)
+    return original_xml[: body_match.start()] + merged_body + original_xml[body_match.end() :]
+
+
 def _restore_frozen_docx_parts(
     original_bytes: bytes,
     modified_bytes: bytes,
@@ -1327,8 +1428,17 @@ def _restore_frozen_docx_parts(
                     )
                     if merged_document is not None:
                         data = merged_document.encode("utf-8")
-                    elif header_table:
-                        data = _replace_first_table_xml(mod_document, header_table).encode("utf-8")
+                    else:
+                        fallback = _merge_document_xml_selective_fallback(
+                            orig_document,
+                            mod_document,
+                            editable_paragraph_indices=editable_paragraph_indices,
+                            editable_table_index=editable_table_index,
+                        )
+                        if fallback is not None:
+                            data = fallback.encode("utf-8")
+                        elif header_table:
+                            data = _replace_first_table_xml(mod_document, header_table).encode("utf-8")
             out_zip.writestr(item, data)
 
         for name, data in preserved.items():
@@ -1356,10 +1466,19 @@ def apply_tailored_sections_to_docx(
     highlight_keywords: list[str] | None = None,
     skills_highlight_keywords: list[str] | None = None,
     experience_role_titles: list[str] | None = None,
+    enable_bold: bool = True,
 ) -> tuple[bytes, str] | None:
     exp_rows = experience_table_rows or []
-    highlights = [k.strip() for k in (highlight_keywords or []) if k and k.strip()]
-    skill_highlights = [k.strip() for k in (skills_highlight_keywords or []) if k and k.strip()]
+    highlights = (
+        [k.strip() for k in (highlight_keywords or []) if k and k.strip()]
+        if enable_bold
+        else []
+    )
+    skill_highlights = (
+        [k.strip() for k in (skills_highlight_keywords or []) if k and k.strip()]
+        if enable_bold
+        else []
+    )
     role_titles = [t.strip() for t in (experience_role_titles or []) if t and t.strip()]
     if not _has_editable_docx_targets(section_body_indices, exp_rows):
         return None
@@ -1391,9 +1510,13 @@ def apply_tailored_sections_to_docx(
             if not text:
                 continue
             if exp_rows:
-                _update_experience_table_rows(doc, exp_rows, text, highlights, role_titles=role_titles)
+                _update_experience_table_rows(
+                    doc, exp_rows, text, highlights, role_titles=role_titles, enable_bold=enable_bold
+                )
             elif exp_indices:
-                _update_experience_bullets_only(doc, exp_indices, text, highlights, role_titles=role_titles)
+                _update_experience_bullets_only(
+                    doc, exp_indices, text, highlights, role_titles=role_titles, enable_bold=enable_bold
+                )
             continue
         indices = section_body_indices.get(section_name, [])
         if not indices:
@@ -1408,6 +1531,7 @@ def apply_tailored_sections_to_docx(
             text,
             fallbacks[section_name],
             skill_highlights if section_name == "skills" else highlights if section_name == "professional_summary" else None,
+            enable_bold=enable_bold,
         )
 
     # Contact/header block is never modified — name, title, email, phone, links stay as uploaded.
