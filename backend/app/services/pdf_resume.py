@@ -1098,7 +1098,21 @@ _ROLE_HEADER_DATE_RE = re.compile(
 )
 _ROLE_HEADER_TITLE_RE = re.compile(
     r"\b(developer|engineer|manager|lead|specialist|architect|consultant|analyst|"
-    r"director|coordinator|head|principal|designer|operations?)\b",
+    r"director|coordinator|head|principal|designer|operations?|automation|fullstack|"
+    r"full[\s-]?stack|programmer|administrator)\b",
+    re.I,
+)
+_SENIORITY_PREFIX_RE = re.compile(
+    r"^(senior|lead|principal|staff|junior|associate|mid[\s-]?level)\s+",
+    re.I,
+)
+_JD_ROLE_LINE_RE = re.compile(
+    r"^([A-Z][A-Za-z0-9/&\s-]{3,70}(?:Engineer|Developer|Manager|Specialist|Architect|"
+    r"Analyst|Lead|Coordinator|Administrator|Officer))\s*(?:[-–—|]|$)",
+    re.M,
+)
+_JD_ABOUT_ROLE_RE = re.compile(
+    r"(?:about the role|the role|position title|job title|role title)[:\s-]*\n+\s*([^\n]{5,90})",
     re.I,
 )
 
@@ -1155,6 +1169,88 @@ def parse_experience_role_titles(experience: str) -> list[str]:
         else:
             titles.append(header.rstrip("|").strip())
     return titles
+
+
+def extract_seniority_prefix(title: str) -> str:
+    match = _SENIORITY_PREFIX_RE.match((title or "").strip())
+    return match.group(1).strip() if match else ""
+
+
+def blend_role_title_with_jd(source_title: str, jd_role: str) -> str:
+    """Keep seniority from source; swap core role wording to match the job description."""
+    source = (source_title or "").strip()
+    target = (jd_role or "").strip()
+    if not target:
+        return source
+    if not source:
+        return target
+    prefix = extract_seniority_prefix(source)
+    if prefix and not re.match(rf"^{re.escape(prefix)}\b", target, re.I):
+        return f"{prefix} {target}"
+    return target
+
+
+def extract_jd_target_role_title(job_description: str) -> str | None:
+    """Best-effort extraction of the target role title from a job description."""
+    jd = (job_description or "").strip()
+    if not jd:
+        return None
+
+    about = _JD_ABOUT_ROLE_RE.search(jd)
+    if about:
+        candidate = about.group(1).strip().split("|", 1)[0].strip()
+        if 4 < len(candidate) < 90:
+            return candidate
+
+    for match in _JD_ROLE_LINE_RE.finditer(jd):
+        candidate = match.group(1).strip()
+        if len(candidate) > 4 and not re.search(r"\b(you|we|our|the candidate)\b", candidate, re.I):
+            return candidate
+
+    also_known = re.search(
+        r"also known as:\s*([^\n]+)",
+        jd,
+        re.I,
+    )
+    if also_known:
+        first = also_known.group(1).split("|", 1)[0].strip()
+        if 4 < len(first) < 90:
+            return first
+
+    return None
+
+
+def resolve_tailored_role_titles(
+    source_experience: str,
+    llm_titles: list[str],
+    job_description: str,
+) -> list[str]:
+    """
+    One JD-aligned title per work-experience role (same order as source).
+    Uses LLM titles when complete; otherwise blends each source title with the JD role.
+    """
+    source_titles = parse_experience_role_titles(source_experience)
+    if not source_titles:
+        return llm_titles
+
+    jd_role = extract_jd_target_role_title(job_description)
+    if llm_titles and len(llm_titles) == len(source_titles):
+        return llm_titles
+
+    if llm_titles and len(llm_titles) < len(source_titles):
+        out = list(llm_titles)
+        for i in range(len(llm_titles), len(source_titles)):
+            out.append(
+                blend_role_title_with_jd(source_titles[i], jd_role or llm_titles[-1])
+                if jd_role or llm_titles
+                else source_titles[i]
+            )
+        return out
+
+    if jd_role:
+        return [blend_role_title_with_jd(src, jd_role) for src in source_titles]
+
+    return llm_titles if llm_titles else source_titles
 
 
 def merge_experience_role_titles(source: str, tailored_titles: list[str]) -> str:

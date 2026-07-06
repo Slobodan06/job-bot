@@ -14,8 +14,7 @@ from docx.text.paragraph import Paragraph
 
 from app.services.pdf_resume import (
     line_is_factual_contact,
-    primary_role_header_from_block,
-    split_experience_line_blocks,
+    replace_role_title_in_header,
     _looks_like_role_header_line,
 )
 from app.services.sectionize import (
@@ -416,9 +415,10 @@ def _update_experience_bullets_only(
     indices: list[int],
     new_text: str,
     highlight_terms: list[str] | None = None,
+    role_titles: list[str] | None = None,
 ) -> None:
     """
-    Update job titles and bullet paragraphs in each role block.
+    Update job titles and bullet paragraphs in each work-experience role block only.
     Company, location, and dates stay unchanged (title segment only is swapped).
     """
     if not indices or not new_text.strip():
@@ -426,7 +426,6 @@ def _update_experience_bullets_only(
 
     paragraphs = _all_document_paragraphs(doc)
     para_blocks = _group_experience_paragraph_indices(doc, indices)
-    merged_blocks = split_experience_line_blocks(new_text)
     bullet_counts = [
         sum(1 for idx in block if _is_bullet_paragraph(paragraphs[idx]))
         for block in para_blocks
@@ -436,14 +435,14 @@ def _update_experience_bullets_only(
 
     for block_i, para_block in enumerate(para_blocks):
         header_idx = _primary_role_header_index(para_block, paragraphs)
-        if header_idx is not None and block_i < len(merged_blocks):
-            header_line = primary_role_header_from_block(merged_blocks[block_i])
-            if header_line:
-                _replace_paragraph_text_with_highlights(
-                    paragraphs[header_idx],
-                    header_line,
-                    highlight_terms,
-                )
+        if header_idx is not None and block_i < len(role_titles or []):
+            existing = _paragraph_text(paragraphs[header_idx]).strip()
+            new_header = replace_role_title_in_header(existing, role_titles[block_i])
+            _replace_paragraph_text_with_highlights(
+                paragraphs[header_idx],
+                new_header,
+                highlight_terms,
+            )
 
         bullet_indices = [idx for idx in para_block if _is_bullet_paragraph(paragraphs[idx])]
         if not bullet_indices:
@@ -777,12 +776,12 @@ def _update_experience_table_rows(
     rows: list[ExperienceRowRef],
     new_text: str,
     highlight_terms: list[str] | None = None,
+    role_titles: list[str] | None = None,
 ) -> None:
-    """Update role titles and bullet paragraphs inside experience table rows."""
+    """Update role titles and bullet paragraphs inside work-experience table rows only."""
     if not rows or not new_text.strip():
         return
 
-    merged_blocks = split_experience_line_blocks(new_text)
     bullet_counts = []
     for ref in rows:
         cell = doc.tables[ref.table_idx].rows[ref.row_idx].cells[ref.content_cols[0]]
@@ -793,16 +792,16 @@ def _update_experience_table_rows(
 
     for row_i, ref in enumerate(rows):
         cell = doc.tables[ref.table_idx].rows[ref.row_idx].cells[ref.content_cols[0]]
-        if row_i < len(merged_blocks):
-            header_line = primary_role_header_from_block(merged_blocks[row_i])
-            if header_line:
-                for para in cell.paragraphs:
-                    text = _paragraph_text(para).strip()
-                    if not text or _is_bulletish_text(text):
-                        continue
-                    if _is_experience_role_start(para, text) or "|" in text:
-                        _replace_paragraph_text_with_highlights(para, header_line, highlight_terms)
-                        break
+        if row_i < len(role_titles or []):
+            new_title = role_titles[row_i]
+            for para in cell.paragraphs:
+                text = _paragraph_text(para).strip()
+                if not text or _is_bulletish_text(text):
+                    continue
+                if _is_experience_role_start(para, text) or _looks_like_role_header_line(text):
+                    updated = replace_role_title_in_header(text, new_title)
+                    _replace_paragraph_text_with_highlights(para, updated, highlight_terms)
+                    break
 
         bullet_indices = _cell_bullet_paragraph_indices(cell)
         if not bullet_indices:
@@ -1327,9 +1326,11 @@ def apply_tailored_sections_to_docx(
     original_filename: str,
     experience_table_rows: list[ExperienceRowRef] | None = None,
     highlight_keywords: list[str] | None = None,
+    experience_role_titles: list[str] | None = None,
 ) -> tuple[bytes, str] | None:
     exp_rows = experience_table_rows or []
     highlights = [k.strip() for k in (highlight_keywords or []) if k and k.strip()]
+    role_titles = [t.strip() for t in (experience_role_titles or []) if t and t.strip()]
     if not _has_editable_docx_targets(section_body_indices, exp_rows):
         return None
 
@@ -1360,9 +1361,9 @@ def apply_tailored_sections_to_docx(
             if not text:
                 continue
             if exp_rows:
-                _update_experience_table_rows(doc, exp_rows, text, highlights)
+                _update_experience_table_rows(doc, exp_rows, text, highlights, role_titles=role_titles)
             elif exp_indices:
-                _update_experience_bullets_only(doc, exp_indices, text, highlights)
+                _update_experience_bullets_only(doc, exp_indices, text, highlights, role_titles=role_titles)
             continue
         indices = section_body_indices.get(section_name, [])
         if not indices:
