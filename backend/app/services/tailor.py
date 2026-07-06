@@ -380,6 +380,146 @@ def build_docx_highlight_keywords(
     return sorted(terms, key=len, reverse=True)
 
 
+def _skills_highlight_max() -> int:
+    raw = os.getenv("OPENAI_SKILLS_HIGHLIGHT_MAX", "10").strip()
+    try:
+        n = int(raw)
+    except ValueError:
+        n = 10
+    return max(3, min(n, 16))
+
+
+def _extract_jd_priority_text(job_description: str) -> str:
+    """Requirements / qualifications / responsibilities — weighted higher for skill highlights."""
+    jd = (job_description or "").strip()
+    if not jd:
+        return ""
+    chunks: list[str] = []
+    section_starts = re.compile(
+        r"(?:^|\n)\s*(?:requirements|qualifications|what you(?:'ll| will) do|"
+        r"core focus|must have|required skills|key skills|you have|who you are)\b",
+        re.I | re.M,
+    )
+    matches = list(section_starts.finditer(jd))
+    for i, match in enumerate(matches):
+        start = match.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(jd)
+        chunk = jd[start:end].strip()
+        if len(chunk) > 40:
+            chunks.append(chunk[:3000])
+    return "\n\n".join(chunks)
+
+
+def _parse_skill_tokens(skills_text: str) -> list[str]:
+    tokens: list[str] = []
+    for raw_line in (skills_text or "").replace("\r\n", "\n").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if ":" in line[:60]:
+            line = line.split(":", 1)[1]
+        for part in re.split(r"[,;|/•·]", line):
+            token = part.strip()
+            if token and len(token) >= 2 and token.lower() not in STOPWORDS:
+                tokens.append(token)
+    return tokens
+
+
+def _term_appears_in_skills(term: str, skills_text: str) -> bool:
+    term = (term or "").strip()
+    if len(term) < 2 or not skills_text:
+        return False
+    if re.match(r"^[\w\-./+#]+$", term):
+        return bool(
+            re.search(
+                r"(?<![\w\-./+#])" + re.escape(term) + r"(?![\w\-./+#])",
+                skills_text,
+                re.I,
+            )
+        )
+    return term.lower() in skills_text.lower()
+
+
+_SKILL_HIGHLIGHT_STOPWORDS = frozenset(
+    {
+        "management", "customer", "order", "flow", "operations", "experience",
+        "relationship", "tools", "frontend", "backend", "database", "practices",
+        "communication", "leadership", "development", "platform", "integration",
+        "process", "performance", "reporting", "compliance", "automation",
+        "technical", "professional", "excellent", "strong", "skills",
+    }
+)
+
+
+def _score_skill_token_against_jd(token: str, priority_text: str, full_jd: str) -> int:
+    token_lower = token.lower()
+    score = 0
+    for kw in extract_keywords(priority_text, top_k=40):
+        kw_lower = kw.lower()
+        if kw_lower == token_lower:
+            score += 6
+        elif len(kw_lower) >= 4 and (kw_lower in token_lower or token_lower in kw_lower):
+            score += 4
+    for kw in extract_keywords(full_jd, top_k=24):
+        kw_lower = kw.lower()
+        if kw_lower == token_lower:
+            score += 2
+        elif len(kw_lower) >= 5 and kw_lower in token_lower:
+            score += 1
+    if _term_appears_in_skills(token, priority_text):
+        score += 3
+    return score
+
+
+def _prune_substring_highlights(terms: list[str]) -> list[str]:
+    kept: list[str] = []
+    for term in terms:
+        lower = term.lower()
+        if any(lower != other.lower() and lower in other.lower() for other in terms):
+            continue
+        kept.append(term)
+    return kept
+
+
+def build_skills_highlight_keywords(job_description: str, skills_text: str) -> list[str]:
+    """
+    Return only the most job-critical skills to bold in the Skills section (not every keyword).
+    Terms must be actual skill entries from the resume and score high against JD requirements.
+    """
+    skills = (skills_text or "").strip()
+    if not skills:
+        return []
+
+    max_highlights = _skills_highlight_max()
+    priority_text = _extract_jd_priority_text(job_description) or job_description
+    tokens = _parse_skill_tokens(skills)
+
+    scored: list[tuple[int, int, str]] = []
+    for token in tokens:
+        if len(token) < 2:
+            continue
+        token_lower = token.lower()
+        if token_lower in STOPWORDS or token_lower in _SKILL_HIGHLIGHT_STOPWORDS:
+            continue
+        score = _score_skill_token_against_jd(token, priority_text, job_description)
+        if score < 4:
+            continue
+        scored.append((score, len(token), token))
+
+    scored.sort(key=lambda item: (-item[0], -item[1]))
+    out: list[str] = []
+    seen: set[str] = set()
+    for _score, _length, token in scored:
+        key = token.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(token)
+        if len(out) >= max_highlights:
+            break
+    return _prune_substring_highlights(out)
+
+
 def _skills_as_categorized_lines(text: str) -> str:
     """Normalize skills to one category per line: Frontend: a, b, c — keeps newlines."""
     raw = (text or "").strip()
@@ -689,7 +829,7 @@ def _finalize_tailored(
 
 def _default_tips_llm() -> list[str]:
     return [
-        "Summary and experience are fully rewritten for the job; role titles, bullets, and JD keywords are bolded in Profile and Experience only.",
+        "Summary and experience bold JD keywords and metrics; Skills bold only the top job-critical tools (not every skill).",
         "Verify employers, schools, dates, and contact details before submitting; AI must not invent credentials.",
         "If wording still feels too close to your original, retry or raise OPENAI_TAILOR_MAX_TOKENS.",
     ]
@@ -714,6 +854,7 @@ def _build_docx_sync(
     original_filename: str,
     tailored: TailoredSections,
     highlight_keywords: list[str] | None = None,
+    skills_highlight_keywords: list[str] | None = None,
 ) -> tuple[str, str, bool]:
     """Returns (base64_docx, download_filename, used_inplace_on_upload)."""
     download_name = output_docx_filename(original_filename)
@@ -730,6 +871,7 @@ def _build_docx_sync(
         contact_paragraph_indices=contact_paragraph_indices,
         experience_table_rows=experience_table_rows,
         highlight_keywords=highlight_keywords,
+        skills_highlight_keywords=skills_highlight_keywords,
         experience_role_titles=_parse_role_titles_list(tailored.experience_role_titles),
         source_sections=source_sections,
         original_filename=original_filename,
@@ -795,6 +937,7 @@ async def tailor_resume(
 
     tailored = _finalize_tailored(parsed, tailored, job_description)
     highlight_keywords = build_docx_highlight_keywords(job_description, parsed, tailored)
+    skills_highlight_keywords = build_skills_highlight_keywords(job_description, tailored.skills)
     full_text = _assemble_plain(tailored)
 
     docx_b64 = ""
@@ -816,6 +959,7 @@ async def tailor_resume(
                 original_filename=original_filename,
                 tailored=tailored,
                 highlight_keywords=highlight_keywords,
+                skills_highlight_keywords=skills_highlight_keywords,
             )
             if used_docx_inplace and docx_b64:
                 pdf_result = await asyncio.to_thread(
@@ -833,7 +977,7 @@ async def tailor_resume(
             if used_docx_inplace:
                 tips = [
                     *tips,
-                    "Your Word file keeps original formatting; JD keywords and metrics are bolded in Profile and Experience only.",
+                    "Your Word file keeps original formatting; Profile/Experience use broader keyword bolding; Skills bold only top JD-critical tools.",
                 ]
             else:
                 tips = [

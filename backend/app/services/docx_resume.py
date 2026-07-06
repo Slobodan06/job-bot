@@ -206,7 +206,12 @@ def _copy_run_font(source_run, target_run) -> None:
         target_run.font.color.rgb = source_run.font.color.rgb
 
 
-def _bold_spans_for_text(text: str, highlight_terms: list[str] | None) -> list[tuple[int, int]]:
+def _bold_spans_for_text(
+    text: str,
+    highlight_terms: list[str] | None,
+    *,
+    auto_tech_and_metrics: bool = True,
+) -> list[tuple[int, int]]:
     if not text:
         return []
     spans: list[tuple[int, int]] = []
@@ -214,13 +219,14 @@ def _bold_spans_for_text(text: str, highlight_terms: list[str] | None) -> list[t
     def _overlaps(start: int, end: int) -> bool:
         return any(not (end <= s or start >= e) for s, e in spans)
 
-    for match in _HIGHLIGHT_METRIC_RE.finditer(text):
-        if not _overlaps(match.start(), match.end()):
-            spans.append((match.start(), match.end()))
+    if auto_tech_and_metrics:
+        for match in _HIGHLIGHT_METRIC_RE.finditer(text):
+            if not _overlaps(match.start(), match.end()):
+                spans.append((match.start(), match.end()))
 
-    for match in _HIGHLIGHT_TECH_RE.finditer(text):
-        if len(match.group(0)) >= 3 and not _overlaps(match.start(), match.end()):
-            spans.append((match.start(), match.end()))
+        for match in _HIGHLIGHT_TECH_RE.finditer(text):
+            if len(match.group(0)) >= 3 and not _overlaps(match.start(), match.end()):
+                spans.append((match.start(), match.end()))
 
     terms = sorted({t.strip() for t in (highlight_terms or []) if t and len(t.strip()) >= 3}, key=len, reverse=True)
     for term in terms:
@@ -248,9 +254,11 @@ def _replace_paragraph_text_with_highlights(
     paragraph: Paragraph,
     text: str,
     highlight_terms: list[str] | None = None,
+    *,
+    auto_tech_and_metrics: bool = True,
 ) -> None:
-    """Replace paragraph text, bolding JD keywords, tech terms, and metrics in-place."""
-    spans = _bold_spans_for_text(text, highlight_terms)
+    """Replace paragraph text, bolding highlight terms (and optionally tech/metrics)."""
+    spans = _bold_spans_for_text(text, highlight_terms, auto_tech_and_metrics=auto_tech_and_metrics)
     if not spans:
         _replace_paragraph_text_inplace(paragraph, text)
         return
@@ -475,11 +483,17 @@ def _apply_paragraph_text(
     *,
     highlight_terms: list[str] | None = None,
     plain: bool = False,
+    selective_highlight: bool = False,
 ) -> None:
     if plain:
         _replace_paragraph_text_plain(paragraph, text)
     elif highlight_terms:
-        _replace_paragraph_text_with_highlights(paragraph, text, highlight_terms)
+        _replace_paragraph_text_with_highlights(
+            paragraph,
+            text,
+            highlight_terms,
+            auto_tech_and_metrics=not selective_highlight,
+        )
     else:
         _replace_paragraph_text_inplace(paragraph, text)
 
@@ -491,6 +505,7 @@ def _update_lines_index_preserving(
     *,
     highlight_terms: list[str] | None = None,
     plain: bool = False,
+    selective_highlight: bool = False,
 ) -> None:
     """
     Update paragraph i with line i only — preserves structure, styles, and extra paragraphs.
@@ -507,6 +522,7 @@ def _update_lines_index_preserving(
             " ".join(lines),
             highlight_terms=highlight_terms,
             plain=plain,
+            selective_highlight=selective_highlight,
         )
         return
     line_i = 0
@@ -521,7 +537,13 @@ def _update_lines_index_preserving(
         if existing and _BULLET_CHAR_RE.match(existing) and not _BULLET_CHAR_RE.match(line):
             line = _format_bullet_line(_BULLET_CHAR_RE.match(existing).group(0), line)
         display = _display_line_for_paragraph(line, para)
-        _apply_paragraph_text(para, display, highlight_terms=highlight_terms, plain=plain)
+        _apply_paragraph_text(
+            para,
+            display,
+            highlight_terms=highlight_terms,
+            plain=plain,
+            selective_highlight=selective_highlight,
+        )
         line_i += 1
 
 
@@ -1075,7 +1097,13 @@ def _update_section_inplace(
     if section_name == "professional_experience":
         _update_experience_bullets_only(doc, indices, new_text, highlight_terms)
     elif section_name == "skills":
-        _update_lines_index_preserving(doc, indices, new_text, plain=True)
+        _update_lines_index_preserving(
+            doc,
+            indices,
+            new_text,
+            highlight_terms=highlight_terms,
+            selective_highlight=True,
+        )
     elif section_name == "professional_summary":
         _update_lines_index_preserving(doc, indices, new_text, highlight_terms=highlight_terms)
     else:
@@ -1326,10 +1354,12 @@ def apply_tailored_sections_to_docx(
     original_filename: str,
     experience_table_rows: list[ExperienceRowRef] | None = None,
     highlight_keywords: list[str] | None = None,
+    skills_highlight_keywords: list[str] | None = None,
     experience_role_titles: list[str] | None = None,
 ) -> tuple[bytes, str] | None:
     exp_rows = experience_table_rows or []
     highlights = [k.strip() for k in (highlight_keywords or []) if k and k.strip()]
+    skill_highlights = [k.strip() for k in (skills_highlight_keywords or []) if k and k.strip()]
     role_titles = [t.strip() for t in (experience_role_titles or []) if t and t.strip()]
     if not _has_editable_docx_targets(section_body_indices, exp_rows):
         return None
@@ -1377,7 +1407,7 @@ def apply_tailored_sections_to_docx(
             indices,
             text,
             fallbacks[section_name],
-            highlights if section_name == "professional_summary" else None,
+            skill_highlights if section_name == "skills" else highlights if section_name == "professional_summary" else None,
         )
 
     # Contact/header block is never modified — name, title, email, phone, links stay as uploaded.
