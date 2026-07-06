@@ -22,6 +22,7 @@ from app.database import close_db, connect_db, ensure_indexes
 from app.schemas import TailorResponse
 from app.services.extract_text import extract_text_from_bytes
 from app.services.email import log_email_config
+from app.services.pdf_resume import sanitize_target_job_role
 from app.services.tailor import tailor_resume
 
 
@@ -81,11 +82,17 @@ async def health() -> dict[str, str]:
 async def tailor(
     resume: UploadFile = File(...),
     job_description: str = Form(...),
+    target_job_role: str = Form(...),
     enable_bold: str = Form("true"),
     _user: dict = Depends(get_builder_user),
 ) -> TailorResponse:
     if not job_description or not job_description.strip():
         raise HTTPException(status_code=400, detail="Job description is required.")
+    if not target_job_role or not sanitize_target_job_role(target_job_role):
+        raise HTTPException(
+            status_code=400,
+            detail="Target job role is required (e.g. Senior AI Engineer).",
+        )
     raw = await resume.read()
     if not raw:
         raise HTTPException(status_code=400, detail="Resume file is empty.")
@@ -110,6 +117,7 @@ async def tailor(
         job_description,
         source_docx_bytes=raw,
         original_filename=name,
+        target_job_role=target_job_role.strip(),
         enable_bold=enable_bold.strip().lower() in ("1", "true", "yes", "on"),
     )
 

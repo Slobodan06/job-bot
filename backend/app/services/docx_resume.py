@@ -418,6 +418,11 @@ def _primary_role_header_index(para_block: list[int], paragraphs: list[Paragraph
     return None
 
 
+def _apply_role_header_text(paragraph: Paragraph, text: str) -> None:
+    """Experience role/company/date headers must never be keyword-bolded."""
+    _replace_paragraph_text_plain(paragraph, text)
+
+
 def _update_experience_bullets_only(
     doc: Document,
     indices: list[int],
@@ -451,12 +456,7 @@ def _update_experience_bullets_only(
                 if "|" in existing
                 else role_titles[block_i]
             )
-            _apply_paragraph_text(
-                paragraphs[header_idx],
-                display,
-                highlight_terms=highlight_terms,
-                enable_bold=enable_bold,
-            )
+            _apply_role_header_text(paragraphs[header_idx], display)
 
         bullet_indices = [idx for idx in para_block if _is_bullet_paragraph(paragraphs[idx])]
         if not bullet_indices:
@@ -858,7 +858,7 @@ def _update_experience_table_rows(
                     if "|" in text
                     else new_title
                 )
-                _apply_paragraph_text(para, display, highlight_terms=highlight_terms, enable_bold=enable_bold)
+                _apply_role_header_text(para, display)
                 title_updated = True
 
         bullet_indices = _cell_bullet_paragraph_indices(cell)

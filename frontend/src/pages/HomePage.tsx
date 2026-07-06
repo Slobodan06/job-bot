@@ -16,6 +16,7 @@ import {
   Stack,
   Text,
   Textarea,
+  TextInput,
   ThemeIcon,
   Title,
   Tooltip,
@@ -53,6 +54,7 @@ const ACCEPT = ["application/vnd.openxmlformats-officedocument.wordprocessingml.
 export default function HomePage() {
   const [file, setFile] = useState<File | null>(null);
   const [jobDescription, setJobDescription] = useState("");
+  const [targetJobRole, setTargetJobRole] = useState("");
   const [enableBold, setEnableBold] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -103,8 +105,13 @@ export default function HomePage() {
   }, [result?.pdf_base64]);
 
   const canSubmit = useMemo(
-    () => Boolean(file && jobDescription.trim().length > 20),
-    [file, jobDescription],
+    () =>
+      Boolean(
+        file &&
+          jobDescription.trim().length > 20 &&
+          targetJobRole.trim().length > 2,
+      ),
+    [file, jobDescription, targetJobRole],
   );
 
   const onRejectFiles = useCallback(() => {
@@ -122,7 +129,7 @@ export default function HomePage() {
     setError(null);
     setResult(null);
     try {
-      const data = await tailorApi.tailor(file, jobDescription, enableBold);
+      const data = await tailorApi.tailor(file, jobDescription, targetJobRole.trim(), enableBold);
       setResult(data);
       if (isNarrow) openResultPanel();
     } catch (e) {
@@ -130,7 +137,7 @@ export default function HomePage() {
     } finally {
       setLoading(false);
     }
-  }, [file, jobDescription, enableBold, isNarrow, openResultPanel]);
+  }, [file, jobDescription, targetJobRole, enableBold, isNarrow, openResultPanel]);
 
   const copyResult = async () => {
     if (!result) return;
@@ -337,6 +344,19 @@ export default function HomePage() {
           </Accordion>
         ) : null}
 
+        <TextInput
+          label="Target job role"
+          description="Required. Used as the job title on every work experience entry (e.g. Senior AI Engineer)."
+          placeholder="Senior AI Engineer"
+          value={targetJobRole}
+          onChange={(e) => {
+            setTargetJobRole(e.target.value);
+            setError(null);
+          }}
+          required
+          size="md"
+        />
+
         <Textarea
           label="Job description"
           description="Paste the full posting — richer text yields better keyword alignment."
@@ -373,7 +393,7 @@ export default function HomePage() {
           </Button>
           {!canSubmit && !loading ? (
             <Text size="xs" c="dimmed" ta="center">
-              Add a .docx resume and a job description (20+ characters) to generate.
+              Add a .docx resume, target job role, and a job description (20+ characters) to generate.
             </Text>
           ) : null}
         </Stack>

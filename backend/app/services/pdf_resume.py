@@ -1207,6 +1207,36 @@ def blend_role_title_with_jd(source_title: str, jd_role: str) -> str:
     return target
 
 
+def sanitize_target_job_role(role: str) -> str:
+    """Normalize the user-provided application job title."""
+    s = re.sub(r"\s+", " ", (role or "").strip())
+    if not s:
+        return ""
+    s = re.sub(
+        r"^(?:as\s+(?:an?\s+)?|the\s+|role\s*:|position\s*:|job\s*title\s*:)\s*",
+        "",
+        s,
+        flags=re.I,
+    ).strip()
+    return s.strip(" .,:;-")
+
+
+def build_experience_role_titles_from_target(
+    target_job_role: str,
+    source_experience: str,
+    *,
+    expected_count: int | None = None,
+) -> list[str]:
+    """Apply the user-provided target role to every work-experience entry (title line only)."""
+    target = sanitize_target_job_role(target_job_role)
+    if not target:
+        return []
+    count = expected_count
+    if count is None:
+        count = len(parse_experience_role_titles(source_experience)) or 1
+    return [target] * max(count, 1)
+
+
 def extract_jd_target_role_title(job_description: str) -> str | None:
     """Best-effort extraction of the target role title from a job description."""
     jd = (job_description or "").strip()
