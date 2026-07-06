@@ -148,6 +148,49 @@ def _table_lines(doc: Document) -> list[str]:
     return lines
 
 
+def _strip_bullet_body(text: str) -> str:
+    """Remove all leading bullet markers from tailored or source text."""
+    body = (text or "").strip()
+    while body:
+        stripped = _BULLET_PREFIX_RE.sub("", body).strip()
+        stripped = _BULLET_CHAR_RE.sub("", stripped).strip()
+        if stripped == body:
+            break
+        body = stripped
+    return body
+
+
+def _existing_paragraph_bullet_prefix(paragraph: Paragraph) -> str | None:
+    """Return the literal bullet prefix already stored in paragraph text, if any."""
+    text = _paragraph_text(paragraph).strip()
+    match = _BULLET_CHAR_RE.match(text)
+    if not match:
+        return None
+    return match.group(0).rstrip()
+
+
+def _format_bullet_for_paragraph(paragraph: Paragraph, line: str) -> str:
+    """
+    Format one experience bullet for a target paragraph.
+    - Word list style only (no char in text): body only — Word renders the dot.
+    - Existing character bullet (●, •, -): keep that single marker, update body.
+    - No bullet at all: insert one.
+    """
+    body = _strip_bullet_body(line)
+    if not body:
+        return ""
+
+    existing_prefix = _existing_paragraph_bullet_prefix(paragraph)
+    if existing_prefix is not None:
+        sep = "" if existing_prefix.endswith(" ") else " "
+        return f"{existing_prefix}{sep}{body}"
+
+    if _is_list_paragraph(paragraph):
+        return body
+
+    return f"• {body}"
+
+
 def _display_line_for_paragraph(line: str, paragraph: Paragraph) -> str:
     if _is_bullet_paragraph(paragraph):
         # Skill/category lines (e.g. "• Frontend: React") keep the leading marker.
@@ -306,7 +349,10 @@ def _clone_and_insert_after(
     text: str,
     highlight_terms: list[str] | None = None,
 ) -> Paragraph:
-    display = _display_line_for_paragraph(text, template)
+    if _is_bullet_paragraph(template):
+        display = _format_bullet_for_paragraph(template, text)
+    else:
+        display = _display_line_for_paragraph(text, template)
     new_p = deepcopy(template._element)
     anchor._p.addnext(new_p)
     new_para = Paragraph(new_p, anchor._parent)
@@ -431,10 +477,7 @@ def _partition_bullets_by_block_counts(bullets: list[str], counts: list[int]) ->
         chunk = bullets[pos : pos + count] if count > 0 else []
         out.append(chunk)
         pos += max(count, 0)
-    if pos < len(bullets) and out:
-        extras = bullets[pos:]
-        for i, bullet in enumerate(extras):
-            out[i % len(out)].append(bullet)
+    # Never exceed source bullet slots — inserting paragraphs breaks in-place layout rebuild.
     return out
 
 
@@ -455,16 +498,6 @@ def _primary_role_header_index(para_block: list[int], paragraphs: list[Paragraph
 def _apply_role_header_text(paragraph: Paragraph, text: str) -> None:
     """Experience role/company/date headers must never be keyword-bolded."""
     _replace_paragraph_text_plain(paragraph, text)
-
-
-def _paragraph_bullet_prefix(paragraph: Paragraph) -> str:
-    text = _paragraph_text(paragraph).strip()
-    match = _BULLET_CHAR_RE.match(text)
-    if match:
-        return match.group(0).rstrip()
-    if _is_list_paragraph(paragraph):
-        return "•"
-    return "•"
 
 
 def _update_experience_bullets_only(
@@ -508,27 +541,16 @@ def _update_experience_bullets_only(
         if not bullet_indices:
             continue
         new_bullets = bullets_per_block[block_i] if block_i < len(bullets_per_block) else []
-        prefix = _paragraph_bullet_prefix(paragraphs[bullet_indices[0]]) if bullet_indices else "•"
+        new_bullets = new_bullets[: len(bullet_indices)]
 
         for bi, idx in enumerate(bullet_indices):
             if bi < len(new_bullets):
-                formatted = _format_bullet_line(prefix, new_bullets[bi])
+                formatted = _format_bullet_for_paragraph(paragraphs[idx], new_bullets[bi])
                 _apply_paragraph_text(
                     paragraphs[idx],
                     formatted,
                     highlight_terms=highlight_terms,
                     enable_bold=enable_bold,
-                )
-
-        if len(new_bullets) > len(bullet_indices):
-            anchor = paragraphs[bullet_indices[-1]]
-            template = paragraphs[bullet_indices[0]]
-            for line in new_bullets[len(bullet_indices) :]:
-                anchor = _clone_and_insert_after(
-                    anchor,
-                    template,
-                    _format_bullet_line(prefix, line),
-                    highlight_terms if enable_bold else None,
                 )
 
 
@@ -592,9 +614,11 @@ def _update_lines_index_preserving(
         if not existing:
             continue
         line = lines[line_i]
-        if existing and _BULLET_CHAR_RE.match(existing) and not _BULLET_CHAR_RE.match(line):
-            line = _format_bullet_line(_BULLET_CHAR_RE.match(existing).group(0), line)
-        display = _display_line_for_paragraph(line, para)
+        if _is_bullet_paragraph(para):
+            line = _format_bullet_for_paragraph(para, line)
+        elif existing and _BULLET_CHAR_RE.match(existing) and not _BULLET_CHAR_RE.match(line):
+            line = _format_bullet_for_paragraph(para, line)
+        display = _display_line_for_paragraph(line, para) if not _is_bullet_paragraph(para) else line
         _apply_paragraph_text(
             para,
             display,
@@ -947,27 +971,17 @@ def _update_experience_table_rows(
         if not bullet_indices:
             continue
         new_bullets = bullets_per_row[row_i] if row_i < len(bullets_per_row) else []
-        prefix = _detect_bullet_prefix(cell)
+        new_bullets = new_bullets[: len(bullet_indices)]
 
         for bi, para_idx in enumerate(bullet_indices):
             if bi < len(new_bullets):
-                formatted = _format_bullet_line(prefix, new_bullets[bi])
+                para = cell.paragraphs[para_idx]
+                formatted = _format_bullet_for_paragraph(para, new_bullets[bi])
                 _apply_paragraph_text(
-                    cell.paragraphs[para_idx],
+                    para,
                     formatted,
                     highlight_terms=highlight_terms,
                     enable_bold=enable_bold,
-                )
-
-        if len(new_bullets) > len(bullet_indices):
-            anchor = cell.paragraphs[bullet_indices[-1]]
-            template = cell.paragraphs[bullet_indices[0]]
-            for line in new_bullets[len(bullet_indices) :]:
-                anchor = _clone_and_insert_after(
-                    anchor,
-                    template,
-                    _format_bullet_line(prefix, line),
-                    highlight_terms if enable_bold else None,
                 )
 
         for col in ref.content_cols[1:]:
@@ -1353,6 +1367,10 @@ def _rebuild_orig_document_selective(
     """
     orig_children = _split_document_body_children(orig_document_xml)
     if not orig_children:
+        return None
+
+    orig_body_para_count = _count_body_level_paragraphs(orig_document_xml)
+    if len(memory_doc.paragraphs) != orig_body_para_count:
         return None
 
     editable_para_xml = _build_editable_body_para_xml_map(memory_doc, editable_paragraph_indices)

@@ -32,7 +32,8 @@ _URL_IN_TEXT_RE = re.compile(
 _EMAIL_IN_TEXT_RE = re.compile(r"[\w.+-]+@[\w.-]+\.\w+")
 _EMAIL_LINE_RE = re.compile(r"^[^@\s/]+@[^@\s]+\.[^@\s]+$")
 _CONTACT_SEP_RE = re.compile(r"\s*[•|·]\s*")
-_BULLET_RE = re.compile(r"^[-•*–—]\s*")
+_BULLET_CHARS = r"\-•*–—\u2022\u25cf\u25cb\u25aa\u25e6\u00b7\u2219"
+_BULLET_RE = re.compile(rf"^[{_BULLET_CHARS}]\s*")
 _LINK_LABELS = frozenset(
     {"portfolio", "linkedin", "github", "website", "blog", "linktree", "personal website", "link"}
 )
@@ -1087,7 +1088,6 @@ def split_experience_line_blocks(text: str) -> list[list[str]]:
     return _split_experience_lines(text)
 
 
-_BULLET_CHARS = r"\-•*–—\u2022\u25cf\u25cb\u25aa\u25e6\u00b7\u2219"
 _BULLET_LINE_RE = re.compile(rf"^[{_BULLET_CHARS}]\s+")
 
 
