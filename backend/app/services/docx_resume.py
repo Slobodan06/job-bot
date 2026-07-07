@@ -500,6 +500,90 @@ def _apply_role_header_text(paragraph: Paragraph, text: str) -> None:
     _replace_paragraph_text_plain(paragraph, text)
 
 
+def _paragraph_ppr(paragraph: Paragraph):
+    from docx.oxml import OxmlElement
+
+    p_pr = paragraph._element.find(qn("w:pPr"))
+    if p_pr is None:
+        p_pr = OxmlElement("w:pPr")
+        paragraph._element.insert(0, p_pr)
+    return p_pr
+
+
+def _sync_paragraph_indent(source: Paragraph, target: Paragraph) -> None:
+    """Align a company/meta line with the role title line above it (left edge)."""
+    if source._element is target._element:
+        return
+    src_ppr = source._element.find(qn("w:pPr"))
+    if src_ppr is None:
+        return
+    tgt_ppr = _paragraph_ppr(target)
+    for tag in ("w:ind", "w:tabs", "w:jc"):
+        qtag = qn(tag)
+        for old in tgt_ppr.findall(qtag):
+            tgt_ppr.remove(old)
+        src_el = src_ppr.find(qtag)
+        if src_el is not None:
+            tgt_ppr.append(deepcopy(src_el))
+    try:
+        src_fmt = source.paragraph_format
+        tgt_fmt = target.paragraph_format
+        tgt_fmt.left_indent = src_fmt.left_indent
+        tgt_fmt.right_indent = src_fmt.right_indent
+        tgt_fmt.first_line_indent = src_fmt.first_line_indent
+    except Exception:
+        pass
+
+
+def _company_line_index(
+    para_block: list[int],
+    paragraphs: list[Paragraph],
+    header_idx: int,
+) -> int | None:
+    """First company/location line in a role block (non-bullet, not the role header)."""
+    for idx in para_block:
+        if idx == header_idx:
+            continue
+        para = paragraphs[idx]
+        text = _paragraph_text(para).strip()
+        if not text or _is_bullet_paragraph(para):
+            continue
+        if _is_experience_role_start(para, text):
+            continue
+        return idx
+    return None
+
+
+def _align_experience_company_indent(
+    paragraphs: list[Paragraph],
+    para_block: list[int],
+    header_idx: int | None,
+) -> None:
+    if header_idx is None:
+        return
+    company_idx = _company_line_index(para_block, paragraphs, header_idx)
+    if company_idx is None:
+        return
+    _sync_paragraph_indent(paragraphs[header_idx], paragraphs[company_idx])
+
+
+def _align_cell_company_indent(cell, role_para: Paragraph | None = None) -> None:
+    """Align the company line in a table cell with the role title paragraph."""
+    role = role_para
+    company_para: Paragraph | None = None
+    for para in cell.paragraphs:
+        text = _paragraph_text(para).strip()
+        if not text or _is_bulletish_text(text):
+            continue
+        if role is None:
+            role = para
+            continue
+        company_para = para
+        break
+    if role is not None and company_para is not None:
+        _sync_paragraph_indent(role, company_para)
+
+
 def _update_experience_bullets_only(
     doc: Document,
     indices: list[int],
@@ -530,6 +614,8 @@ def _update_experience_bullets_only(
             existing = _paragraph_text(paragraphs[header_idx]).strip()
             display = replace_role_title_in_header(existing, role_titles[block_i])
             _apply_role_header_text(paragraphs[header_idx], display)
+
+        _align_experience_company_indent(paragraphs, para_block, header_idx)
 
         bullet_indices = [idx for idx in para_block if _is_bullet_paragraph(paragraphs[idx])]
         if not bullet_indices:
@@ -954,18 +1040,19 @@ def _update_experience_table_rows(
 
     for row_i, ref in enumerate(rows):
         cell = doc.tables[ref.table_idx].rows[ref.row_idx].cells[ref.content_cols[0]]
-        if row_i < len(role_titles or []):
-            new_title = role_titles[row_i]
-            title_updated = False
-            for para in cell.paragraphs:
-                text = _paragraph_text(para).strip()
-                if not text or _is_bulletish_text(text):
-                    continue
-                if title_updated:
-                    break
-                display = replace_role_title_in_header(text, new_title)
-                _apply_role_header_text(para, display)
-                title_updated = True
+        role_para: Paragraph | None = None
+        for para in cell.paragraphs:
+            text = _paragraph_text(para).strip()
+            if text and not _is_bulletish_text(text):
+                role_para = para
+                break
+        if row_i < len(role_titles or []) and role_para is not None:
+            display = replace_role_title_in_header(
+                _paragraph_text(role_para).strip(),
+                role_titles[row_i],
+            )
+            _apply_role_header_text(role_para, display)
+        _align_cell_company_indent(cell, role_para)
 
         bullet_indices = _cell_bullet_paragraph_indices(cell)
         if not bullet_indices:
