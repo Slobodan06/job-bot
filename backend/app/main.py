@@ -19,7 +19,8 @@ from app.auth.routes import router as auth_router
 from app.auth.dependencies import get_builder_user
 from app.cv_templates.routes import router as cv_templates_router
 from app.database import close_db, connect_db, ensure_indexes
-from app.schemas import TailorResponse
+from app.schemas import CoverLetterResponse, TailorResponse
+from app.services.cover_letter import generate_cover_letter
 from app.services.extract_text import extract_text_from_bytes
 from app.services.email import log_email_config
 from app.services.pdf_resume import sanitize_target_job_role
@@ -120,6 +121,49 @@ async def tailor(
         target_job_role=target_job_role.strip(),
         enable_bold=enable_bold.strip().lower() in ("1", "true", "yes", "on"),
     )
+
+
+@app.post("/api/cover-letter", response_model=CoverLetterResponse)
+async def cover_letter(
+    resume: UploadFile = File(...),
+    job_description: str = Form(...),
+    target_job_role: str = Form(...),
+    company_name: str = Form(""),
+    _user: dict = Depends(get_builder_user),
+) -> CoverLetterResponse:
+    if not job_description or not job_description.strip():
+        raise HTTPException(status_code=400, detail="Job description is required.")
+    if not target_job_role or not sanitize_target_job_role(target_job_role):
+        raise HTTPException(
+            status_code=400,
+            detail="Target job role is required (e.g. Senior AI Engineer).",
+        )
+    raw = await resume.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Resume file is empty.")
+    name = resume.filename or "resume.docx"
+    if not name.lower().endswith(".docx"):
+        raise HTTPException(
+            status_code=400,
+            detail="Upload a Word resume (.docx) to generate a cover letter.",
+        )
+    try:
+        resume_text = extract_text_from_bytes(name, raw)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    if not resume_text.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Could not extract text from the resume.",
+        )
+    result = await generate_cover_letter(
+        raw,
+        job_description,
+        original_filename=name,
+        target_job_role=target_job_role.strip(),
+        company_name=company_name.strip(),
+    )
+    return CoverLetterResponse(**result)
 
 
 _dist = _frontend_dist()

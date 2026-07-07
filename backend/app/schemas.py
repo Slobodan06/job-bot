@@ -35,3 +35,13 @@ class TailorResponse(BaseModel):
         True,
         description="True when JD keyword bolding was applied to the downloaded Word file.",
     )
+
+
+class CoverLetterResponse(BaseModel):
+    cover_letter: str = Field(..., description="Full cover letter plain text.")
+    pdf_base64: str = Field("", description="Base64-encoded cover letter PDF.")
+    pdf_download_filename: str = Field("cover-letter.pdf", description="Suggested PDF download name.")
+    candidate_name: str = Field("", description="Candidate name extracted from resume contact.")
+    target_job_role: str = Field("", description="Target role used in the letter.")
+    company_name: str = Field("", description="Company name if provided.")
+    used_llm: bool = Field(False, description="True if OpenAI generated the letter.")

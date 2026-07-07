@@ -20,6 +20,7 @@ import {
   ThemeIcon,
   Title,
   Tooltip,
+  Tabs,
 } from "@mantine/core";
 import { useDisclosure, useMediaQuery } from "@mantine/hooks";
 import { notifications } from "@mantine/notifications";
@@ -30,8 +31,8 @@ import {
   IconCheck,
   IconCopy,
   IconDownload,
-  IconEye,
   IconFileCv,
+  IconMail,
   IconSparkles,
   IconUpload,
   IconUser,
@@ -40,7 +41,7 @@ import {
 } from "@tabler/icons-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { tailorApi, type TailorResponse } from "../auth/api";
+import { tailorApi, coverLetterApi, type TailorResponse, type CoverLetterResponse } from "../auth/api";
 
 import {
   parseExperienceCardMeta,
@@ -52,16 +53,22 @@ import {
 const ACCEPT = ["application/vnd.openxmlformats-officedocument.wordprocessingml.document"];
 
 export default function HomePage() {
+  const [activeTab, setActiveTab] = useState<string | null>("resume");
   const [file, setFile] = useState<File | null>(null);
   const [jobDescription, setJobDescription] = useState("");
   const [targetJobRole, setTargetJobRole] = useState("");
+  const [companyName, setCompanyName] = useState("");
   const [enableBold, setEnableBold] = useState(true);
   const [loading, setLoading] = useState(false);
+  const [coverLetterLoading, setCoverLetterLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [coverLetterError, setCoverLetterError] = useState<string | null>(null);
   const [result, setResult] = useState<TailorResponse | null>(null);
+  const [coverLetterResult, setCoverLetterResult] = useState<CoverLetterResponse | null>(null);
   const [resultPanelOpen, { open: openResultPanel, toggle: toggleResultPanel }] = useDisclosure(true);
   const [tailoredDocxUrl, setTailoredDocxUrl] = useState<string | null>(null);
   const [tailoredPdfUrl, setTailoredPdfUrl] = useState<string | null>(null);
+  const [coverLetterPdfUrl, setCoverLetterPdfUrl] = useState<string | null>(null);
   const isNarrow = useMediaQuery("(max-width: 62em)");
 
   useEffect(() => {
@@ -104,6 +111,25 @@ export default function HomePage() {
     }
   }, [result?.pdf_base64]);
 
+  useEffect(() => {
+    if (!coverLetterResult?.pdf_base64) {
+      setCoverLetterPdfUrl(null);
+      return;
+    }
+    try {
+      const binary = atob(coverLetterResult.pdf_base64);
+      const len = binary.length;
+      const bytes = new Uint8Array(len);
+      for (let i = 0; i < len; i += 1) bytes[i] = binary.charCodeAt(i);
+      const blob = new Blob([bytes], { type: "application/pdf" });
+      const url = URL.createObjectURL(blob);
+      setCoverLetterPdfUrl(url);
+      return () => URL.revokeObjectURL(url);
+    } catch {
+      setCoverLetterPdfUrl(null);
+    }
+  }, [coverLetterResult?.pdf_base64]);
+
   const canSubmit = useMemo(
     () =>
       Boolean(
@@ -139,6 +165,27 @@ export default function HomePage() {
     }
   }, [file, jobDescription, targetJobRole, enableBold, isNarrow, openResultPanel]);
 
+  const onCoverLetterSubmit = useCallback(async () => {
+    if (!file) return;
+    setCoverLetterLoading(true);
+    setCoverLetterError(null);
+    setCoverLetterResult(null);
+    try {
+      const data = await coverLetterApi.generate(
+        file,
+        jobDescription,
+        targetJobRole.trim(),
+        companyName.trim(),
+      );
+      setCoverLetterResult(data);
+      if (isNarrow) openResultPanel();
+    } catch (e) {
+      setCoverLetterError(e instanceof Error ? e.message : "Something went wrong.");
+    } finally {
+      setCoverLetterLoading(false);
+    }
+  }, [file, jobDescription, targetJobRole, companyName, isNarrow, openResultPanel]);
+
   const copyResult = async () => {
     if (!result) return;
     try {
@@ -164,6 +211,25 @@ export default function HomePage() {
       notifications.show({
         title: "Copied",
         message: `${sectionLabel} copied to clipboard.`,
+        color: "teal",
+        icon: <IconCheck size={18} />,
+      });
+    } catch {
+      notifications.show({
+        title: "Copy failed",
+        message: "Your browser blocked clipboard access.",
+        color: "orange",
+      });
+    }
+  };
+
+  const copyCoverLetter = async () => {
+    if (!coverLetterResult) return;
+    try {
+      await navigator.clipboard.writeText(coverLetterResult.cover_letter);
+      notifications.show({
+        title: "Copied",
+        message: "Cover letter copied to clipboard.",
         color: "teal",
         icon: <IconCheck size={18} />,
       });
@@ -242,7 +308,7 @@ export default function HomePage() {
       </Alert>
     ) : null;
 
-  const inputColumn = (
+  const sharedInputsPaper = (
     <Paper
       component="section"
       aria-labelledby="inputs-heading"
@@ -256,7 +322,12 @@ export default function HomePage() {
           <Title order={2} id="inputs-heading" size="h4">
             Inputs
           </Title>
-          {isNarrow && result ? (
+          {isNarrow && activeTab === "resume" && result ? (
+            <Button variant="light" size="xs" onClick={toggleResultPanel}>
+              {resultPanelOpen ? "Hide result" : "Show result"}
+            </Button>
+          ) : null}
+          {isNarrow && activeTab === "cover-letter" && coverLetterResult ? (
             <Button variant="light" size="xs" onClick={toggleResultPanel}>
               {resultPanelOpen ? "Hide result" : "Show result"}
             </Button>
@@ -267,6 +338,7 @@ export default function HomePage() {
           onDrop={(files) => {
             setFile(files[0]);
             setError(null);
+            setCoverLetterError(null);
           }}
           onReject={onRejectFiles}
           maxSize={15 * 1024 ** 2}
@@ -301,7 +373,7 @@ export default function HomePage() {
                 Drop your resume here
               </Text>
               <Text size="xs" c="dimmed" ta={{ base: "center", xs: "left" }} lineClamp={3}>
-                Word resume (.docx) — your file is the layout template
+                Word resume (.docx) — used for tailoring and cover letter context
               </Text>
             </Stack>
           </Group>
@@ -321,37 +393,15 @@ export default function HomePage() {
           </Group>
         ) : null}
 
-        {file ? (
-          <Accordion variant="contained" radius="md" defaultValue="upload-preview">
-            <Accordion.Item value="upload-preview">
-              <Accordion.Control>
-                <Group gap="xs" wrap="nowrap">
-                  <ThemeIcon size="sm" variant="light" color="gray" radius="sm">
-                    <IconEye size={16} stroke={1.5} />
-                  </ThemeIcon>
-                  <Text fw={600} size="sm">
-                    Uploaded resume preview
-                  </Text>
-                </Group>
-              </Accordion.Control>
-              <Accordion.Panel>
-                <Alert color="gray" variant="light" title="Your .docx is the template">
-                  Upload a Word resume with clear section headings. After generating, download your template with headline,
-                  summary, experience, skills, education, and extras rewritten for the job.
-                </Alert>
-              </Accordion.Panel>
-            </Accordion.Item>
-          </Accordion>
-        ) : null}
-
         <TextInput
           label="Target job role"
-          description="Required. Used as the job title on every work experience entry (e.g. Senior AI Engineer)."
+          description="Required. Used for experience titles and the cover letter."
           placeholder="Senior AI Engineer"
           value={targetJobRole}
           onChange={(e) => {
             setTargetJobRole(e.target.value);
             setError(null);
+            setCoverLetterError(null);
           }}
           required
           size="md"
@@ -359,45 +409,49 @@ export default function HomePage() {
 
         <Textarea
           label="Job description"
-          description="Paste the full posting — richer text yields better keyword alignment."
+          description="Paste the full posting — richer text yields better results."
           placeholder="Responsibilities, requirements, tools, seniority…"
           value={jobDescription}
           onChange={(e) => {
             setJobDescription(e.target.value);
             setError(null);
+            setCoverLetterError(null);
           }}
           autosize
-          minRows={isNarrow ? 10 : 12}
+          minRows={isNarrow ? 8 : 10}
           maxRows={24}
           size="md"
         />
+      </Stack>
+    </Paper>
+  );
 
-        <Stack gap="sm">
-          <Checkbox
-            label="Bold important keywords in the Word download"
-            description="Highlights JD-critical terms in Profile, Experience, and top Skills. Uncheck for plain text only."
-            checked={enableBold}
-            onChange={(e) => setEnableBold(e.currentTarget.checked)}
-          />
-          <Button
-            fullWidth
-            size="md"
-            leftSection={<IconSparkles size={20} />}
-            disabled={!canSubmit || loading}
-            loading={loading}
-            onClick={onSubmit}
-            variant="gradient"
-            gradient={{ from: "teal", to: "cyan", deg: 105 }}
-          >
-            {loading ? "Tailoring…" : "Generate tailored resume"}
-          </Button>
-          {!canSubmit && !loading ? (
-            <Text size="xs" c="dimmed" ta="center">
-              Add a .docx resume, target job role, and a job description (20+ characters) to generate.
-            </Text>
-          ) : null}
-        </Stack>
-
+  const resumeControls = (
+    <Paper p={{ base: "md", sm: "lg" }} radius="lg" withBorder shadow="sm">
+      <Stack gap="sm">
+        <Checkbox
+          label="Bold important keywords in the Word download"
+          description="Highlights JD-critical terms in Profile, Experience, and top Skills."
+          checked={enableBold}
+          onChange={(e) => setEnableBold(e.currentTarget.checked)}
+        />
+        <Button
+          fullWidth
+          size="md"
+          leftSection={<IconSparkles size={20} />}
+          disabled={!canSubmit || loading}
+          loading={loading}
+          onClick={onSubmit}
+          variant="gradient"
+          gradient={{ from: "teal", to: "cyan", deg: 105 }}
+        >
+          {loading ? "Tailoring…" : "Generate tailored resume"}
+        </Button>
+        {!canSubmit && !loading ? (
+          <Text size="xs" c="dimmed" ta="center">
+            Add a .docx resume, target job role, and a job description (20+ characters).
+          </Text>
+        ) : null}
         {error ? (
           <Alert variant="light" color="red" title="Could not tailor resume" icon={<IconAlertCircle size={18} />}>
             {error}
@@ -405,6 +459,53 @@ export default function HomePage() {
         ) : null}
       </Stack>
     </Paper>
+  );
+
+  const coverLetterControls = (
+    <Paper p={{ base: "md", sm: "lg" }} radius="lg" withBorder shadow="sm">
+      <Stack gap="sm">
+        <TextInput
+          label="Company name (optional)"
+          description="Used in the salutation when provided (e.g. Acme Corp)."
+          placeholder="Acme Corp"
+          value={companyName}
+          onChange={(e) => {
+            setCompanyName(e.target.value);
+            setCoverLetterError(null);
+          }}
+          size="md"
+        />
+        <Button
+          fullWidth
+          size="md"
+          leftSection={<IconMail size={20} />}
+          disabled={!canSubmit || coverLetterLoading}
+          loading={coverLetterLoading}
+          onClick={onCoverLetterSubmit}
+          variant="gradient"
+          gradient={{ from: "teal", to: "cyan", deg: 105 }}
+        >
+          {coverLetterLoading ? "Writing…" : "Generate cover letter"}
+        </Button>
+        {!canSubmit && !coverLetterLoading ? (
+          <Text size="xs" c="dimmed" ta="center">
+            Add a .docx resume, target job role, and a job description (20+ characters).
+          </Text>
+        ) : null}
+        {coverLetterError ? (
+          <Alert variant="light" color="red" title="Could not generate cover letter" icon={<IconAlertCircle size={18} />}>
+            {coverLetterError}
+          </Alert>
+        ) : null}
+      </Stack>
+    </Paper>
+  );
+
+  const inputColumn = (
+    <Stack gap="md">
+      {sharedInputsPaper}
+      {activeTab === "resume" ? resumeControls : coverLetterControls}
+    </Stack>
   );
 
   const resultColumnFull =
@@ -857,17 +958,145 @@ export default function HomePage() {
 
   const resultColumn = resultColumnFull ?? resultColumnPlaceholder;
 
+  const coverLetterResultColumnFull =
+    coverLetterResult && (!isNarrow || resultPanelOpen) ? (
+      <Paper
+        component="section"
+        aria-labelledby="cover-letter-result-heading"
+        p={{ base: "md", sm: "lg" }}
+        radius="lg"
+        withBorder
+        shadow="sm"
+        h={{ base: "auto", lg: "100%" }}
+        style={{ minHeight: 0 }}
+      >
+        <Stack gap="md" h="100%">
+          <Group justify="space-between" align="flex-start" wrap="wrap" gap="sm">
+            <Title order={2} id="cover-letter-result-heading" size="h4">
+              Cover letter
+            </Title>
+            <Group gap="xs" wrap="wrap">
+              <Badge
+                size="lg"
+                variant="light"
+                color={coverLetterResult.used_llm ? "teal" : "gray"}
+                leftSection={coverLetterResult.used_llm ? <IconSparkles size={14} /> : undefined}
+              >
+                {coverLetterResult.used_llm ? "AI (OpenAI)" : "Template draft"}
+              </Badge>
+              <Tooltip label="Copy cover letter">
+                <ActionIcon
+                  variant="filled"
+                  color="teal"
+                  size="lg"
+                  radius="md"
+                  onClick={copyCoverLetter}
+                  aria-label="Copy cover letter"
+                >
+                  <IconCopy size={18} />
+                </ActionIcon>
+              </Tooltip>
+            </Group>
+          </Group>
+
+          {coverLetterPdfUrl ? (
+            <Paper withBorder radius="md" p="md" bg="dark.7">
+              <Stack gap="sm">
+                <Text fw={600} size="sm">
+                  Download PDF
+                </Text>
+                <Button
+                  component="a"
+                  href={coverLetterPdfUrl}
+                  download={coverLetterResult.pdf_download_filename || "cover-letter.pdf"}
+                  leftSection={<IconDownload size={18} />}
+                  variant="filled"
+                  color="teal"
+                  size="sm"
+                  w="fit-content"
+                >
+                  Download cover letter (PDF)
+                </Button>
+              </Stack>
+            </Paper>
+          ) : null}
+
+          <ScrollArea type="auto" offsetScrollbars h={resultHeight} scrollbarSize={8}>
+            <Text
+              component="pre"
+              fz="sm"
+              ff="inherit"
+              c="gray.1"
+              style={{
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-word",
+                margin: 0,
+                lineHeight: 1.75,
+              }}
+            >
+              {coverLetterResult.cover_letter}
+            </Text>
+          </ScrollArea>
+        </Stack>
+      </Paper>
+    ) : null;
+
+  const coverLetterResultColumnPlaceholder = !coverLetterResult ? (
+    <Paper
+      component="section"
+      p={{ base: "md", sm: "xl" }}
+      radius="lg"
+      withBorder
+      h={{ base: "auto", lg: "100%" }}
+      style={{ alignContent: "center" }}
+    >
+      <Stack align="center" gap="sm" py={{ base: "xl", lg: "calc(8 * var(--mantine-spacing-xl))" }}>
+        <ThemeIcon size={64} radius="xl" variant="light" color="gray">
+          <IconMail size={32} stroke={1.25} />
+        </ThemeIcon>
+        <Text ta="center" maw={380} c="dimmed" size="sm">
+          Upload your resume and job description, then generate a tailored cover letter as a downloadable PDF.
+        </Text>
+      </Stack>
+    </Paper>
+  ) : null;
+
+  const coverLetterResultColumn = coverLetterResultColumnFull ?? coverLetterResultColumnPlaceholder;
+
   return (
     <Container size="xl" py={{ base: "md", sm: "lg", md: "xl" }} px={{ base: "sm", sm: "md" }}>
-        {isNarrow && result && !resultPanelOpen ? (
-          <Stack gap="md">{inputColumn}</Stack>
-        ) : (
-          <SimpleGrid cols={{ base: 1, lg: 2 }} spacing={{ base: "md", lg: "lg" }} verticalSpacing={{ base: "md", lg: "lg" }}>
-            {inputColumn}
-            {resultColumn}
-          </SimpleGrid>
-        )}
+      <Tabs value={activeTab} onChange={setActiveTab} variant="pills" radius="md" color="teal">
+        <Tabs.List mb="md" grow>
+          <Tabs.Tab value="resume" leftSection={<IconFileCv size={16} />}>
+            Professional resume
+          </Tabs.Tab>
+          <Tabs.Tab value="cover-letter" leftSection={<IconMail size={16} />}>
+            Cover letter
+          </Tabs.Tab>
+        </Tabs.List>
 
-      </Container>
+        <Tabs.Panel value="resume">
+          {isNarrow && result && !resultPanelOpen ? (
+            <Stack gap="md">{inputColumn}</Stack>
+          ) : (
+            <SimpleGrid cols={{ base: 1, lg: 2 }} spacing={{ base: "md", lg: "lg" }}>
+              {inputColumn}
+              {resultColumn}
+            </SimpleGrid>
+          )}
+        </Tabs.Panel>
+
+        <Tabs.Panel value="cover-letter">
+          {isNarrow && coverLetterResult && !resultPanelOpen ? (
+            <Stack gap="md">{inputColumn}</Stack>
+          ) : (
+            <SimpleGrid cols={{ base: 1, lg: 2 }} spacing={{ base: "md", lg: "lg" }}>
+              {inputColumn}
+              {coverLetterResultColumn}
+            </SimpleGrid>
+          )}
+        </Tabs.Panel>
+      </Tabs>
+    </Container>
   );
 }

@@ -185,6 +185,32 @@ export const tailorApi = {
   },
 };
 
+export type CoverLetterResponse = {
+  cover_letter: string;
+  pdf_base64: string;
+  pdf_download_filename: string;
+  candidate_name: string;
+  target_job_role: string;
+  company_name: string;
+  used_llm: boolean;
+};
+
+export const coverLetterApi = {
+  generate(
+    resume: File,
+    jobDescription: string,
+    targetJobRole: string,
+    companyName = "",
+  ) {
+    const body = new FormData();
+    body.append("resume", resume);
+    body.append("job_description", jobDescription);
+    body.append("target_job_role", targetJobRole);
+    if (companyName.trim()) body.append("company_name", companyName.trim());
+    return apiFetch<CoverLetterResponse>("/api/cover-letter", { method: "POST", body });
+  },
+};
+
 export type CvTemplate = {
   key: string;
   label: string;
