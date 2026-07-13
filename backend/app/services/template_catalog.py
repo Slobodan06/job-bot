@@ -1,15 +1,25 @@
-"""Single source of truth for 40 exclusive smart CV templates."""
+"""Single source of truth for smart CV templates."""
 from __future__ import annotations
 
 from collections.abc import Callable
 from functools import partial
 
 from app.services import resume_pdf_templates as pdf
+from app.services import rendercv_resume as rendercv
 
 _Builder = Callable[..., bytes]
 
 # key, label, description, builder, accent hex, layout family (for UI previews)
 _CATALOG: list[tuple[str, str, str, _Builder, str, str]] = [
+    ("rendercv-classic", "RenderCV classic", "RenderCV's default clean academic and engineering theme.", partial(rendercv.build_rendercv_template_pdf, theme="classic"), "#004f90", "rendercv"),
+    ("rendercv-ember", "RenderCV ember", "RenderCV theme with warm modern defaults.", partial(rendercv.build_rendercv_template_pdf, theme="ember"), "#d97706", "rendercv"),
+    ("rendercv-engineeringclassic", "RenderCV engineering classic", "RenderCV engineering-focused classic theme.", partial(rendercv.build_rendercv_template_pdf, theme="engineeringclassic"), "#334155", "rendercv"),
+    ("rendercv-engineeringresumes", "RenderCV engineering resumes", "RenderCV theme inspired by engineering resume conventions.", partial(rendercv.build_rendercv_template_pdf, theme="engineeringresumes"), "#0f172a", "rendercv"),
+    ("rendercv-harvard", "RenderCV Harvard", "RenderCV theme with compact Harvard-style resume defaults.", partial(rendercv.build_rendercv_template_pdf, theme="harvard"), "#7f1d1d", "rendercv"),
+    ("rendercv-ink", "RenderCV ink", "RenderCV minimal ink-forward theme.", partial(rendercv.build_rendercv_template_pdf, theme="ink"), "#111827", "rendercv"),
+    ("rendercv-moderncv", "RenderCV ModernCV", "RenderCV theme based on ModernCV styling.", partial(rendercv.build_rendercv_template_pdf, theme="moderncv"), "#2563eb", "rendercv"),
+    ("rendercv-opal", "RenderCV opal", "RenderCV theme with polished contemporary defaults.", partial(rendercv.build_rendercv_template_pdf, theme="opal"), "#0d9488", "rendercv"),
+    ("rendercv-sb2nov", "RenderCV sb2nov", "RenderCV theme based on the sb2nov resume format.", partial(rendercv.build_rendercv_template_pdf, theme="sb2nov"), "#374151", "rendercv"),
     ("clean-classic", "Smart classic", "Clean single-column layout with tight margins and modern typography.", pdf.build_clean_classic, "#0d9488", "clean-classic"),
     ("clean-forest", "Smart forest", "Classic smart layout with forest-green accents.", partial(pdf.build_classic_tinted, accent_hex="#166534"), "#166534", "clean-classic"),
     ("executive-band", "Smart executive onyx", "Slim header band with bold name and compact body.", partial(pdf.build_executive_colored, band_hex="#15232f"), "#15232f", "executive-band"),
@@ -52,7 +62,7 @@ _CATALOG: list[tuple[str, str, str, _Builder, str, str]] = [
     ("smart-line-minimal", "Smart line minimal", "Ultra-clean layout with hairline dividers.", partial(pdf.build_modern_line, accent_hex="#6366f1"), "#6366f1", "modern-line"),
 ]
 
-assert len(_CATALOG) == 40
+assert len(_CATALOG) == 49
 
 
 def list_template_catalog() -> list[dict[str, str]]:

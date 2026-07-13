@@ -339,9 +339,33 @@ function ModernLinePreview({ accent }: { accent: string }) {
   );
 }
 
+function RenderCvPreview({ accent }: { accent: string }) {
+  return (
+    <PageShell>
+      <Box p={12}>
+        <Box style={{ textAlign: "center", marginBottom: 8 }}>
+          <Box style={{ fontSize: 12, fontWeight: 700, color: accent }}>Alex Morgan</Box>
+          <Box style={{ fontSize: 5, color: "#64748b", marginTop: 2 }}>alex@email.com | LinkedIn | GitHub</Box>
+        </Box>
+        <Line w="100%" h={1} c="#cbd5e1" mb={8} />
+        {["Education", "Experience", "Projects", "Skills"].map((label, index) => (
+          <Box key={label} style={{ marginBottom: 6 }}>
+            <Box style={{ fontSize: 6, fontWeight: 700, color: accent, marginBottom: 3, textTransform: "uppercase" }}>{label}</Box>
+            <TextLine w={index === 3 ? "70%" : "92%"} h={2} mb={2} />
+            <TextLine w={index === 3 ? "85%" : "100%"} h={2} mb={2} />
+            {index < 2 ? <TextLine w="86%" h={2} /> : null}
+          </Box>
+        ))}
+      </Box>
+    </PageShell>
+  );
+}
+
 export function CvTemplatePreview({ templateKey, accentColor, layoutFamily }: PreviewProps) {
   const layout = layoutFamily || templateKey;
   switch (layout) {
+    case "rendercv":
+      return <RenderCvPreview accent={accentColor} />;
     case "clean-classic":
       return <ClassicPreview />;
     case "executive-band":

@@ -13,10 +13,16 @@ from docx.oxml.ns import qn
 from docx.text.paragraph import Paragraph
 
 from app.services.pdf_resume import (
+    default_ats_bullets_per_role,
+    effective_bullets_per_role,
+    has_experience_date_range,
+    is_experience_role_header_line,
     line_is_factual_contact,
     merge_experience_headers_with_bullets,
-    replace_role_title_in_header,
-    sanitize_target_job_role,
+    partition_experience_bullets_by_role,
+    primary_role_header_from_block,
+    split_experience_line_blocks,
+    _looks_like_job_title_line,
     _looks_like_role_header_line,
 )
 from app.services.sectionize import (
@@ -36,7 +42,7 @@ _TAILOR_HEADER_SECTIONS = (
     "education",
     "other",
 )
-_FROZEN_DOCX_SECTIONS = frozenset({"education", "other"})
+_FROZEN_DOCX_SECTIONS = frozenset({"contact", "education", "other"})
 _EDITABLE_DOCX_SECTIONS = frozenset({"professional_summary", "professional_experience", "skills"})
 _BULLET_CHARS = r"\-•*–—\u2022\u25cf\u25cb\u25aa\u25e6\u00b7\u2219"
 _BULLET_CHAR_RE = re.compile(rf"^[{_BULLET_CHARS}]\s*")
@@ -58,6 +64,7 @@ class ExperienceRowRef:
     table_idx: int
     row_idx: int
     content_cols: tuple[int, ...] = (0, 1)
+    role_header_para_idx: int | None = None
 
 
 @dataclass
@@ -70,11 +77,13 @@ class DocxResumeDocument:
     section_body_indices: dict[str, list[int]] = field(default_factory=dict)
     contact_paragraph_indices: list[int] = field(default_factory=list)
     experience_table_rows: list[ExperienceRowRef] = field(default_factory=list)
+    detected_role_count: int | None = None
+    experience_bullet_slots: list[int] = field(default_factory=list)
 
 
 _BULLET_PREFIX_RE = re.compile(rf"^[{_BULLET_CHARS}]\s+")
 _ROLE_START_RE = re.compile(
-    r"\b\d{1,2}/\d{4}\s*[–\-—]\s*(\d{1,2}/\d{4}|present|current)\b",
+    r"\b\d{1,2}/\s*\d{4}\s*[–\-—]\s*(?:\d{1,2}/\s*\d{4}|present|current)\b",
     re.I,
 )
 
@@ -213,16 +222,41 @@ def _replace_paragraph_text_inplace(paragraph: Paragraph, text: str) -> None:
 
 
 def _replace_paragraph_text_plain(paragraph: Paragraph, text: str) -> None:
-    """Replace paragraph text without keyword bolding; clear explicit run bold."""
+    """Replace paragraph text without keyword bolding; clear explicit run emphasis."""
     if paragraph.runs:
         paragraph.runs[0].text = text
         paragraph.runs[0].bold = False
+        paragraph.runs[0].italic = False
         for run in paragraph.runs[1:]:
             run.text = ""
             run.bold = False
+            run.italic = False
     else:
         run = paragraph.add_run(text)
         run.bold = False
+        run.italic = False
+    _strip_paragraph_character_emphasis(paragraph)
+
+
+def _strip_paragraph_character_emphasis(paragraph: Paragraph) -> None:
+    """Remove bold/italic from paragraph mark and all runs (Word stores these in XML)."""
+    p_pr = paragraph._element.find(qn("w:pPr"))
+    if p_pr is not None:
+        r_pr = p_pr.find(qn("w:rPr"))
+        if r_pr is not None:
+            for tag in ("w:i", "w:iCs", "w:b", "w:bCs"):
+                el = r_pr.find(qn(tag))
+                if el is not None:
+                    r_pr.remove(el)
+    for run in paragraph.runs:
+        run.bold = False
+        run.italic = False
+        r_pr = run._element.find(qn("w:rPr"))
+        if r_pr is not None:
+            for tag in ("w:i", "w:iCs", "w:b", "w:bCs"):
+                el = r_pr.find(qn(tag))
+                if el is not None:
+                    r_pr.remove(el)
 
 
 _HIGHLIGHT_METRIC_RE = re.compile(
@@ -256,6 +290,7 @@ def _bold_spans_for_text(
     highlight_terms: list[str] | None,
     *,
     auto_tech_and_metrics: bool = True,
+    auto_metrics: bool = False,
 ) -> list[tuple[int, int]]:
     if not text:
         return []
@@ -264,11 +299,12 @@ def _bold_spans_for_text(
     def _overlaps(start: int, end: int) -> bool:
         return any(not (end <= s or start >= e) for s, e in spans)
 
-    if auto_tech_and_metrics:
+    if auto_tech_and_metrics or auto_metrics:
         for match in _HIGHLIGHT_METRIC_RE.finditer(text):
             if not _overlaps(match.start(), match.end()):
                 spans.append((match.start(), match.end()))
 
+    if auto_tech_and_metrics:
         for match in _HIGHLIGHT_TECH_RE.finditer(text):
             if len(match.group(0)) >= 3 and not _overlaps(match.start(), match.end()):
                 spans.append((match.start(), match.end()))
@@ -301,9 +337,15 @@ def _replace_paragraph_text_with_highlights(
     highlight_terms: list[str] | None = None,
     *,
     auto_tech_and_metrics: bool = True,
+    auto_metrics: bool = False,
 ) -> None:
     """Replace paragraph text, bolding highlight terms (and optionally tech/metrics)."""
-    spans = _bold_spans_for_text(text, highlight_terms, auto_tech_and_metrics=auto_tech_and_metrics)
+    spans = _bold_spans_for_text(
+        text,
+        highlight_terms,
+        auto_tech_and_metrics=auto_tech_and_metrics,
+        auto_metrics=auto_metrics,
+    )
     if not spans:
         _replace_paragraph_text_inplace(paragraph, text)
         return
@@ -373,6 +415,311 @@ def _delete_paragraphs_at_indices(doc: Document, indices: list[int]) -> None:
             _delete_paragraph(doc.paragraphs[idx])
 
 
+def _strip_paragraph_list_formatting(paragraph: Paragraph) -> None:
+    """Remove Word list/numbering so an emptied paragraph does not render a bullet glyph."""
+    p_pr = paragraph._element.find(qn("w:pPr"))
+    if p_pr is None:
+        return
+    for tag in ("w:numPr", "w:ilvl"):
+        el = p_pr.find(qn(tag))
+        if el is not None:
+            p_pr.remove(el)
+
+
+def _collapse_paragraph_spacing(paragraph: Paragraph) -> None:
+    """Minimize vertical space for emptied paragraphs (zero margins, 1twip line height)."""
+    from docx.oxml import OxmlElement
+    from docx.shared import Pt
+
+    try:
+        fmt = paragraph.paragraph_format
+        fmt.space_before = Pt(0)
+        fmt.space_after = Pt(0)
+        fmt.line_spacing = 0.01
+    except Exception:
+        pass
+    p_pr = _paragraph_ppr(paragraph)
+    spacing = p_pr.find(qn("w:spacing"))
+    if spacing is None:
+        spacing = OxmlElement("w:spacing")
+        p_pr.append(spacing)
+    spacing.set(qn("w:before"), "0")
+    spacing.set(qn("w:after"), "0")
+    spacing.set(qn("w:line"), "1")
+    spacing.set(qn("w:lineRule"), "exact")
+    _apply_vanish_to_paragraph(paragraph)
+
+
+def _apply_vanish_to_paragraph(paragraph: Paragraph) -> None:
+    """Mark paragraph runs hidden and tiny so empty slots take no visible space."""
+    from docx.oxml import OxmlElement
+
+    def _ensure_vanish_run(run) -> None:
+        r_pr = run._element.find(qn("w:rPr"))
+        if r_pr is None:
+            r_pr = OxmlElement("w:rPr")
+            run._element.insert(0, r_pr)
+        for tag in ("w:vanish",):
+            if r_pr.find(qn(tag)) is None:
+                r_pr.append(OxmlElement(tag))
+        sz = r_pr.find(qn("w:sz"))
+        if sz is None:
+            sz = OxmlElement("w:sz")
+            r_pr.append(sz)
+        sz.set(qn("w:val"), "2")
+
+    if paragraph.runs:
+        for run in paragraph.runs:
+            _ensure_vanish_run(run)
+    else:
+        run = paragraph.add_run("")
+        _ensure_vanish_run(run)
+
+
+def _clear_paragraph_visible(paragraph: Paragraph) -> None:
+    """Clear unused bullet-slot text and hide the slot (does not touch layout spacer paragraphs)."""
+    _strip_paragraph_list_formatting(paragraph)
+    _replace_paragraph_text_plain(paragraph, "")
+    _collapse_paragraph_spacing(paragraph)
+    # Ensure no ghost text remains for the XML merge pass (PDF converters ignore w:vanish).
+    for run in paragraph.runs:
+        run.text = ""
+
+
+def _paragraph_has_layout_spacer_xml(paragraph_xml: str) -> bool:
+    """True when an empty paragraph carries intentional vertical space (section/job gaps)."""
+    if _paragraph_plain_text_from_xml(paragraph_xml).strip():
+        return False
+    if re.search(r'w:before="[1-9]\d*"', paragraph_xml):
+        return True
+    if re.search(r'w:after="[1-9]\d*"', paragraph_xml):
+        return True
+    if re.search(r'w:line="(?!240\b|276\b|259\b)[1-9]\d{2,}"', paragraph_xml):
+        return True
+    if "<w:br" in paragraph_xml:
+        return True
+    return False
+
+
+def _strip_skill_category_label(text: str) -> str:
+    return re.sub(rf"^[{_BULLET_CHARS}]\s*", "", (text or "").strip()).strip().rstrip(":")
+
+
+def _parse_skills_category_map(skills_text: str) -> dict[str, list[str]]:
+    """Map category label -> tool tokens from paired or colon-formatted skills text."""
+    lines = [line.strip() for line in (skills_text or "").splitlines() if line.strip()]
+    if not lines:
+        return {}
+    out: dict[str, list[str]] = {}
+    idx = 0
+    while idx < len(lines):
+        line = lines[idx]
+        colon_match = re.match(r"^([^:]+):\s*(.+)$", _strip_skill_category_label(line))
+        if colon_match and colon_match.group(2).strip():
+            label = colon_match.group(1).strip()
+            tokens = [t.strip() for t in colon_match.group(2).split(",") if t.strip()]
+            out[label.lower()] = tokens
+            idx += 1
+            continue
+        label = _strip_skill_category_label(line)
+        tokens: list[str] = []
+        if idx + 1 < len(lines):
+            nxt = lines[idx + 1]
+            if "," in nxt and not _strip_skill_category_label(nxt).endswith(":"):
+                tokens = [t.strip() for t in nxt.split(",") if t.strip()]
+                idx += 2
+                out[label.lower()] = tokens
+                continue
+        out[label.lower()] = tokens
+        idx += 1
+    return out
+
+
+def _skill_line_has_inline_tools(text: str) -> bool:
+    """True for 'Category: tool, tool' on one bullet line (Ciro-style skills)."""
+    stripped = _strip_skill_category_label(text or "")
+    return bool(re.match(r"^[^:]+:\s*\S", stripped))
+
+
+def _pair_skill_paragraph_indices(doc: Document, indices: list[int]) -> list[tuple[int, int | None]]:
+    """Alternating (category_header_idx, tools_content_idx) slots in Cameron-style templates."""
+    paragraphs = _all_document_paragraphs(doc)
+    pairs: list[tuple[int, int | None]] = []
+    idx = 0
+    while idx < len(indices):
+        header_idx = indices[idx]
+        header_para = paragraphs[header_idx]
+        header_text = _paragraph_text(header_para).strip()
+        if _skill_line_has_inline_tools(header_text):
+            pairs.append((header_idx, None))
+            idx += 1
+            continue
+        content_idx = indices[idx + 1] if idx + 1 < len(indices) else None
+        if content_idx is not None:
+            content_para = paragraphs[content_idx]
+            header_text = _paragraph_text(header_para).strip()
+            content_text = _paragraph_text(content_para).strip()
+            header_is_category = _is_bullet_paragraph(header_para) or (
+                "," not in header_text and len(header_text) < 60
+            )
+            content_is_tools = bool(content_text) and (
+                "," in content_text or not _is_bullet_paragraph(content_para)
+            )
+            if header_is_category and content_is_tools:
+                pairs.append((header_idx, content_idx))
+                idx += 2
+                continue
+        pairs.append((header_idx, content_idx))
+        idx += 2 if content_idx is not None else 1
+    return pairs
+
+
+def _skill_content_indices(doc: Document, indices: list[int]) -> list[int]:
+    editable: list[int] = []
+    for header_idx, content_idx in _pair_skill_paragraph_indices(doc, indices):
+        if content_idx is not None:
+            editable.append(content_idx)
+        else:
+            editable.append(header_idx)
+    return editable
+
+
+def _update_skills_preserving_template(
+    doc: Document,
+    indices: list[int],
+    new_text: str,
+    source_text: str,
+    *,
+    highlight_terms: list[str] | None = None,
+    enable_bold: bool = True,
+) -> None:
+    """
+    Update only the tool-list paragraphs in a paired skills template.
+    Category header paragraphs (bullets) are never modified — preserves Word UI.
+    """
+    if not indices:
+        return
+    paragraphs = _all_document_paragraphs(doc)
+    tailored_map = _parse_skills_category_map(new_text)
+    source_map = _parse_skills_category_map(source_text)
+    pairs = _pair_skill_paragraph_indices(doc, indices)
+    if not pairs:
+        _update_lines_index_preserving(
+            doc,
+            indices,
+            new_text,
+            highlight_terms=highlight_terms,
+            selective_highlight=True,
+            enable_bold=enable_bold,
+            clear_unused=False,
+        )
+        return
+
+    for header_idx, content_idx in pairs:
+        header_para = paragraphs[header_idx]
+        label = _strip_skill_category_label(_paragraph_text(header_para))
+        key = label.lower().rstrip(":")
+        if key in tailored_map:
+            tokens = tailored_map[key]
+        else:
+            tokens = source_map.get(key) or []
+        if content_idx is None or content_idx >= len(paragraphs):
+            category = label.rstrip(":").strip()
+            line = f"{category}: {', '.join(tokens)}" if tokens else category
+            display = (
+                _format_bullet_for_paragraph(header_para, line)
+                if _is_bullet_paragraph(header_para)
+                else line
+            )
+            _apply_paragraph_text(
+                header_para,
+                display,
+                highlight_terms=highlight_terms,
+                plain=False,
+                selective_highlight=True,
+                enable_bold=enable_bold,
+            )
+            continue
+        line = ", ".join(tokens)
+        _apply_paragraph_text(
+            paragraphs[content_idx],
+            line,
+            highlight_terms=highlight_terms,
+            plain=False,
+            selective_highlight=True,
+            enable_bold=enable_bold,
+        )
+
+
+def _layout_protected_paragraph_indices(
+    contact_paragraph_indices: list[int],
+    section_body_indices: dict[str, list[int]],
+    section_header_indices: dict[str, int],
+    *,
+    skill_header_indices: list[int] | None = None,
+    doc: Document | None = None,
+) -> set[int]:
+    """Paragraphs whose spacing/XML must never be collapsed (header, spacers, skill labels)."""
+    protected = set(contact_paragraph_indices)
+    for idx in section_header_indices.values():
+        if idx >= 0:
+            protected.add(idx)
+    skill_indices = section_body_indices.get("skills", [])
+    if skill_indices:
+        first_skill = min(skill_indices)
+        for i in range(0, first_skill):
+            protected.add(i)
+    if skill_header_indices:
+        protected.update(skill_header_indices)
+    return protected
+
+
+def _collapse_empty_paragraph_spacing(
+    doc: Document,
+    *,
+    skip_indices: set[int] | None = None,
+) -> None:
+    """Collapse spacing only on empty paragraphs cleared during editing — never layout spacers."""
+    skip = skip_indices or set()
+    for idx, paragraph in enumerate(_all_document_paragraphs(doc)):
+        if idx in skip:
+            continue
+        if not _paragraph_text(paragraph).strip():
+            if _paragraph_has_layout_spacer_xml(paragraph._element.xml):
+                continue
+            _collapse_paragraph_spacing(paragraph)
+
+
+def _apply_bullet_updates(
+    slot_paragraphs: list[Paragraph],
+    new_bullets: list[str],
+    template_para: Paragraph,
+    *,
+    highlight_terms: list[str] | None = None,
+    enable_bold: bool = True,
+) -> None:
+    """
+    Update bullet slots in place only.
+    Paragraph count must stay identical to the upload so frozen-docx XML merge stays aligned.
+    Extra tailored bullets are truncated; unused slots are cleared without deleting paragraphs.
+    """
+    if not slot_paragraphs:
+        return
+    for bi, para in enumerate(slot_paragraphs):
+        if bi < len(new_bullets):
+            formatted = _format_bullet_for_paragraph(para, new_bullets[bi])
+            _apply_paragraph_text(
+                para,
+                formatted,
+                highlight_terms=highlight_terms,
+                selective_highlight=True,
+                bold_metrics=True,
+                enable_bold=enable_bold,
+            )
+        else:
+            _clear_paragraph_visible(para)
+
+
 def _split_tailored_lines(text: str) -> list[str]:
     lines: list[str] = []
     for raw in (text or "").replace("\r\n", "\n").split("\n"):
@@ -397,6 +744,13 @@ def _detect_contact_header_role_line(text: str) -> bool:
     """True for the headline job-title line under the candidate name (not email/phone/links)."""
     stripped = (text or "").strip()
     if not stripped or line_is_factual_contact(stripped):
+        return False
+    # Full experience headers (Company | Title | Location + dates) are not contact headlines.
+    if has_experience_date_range(stripped):
+        return False
+    if stripped.count("|") >= 2:
+        return False
+    if "\t" in stripped and re.search(r"\d{1,2}/\s*\d{4}", stripped):
         return False
     if _ROLE_START_RE.search(stripped):
         return False
@@ -426,22 +780,73 @@ def _is_experience_role_start(paragraph: Paragraph, text: str) -> bool:
         return False
     if _detect_contact_header_role_line(text):
         return False
+    stripped = (text or "").strip()
+    if _looks_like_role_header_line(stripped):
+        return True
     if line_is_factual_contact(text):
         return False
     # In-role sub-headings (e.g. "DevOps & Cloud Engineering:") are not new employers.
-    if text.rstrip().endswith(":") and "|" not in text and not _ROLE_START_RE.search(text):
+    if stripped.rstrip().endswith(":") and "|" not in stripped and not _ROLE_START_RE.search(stripped):
         return False
-    if _ROLE_START_RE.search(text):
+    if _ROLE_START_RE.search(stripped):
         return True
-    if "|" in text and len(text) < 120:
+    if "|" in stripped and len(stripped) < 120:
         return True
     if re.search(
         r"\b(engineer|developer|manager|architect|analyst|consultant|specialist|director|lead|principal)\b",
-        text,
+        stripped,
         re.I,
     ):
-        return len(text) < 100 and ("|" in text or "\t" in text or _ROLE_START_RE.search(text))
+        return len(stripped) < 100 and ("|" in stripped or "\t" in stripped or _ROLE_START_RE.search(stripped))
     return False
+
+
+def _normalize_experience_header_key(line: str) -> str:
+    return re.sub(r"\s+", " ", (line or "").strip().lower())
+
+
+def _group_indices_by_text_blocks(
+    paragraphs: list[Paragraph],
+    indices: list[int],
+    text_blocks: list[list[str]],
+) -> list[list[int]]:
+    """Map plain-text experience blocks back to Word paragraph indices."""
+    if not indices or not text_blocks:
+        return [indices] if indices else []
+
+    header_keys = [
+        _normalize_experience_header_key(primary_role_header_from_block(block) or (block[0] if block else ""))
+        for block in text_blocks
+    ]
+    groups: list[list[int]] = [[] for _ in text_blocks]
+    block_i = 0
+
+    for idx in indices:
+        text = _paragraph_text(paragraphs[idx]).strip()
+        if not text:
+            if groups[block_i]:
+                groups[block_i].append(idx)
+            continue
+
+        norm = _normalize_experience_header_key(text)
+        if block_i < len(header_keys) - 1 and norm == header_keys[block_i + 1]:
+            block_i += 1
+        elif (
+            block_i < len(text_blocks) - 1
+            and is_experience_role_header_line(text)
+            and _looks_like_job_title_line(text)
+            and norm == header_keys[block_i + 1]
+        ):
+            block_i += 1
+
+        groups[block_i].append(idx)
+
+    non_empty = [group for group in groups if group]
+    return non_empty if non_empty else [indices]
+
+
+def _block_has_bullets(paragraphs: list[Paragraph], indices: list[int]) -> bool:
+    return any(_is_bullet_paragraph(paragraphs[i]) for i in indices if i < len(paragraphs))
 
 
 def _group_experience_paragraph_indices(doc: Document, indices: list[int]) -> list[list[int]]:
@@ -453,32 +858,71 @@ def _group_experience_paragraph_indices(doc: Document, indices: list[int]) -> li
     for idx in indices:
         para = paragraphs[idx]
         text = _paragraph_text(para).strip()
-        if current and text and _is_experience_role_start(para, text):
-            blocks.append(current)
-            current = [idx]
-        else:
-            current.append(idx)
+        if current and text:
+            starts_new_role = _is_experience_role_start(para, text)
+            if not starts_new_role and _block_has_bullets(paragraphs, current):
+                if is_experience_role_header_line(text) or (
+                    _looks_like_job_title_line(text) and not _is_bullet_paragraph(para)
+                ):
+                    starts_new_role = True
+            if starts_new_role:
+                blocks.append(current)
+                current = [idx]
+                continue
+        current.append(idx)
     if current:
         blocks.append(current)
-    return blocks if len(blocks) > 1 else [indices]
+
+    experience_lines: list[str] = []
+    for idx in indices:
+        line = _line_from_paragraph(paragraphs[idx])
+        if line:
+            experience_lines.append(line)
+    text_blocks = split_experience_line_blocks("\n".join(experience_lines))
+    if len(text_blocks) > len(blocks):
+        return _group_indices_by_text_blocks(paragraphs, indices, text_blocks)
+    return blocks if blocks else [indices]
+
+
+def _experience_template_bullet_slots(doc: Document, indices: list[int]) -> list[int]:
+    """Bullet paragraph slots per role block in the uploaded template (caps export capacity)."""
+    paragraphs = _all_document_paragraphs(doc)
+    blocks = _group_experience_paragraph_indices(doc, indices)
+    return [
+        sum(1 for idx in block if _is_bullet_paragraph(paragraphs[idx]))
+        for block in blocks
+    ]
+
+
+def _resolve_experience_bullet_targets(
+    doc: Document,
+    indices: list[int],
+    bullets_per_role: list[int] | None,
+) -> list[int]:
+    """ATS bullet targets capped to template slots with a 3-bullet floor per employer."""
+    blocks = _group_experience_paragraph_indices(doc, indices)
+    role_count = len(blocks)
+    if role_count <= 0:
+        return []
+    ats_targets = (
+        bullets_per_role
+        if bullets_per_role and len(bullets_per_role) == role_count
+        else default_ats_bullets_per_role(role_count)
+    )
+    template_slots = _experience_template_bullet_slots(doc, indices)
+    return effective_bullets_per_role(ats_targets, template_slots)
 
 
 def _bullet_lines(text: str) -> list[str]:
     return [line for line in _split_tailored_lines(text) if _BULLET_PREFIX_RE.match(line)]
 
 
-def _partition_bullets_by_block_counts(bullets: list[str], counts: list[int]) -> list[list[str]]:
-    """Split flat bullet list into per-role groups matching source paragraph counts."""
-    if not counts:
-        return [bullets] if bullets else []
-    out: list[list[str]] = []
-    pos = 0
-    for count in counts:
-        chunk = bullets[pos : pos + count] if count > 0 else []
-        out.append(chunk)
-        pos += max(count, 0)
-    # Never exceed source bullet slots — inserting paragraphs breaks in-place layout rebuild.
-    return out
+def _partition_bullets_by_block_counts(
+    bullets: list[str],
+    counts: list[int],
+) -> list[list[str]]:
+    """Split bullets across roles using ATS minimums — never cap to source resume counts."""
+    return partition_experience_bullets_by_role(bullets, counts)
 
 
 def _primary_role_header_index(para_block: list[int], paragraphs: list[Paragraph]) -> int | None:
@@ -496,8 +940,16 @@ def _primary_role_header_index(para_block: list[int], paragraphs: list[Paragraph
 
 
 def _apply_role_header_text(paragraph: Paragraph, text: str) -> None:
-    """Experience role/company/date headers must never be keyword-bolded."""
+    """Experience role/company/date headers use full-line bold; no JD keyword bolding."""
     _replace_paragraph_text_plain(paragraph, text)
+    _apply_role_header_bold(paragraph)
+
+
+def _apply_role_header_bold(paragraph: Paragraph) -> None:
+    """Keep role header lines bold in the exported Word file."""
+    for run in paragraph.runs:
+        if (run.text or "").strip():
+            run.bold = True
 
 
 def _paragraph_ppr(paragraph: Paragraph):
@@ -589,31 +1041,35 @@ def _update_experience_bullets_only(
     indices: list[int],
     new_text: str,
     highlight_terms: list[str] | None = None,
-    role_titles: list[str] | None = None,
     enable_bold: bool = True,
+    bullets_per_role: list[int] | None = None,
 ) -> None:
     """
-    Update job titles and bullet paragraphs in each work-experience role block only.
-    Company, location, and dates stay unchanged (title segment only is swapped).
+    Update bullet paragraphs in each work-experience role block only.
+    Role/company/date headers are left unchanged from the source resume.
     """
     if not indices or not new_text.strip():
         return
 
     paragraphs = _all_document_paragraphs(doc)
     para_blocks = _group_experience_paragraph_indices(doc, indices)
-    bullet_counts = [
-        sum(1 for idx in block if _is_bullet_paragraph(paragraphs[idx]))
-        for block in para_blocks
-    ]
+    target_counts = _resolve_experience_bullet_targets(doc, indices, bullets_per_role)
     llm_bullets = _bullet_lines(new_text)
-    bullets_per_block = _partition_bullets_by_block_counts(llm_bullets, bullet_counts)
+    bullets_per_block = _partition_bullets_by_block_counts(llm_bullets, target_counts)
+    template_header: Paragraph | None = None
 
     for block_i, para_block in enumerate(para_blocks):
         header_idx = _primary_role_header_index(para_block, paragraphs)
-        if header_idx is not None and block_i < len(role_titles or []):
-            existing = _paragraph_text(paragraphs[header_idx]).strip()
-            display = replace_role_title_in_header(existing, role_titles[block_i])
-            _apply_role_header_text(paragraphs[header_idx], display)
+        if header_idx is not None:
+            header_para = paragraphs[header_idx]
+            if template_header is None:
+                template_header = header_para
+            else:
+                try:
+                    header_para.style = template_header.style
+                except Exception:
+                    pass
+            _apply_role_header_bold(header_para)
 
         _align_experience_company_indent(paragraphs, para_block, header_idx)
 
@@ -627,17 +1083,15 @@ def _update_experience_bullets_only(
         if not bullet_indices:
             continue
         new_bullets = bullets_per_block[block_i] if block_i < len(bullets_per_block) else []
-        new_bullets = new_bullets[: len(bullet_indices)]
-
-        for bi, idx in enumerate(bullet_indices):
-            if bi < len(new_bullets):
-                formatted = _format_bullet_for_paragraph(paragraphs[idx], new_bullets[bi])
-                _apply_paragraph_text(
-                    paragraphs[idx],
-                    formatted,
-                    highlight_terms=highlight_terms,
-                    enable_bold=enable_bold,
-                )
+        slot_paragraphs = [paragraphs[idx] for idx in bullet_indices]
+        template_para = slot_paragraphs[0]
+        _apply_bullet_updates(
+            slot_paragraphs,
+            new_bullets,
+            template_para,
+            highlight_terms=highlight_terms,
+            enable_bold=enable_bold,
+        )
 
 
 def _apply_paragraph_text(
@@ -647,6 +1101,7 @@ def _apply_paragraph_text(
     highlight_terms: list[str] | None = None,
     plain: bool = False,
     selective_highlight: bool = False,
+    bold_metrics: bool = False,
     enable_bold: bool = True,
 ) -> None:
     if plain or not enable_bold:
@@ -657,6 +1112,7 @@ def _apply_paragraph_text(
             text,
             highlight_terms,
             auto_tech_and_metrics=not selective_highlight,
+            auto_metrics=bold_metrics,
         )
     else:
         _replace_paragraph_text_inplace(paragraph, text)
@@ -671,11 +1127,11 @@ def _update_lines_index_preserving(
     plain: bool = False,
     selective_highlight: bool = False,
     enable_bold: bool = True,
+    clear_unused: bool = False,
 ) -> None:
     """
     Update paragraph i with line i only — preserves structure, styles, and extra paragraphs.
-    Paragraphs beyond len(new_lines) are left unchanged (no deletes, no clearing).
-    Empty spacer paragraphs are never modified.
+    When clear_unused is True, blank out skill paragraphs beyond the new line count.
     """
     lines = _split_tailored_lines(new_text)
     if not lines or not indices:
@@ -690,30 +1146,35 @@ def _update_lines_index_preserving(
             selective_highlight=selective_highlight,
             enable_bold=enable_bold,
         )
+        if clear_unused:
+            for idx in indices[1:]:
+                if idx < len(paragraphs):
+                    _clear_paragraph_visible(paragraphs[idx])
         return
-    line_i = 0
-    for idx in indices:
-        if line_i >= len(lines) or idx >= len(paragraphs):
+    for slot_i, idx in enumerate(indices):
+        if idx >= len(paragraphs):
             break
         para = paragraphs[idx]
-        existing = _paragraph_text(para).strip()
-        if not existing:
-            continue
-        line = lines[line_i]
-        if _is_bullet_paragraph(para):
-            line = _format_bullet_for_paragraph(para, line)
-        elif existing and _BULLET_CHAR_RE.match(existing) and not _BULLET_CHAR_RE.match(line):
-            line = _format_bullet_for_paragraph(para, line)
-        display = _display_line_for_paragraph(line, para) if not _is_bullet_paragraph(para) else line
-        _apply_paragraph_text(
-            para,
-            display,
-            highlight_terms=highlight_terms,
-            plain=plain,
-            selective_highlight=selective_highlight,
-            enable_bold=enable_bold,
-        )
-        line_i += 1
+        if slot_i < len(lines):
+            line = lines[slot_i]
+            if _is_bullet_paragraph(para):
+                line = _format_bullet_for_paragraph(para, line)
+            else:
+                existing = _paragraph_text(para).strip()
+                if existing and _BULLET_CHAR_RE.match(existing) and not _BULLET_CHAR_RE.match(line):
+                    line = _format_bullet_for_paragraph(para, line)
+            display = _display_line_for_paragraph(line, para) if not _is_bullet_paragraph(para) else line
+            _apply_paragraph_text(
+                para,
+                display,
+                highlight_terms=highlight_terms,
+                plain=plain,
+                selective_highlight=selective_highlight,
+                enable_bold=enable_bold,
+            )
+        elif clear_unused:
+            if _paragraph_text(para).strip():
+                _clear_paragraph_visible(para)
 
 
 def _normalize_section_body_indices(
@@ -803,13 +1264,67 @@ def _looks_like_skill_category_line(text: str) -> bool:
     return _is_bulletish_text(stripped) and ":" in stripped.split("\n", 1)[0][:60]
 
 
-def _cell_bullet_paragraph_indices(cell) -> list[int]:
+def _cell_bullet_paragraph_indices(
+    cell,
+    *,
+    after_para_idx: int | None = None,
+    before_para_idx: int | None = None,
+) -> list[int]:
     """Bullet paragraphs in a table cell (● markers, list styles, or dash prefixes)."""
     indices: list[int] = []
     for idx, para in enumerate(cell.paragraphs):
+        if after_para_idx is not None and idx <= after_para_idx:
+            continue
+        if before_para_idx is not None and idx >= before_para_idx:
+            continue
         if _is_bullet_paragraph(para) or _is_bulletish_text(_paragraph_text(para)):
             indices.append(idx)
     return indices
+
+
+def _cell_role_header_paragraph_indices(cell) -> list[int]:
+    """Non-bullet header paragraphs inside a table cell that start a new job (supports 3+ roles per cell)."""
+    headers: list[int] = []
+    seen_bullets_since_last_header = False
+    for idx, para in enumerate(cell.paragraphs):
+        text = _paragraph_text(para).strip()
+        if not text:
+            continue
+        if _is_bulletish_text(text):
+            seen_bullets_since_last_header = True
+            continue
+        is_header = is_experience_role_header_line(text) or _looks_like_job_title_line(text)
+        if not is_header:
+            continue
+        if not headers:
+            headers.append(idx)
+            seen_bullets_since_last_header = False
+            continue
+        if seen_bullets_since_last_header or is_experience_role_header_line(text):
+            headers.append(idx)
+            seen_bullets_since_last_header = False
+    return headers
+
+
+def _expand_experience_row_refs(doc: Document, rows: list[ExperienceRowRef]) -> list[ExperienceRowRef]:
+    """Split table rows that contain multiple jobs in one cell into separate role refs."""
+    expanded: list[ExperienceRowRef] = []
+    for ref in rows:
+        cell = doc.tables[ref.table_idx].rows[ref.row_idx].cells[ref.content_cols[0]]
+        header_indices = _cell_role_header_paragraph_indices(cell)
+        if len(header_indices) <= 1:
+            expanded.append(ref)
+            continue
+        for header_idx in header_indices:
+            expanded.append(
+                ExperienceRowRef(
+                    table_idx=ref.table_idx,
+                    row_idx=ref.row_idx,
+                    content_cols=ref.content_cols,
+                    role_header_para_idx=header_idx,
+                )
+            )
+    return expanded
 
 
 def _detect_bullet_prefix(cell) -> str:
@@ -889,6 +1404,8 @@ def _detect_table_layout(doc: Document) -> tuple[list[int], list[int], list[Expe
             continue
         exp_rows.append(ExperienceRowRef(table_idx=table_idx, row_idx=ri, content_cols=content_cols))
 
+    exp_rows = _expand_experience_row_refs(doc, exp_rows)
+
     if not exp_rows and not summary_indices and not skills_indices:
         return None
     return summary_indices, skills_indices, exp_rows
@@ -896,9 +1413,20 @@ def _detect_table_layout(doc: Document) -> tuple[list[int], list[int], list[Expe
 
 def _experience_text_from_table_row(doc: Document, ref: ExperienceRowRef) -> list[str]:
     cell = doc.tables[ref.table_idx].rows[ref.row_idx].cells[ref.content_cols[0]]
+    header_indices = _cell_role_header_paragraph_indices(cell)
+    start_idx = 0
+    end_idx = len(cell.paragraphs)
+    if ref.role_header_para_idx is not None:
+        start_idx = ref.role_header_para_idx
+        for header_idx in header_indices:
+            if header_idx > ref.role_header_para_idx:
+                end_idx = header_idx
+                break
     lines: list[str] = []
     header_done = False
-    for para in cell.paragraphs:
+    for para_idx, para in enumerate(cell.paragraphs):
+        if para_idx < start_idx or para_idx >= end_idx:
+            continue
         text = _paragraph_text(para).strip()
         if not text:
             continue
@@ -908,7 +1436,7 @@ def _experience_text_from_table_row(doc: Document, ref: ExperienceRowRef) -> lis
         elif not header_done:
             lines.append(text)
     date_cell = doc.tables[ref.table_idx].rows[ref.row_idx].cells[-1].text.strip()
-    if date_cell:
+    if date_cell and len(header_indices) <= 1:
         lines.append(date_cell)
     return lines
 
@@ -1023,53 +1551,71 @@ def _update_experience_table_rows(
     rows: list[ExperienceRowRef],
     new_text: str,
     highlight_terms: list[str] | None = None,
-    role_titles: list[str] | None = None,
     enable_bold: bool = True,
+    bullets_per_role: list[int] | None = None,
 ) -> None:
-    """Update role titles and bullet paragraphs inside work-experience table rows only."""
+    """Update bullet paragraphs inside work-experience table rows only."""
     if not rows or not new_text.strip():
         return
 
-    bullet_counts = []
-    for ref in rows:
-        cell = doc.tables[ref.table_idx].rows[ref.row_idx].cells[ref.content_cols[0]]
-        bullet_counts.append(len(_cell_bullet_paragraph_indices(cell)))
-
+    role_count = len(rows)
+    template_slots = [
+        len(
+            _cell_bullet_paragraph_indices(
+                doc.tables[ref.table_idx].rows[ref.row_idx].cells[ref.content_cols[0]],
+                after_para_idx=ref.role_header_para_idx,
+            )
+        )
+        for ref in rows
+    ]
+    ats_targets = (
+        bullets_per_role
+        if bullets_per_role and len(bullets_per_role) == role_count
+        else default_ats_bullets_per_role(role_count)
+    )
+    target_counts = effective_bullets_per_role(ats_targets, template_slots)
     llm_bullets = _bullet_lines(new_text)
-    bullets_per_row = _partition_bullets_by_block_counts(llm_bullets, bullet_counts)
+    bullets_per_row = _partition_bullets_by_block_counts(llm_bullets, target_counts)
 
     for row_i, ref in enumerate(rows):
         cell = doc.tables[ref.table_idx].rows[ref.row_idx].cells[ref.content_cols[0]]
         role_para: Paragraph | None = None
-        for para in cell.paragraphs:
-            text = _paragraph_text(para).strip()
-            if text and not _is_bulletish_text(text):
-                role_para = para
-                break
-        if row_i < len(role_titles or []) and role_para is not None:
-            display = replace_role_title_in_header(
-                _paragraph_text(role_para).strip(),
-                role_titles[row_i],
-            )
-            _apply_role_header_text(role_para, display)
+        header_indices = _cell_role_header_paragraph_indices(cell)
+        next_header_idx: int | None = None
+        if ref.role_header_para_idx is not None:
+            for hi, header_idx in enumerate(header_indices):
+                if header_idx == ref.role_header_para_idx:
+                    role_para = cell.paragraphs[header_idx]
+                    if hi + 1 < len(header_indices):
+                        next_header_idx = header_indices[hi + 1]
+                    break
+        if role_para is None:
+            for para in cell.paragraphs:
+                text = _paragraph_text(para).strip()
+                if text and not _is_bulletish_text(text):
+                    role_para = para
+                    break
+        if role_para is not None:
+            _apply_role_header_bold(role_para)
         _align_cell_company_indent(cell, role_para)
 
-        bullet_indices = _cell_bullet_paragraph_indices(cell)
+        bullet_indices = _cell_bullet_paragraph_indices(
+            cell,
+            after_para_idx=ref.role_header_para_idx,
+            before_para_idx=next_header_idx,
+        )
         if not bullet_indices:
             continue
         new_bullets = bullets_per_row[row_i] if row_i < len(bullets_per_row) else []
-        new_bullets = new_bullets[: len(bullet_indices)]
-
-        for bi, para_idx in enumerate(bullet_indices):
-            if bi < len(new_bullets):
-                para = cell.paragraphs[para_idx]
-                formatted = _format_bullet_for_paragraph(para, new_bullets[bi])
-                _apply_paragraph_text(
-                    para,
-                    formatted,
-                    highlight_terms=highlight_terms,
-                    enable_bold=enable_bold,
-                )
+        slot_paragraphs = [cell.paragraphs[para_idx] for para_idx in bullet_indices]
+        template_para = slot_paragraphs[0]
+        _apply_bullet_updates(
+            slot_paragraphs,
+            new_bullets,
+            template_para,
+            highlight_terms=highlight_terms,
+            enable_bold=enable_bold,
+        )
 
         for col in ref.content_cols[1:]:
             row_cells = doc.tables[ref.table_idx].rows[ref.row_idx].cells
@@ -1278,6 +1824,35 @@ def parse_resume_from_docx(data: bytes) -> DocxResumeDocument:
         except ValueError:
             experience_table_rows = []
 
+    text_role_count = len(split_experience_line_blocks(parsed.professional_experience))
+    exp_indices = section_body_indices.get("professional_experience") or []
+    grouped_role_count = len(_group_experience_paragraph_indices(doc, exp_indices)) if exp_indices else 0
+    table_role_count = len(experience_table_rows)
+    if grouped_role_count > 0:
+        detected_role_count = max(grouped_role_count, table_role_count)
+    else:
+        detected_role_count = max(text_role_count, table_role_count) or None
+
+    experience_bullet_slots: list[int] = []
+    if experience_table_rows:
+        for ref in experience_table_rows:
+            cell = doc.tables[ref.table_idx].rows[ref.row_idx].cells[ref.content_cols[0]]
+            experience_bullet_slots.append(
+                len(
+                    _cell_bullet_paragraph_indices(
+                        cell,
+                        after_para_idx=ref.role_header_para_idx,
+                    )
+                )
+            )
+    elif exp_indices:
+        experience_bullet_slots = _experience_template_bullet_slots(doc, exp_indices)
+    if not experience_bullet_slots:
+        experience_bullet_slots = [
+            sum(1 for line in block if _BULLET_PREFIX_RE.match(line.strip()))
+            for block in split_experience_line_blocks(parsed.professional_experience)
+        ]
+
     return DocxResumeDocument(
         parsed=parsed,
         plain_text=plain_text,
@@ -1285,55 +1860,9 @@ def parse_resume_from_docx(data: bytes) -> DocxResumeDocument:
         section_body_indices=section_body_indices,
         contact_paragraph_indices=contact_paragraph_indices,
         experience_table_rows=experience_table_rows,
+        detected_role_count=detected_role_count,
+        experience_bullet_slots=experience_bullet_slots,
     )
-
-
-def _update_contact_header_job_role(doc: Document, target_job_role: str) -> tuple[bool, set[int]]:
-    """
-    Replace only the CV headline role/title with the user-provided target role.
-    Name, email, phone, links, and layout stay unchanged.
-    """
-    role = (target_job_role or "").strip()
-    if not role:
-        return False, set()
-
-    updated_indices: set[int] = set()
-    table_updated = False
-    if doc.tables:
-        header_table = doc.tables[0]
-        seen_tc: set[int] = set()
-        for row in header_table.rows[:3]:
-            for cell in row.cells:
-                tc_id = id(cell._tc)
-                if tc_id in seen_tc:
-                    continue
-                seen_tc.add(tc_id)
-                for para in cell.paragraphs:
-                    text = _paragraph_text(para).strip()
-                    if not text or not _detect_contact_header_role_line(text):
-                        continue
-                    display = (
-                        replace_role_title_in_header(text, role)
-                        if "|" in text
-                        else role
-                    )
-                    _apply_role_header_text(para, display)
-                    table_updated = True
-                    break
-            if table_updated:
-                break
-
-    paragraphs = _all_document_paragraphs(doc)
-    for idx in range(min(8, len(paragraphs))):
-        text = _paragraph_text(paragraphs[idx]).strip()
-        if not text or not _detect_contact_header_role_line(text):
-            continue
-        display = replace_role_title_in_header(text, role) if "|" in text else role
-        _apply_role_header_text(paragraphs[idx], display)
-        if idx < len(doc.paragraphs):
-            updated_indices.add(idx)
-        break
-    return table_updated or bool(updated_indices), updated_indices
 
 
 def _update_contact_inplace(
@@ -1362,6 +1891,34 @@ def _update_contact_inplace(
         new_i += 1
 
 
+def _update_summary_preserving_spacing(
+    doc: Document,
+    indices: list[int],
+    new_text: str,
+    *,
+    highlight_terms: list[str] | None = None,
+    enable_bold: bool = True,
+) -> None:
+    """
+    Update summary text without clearing extra paragraph slots or changing paragraph spacing.
+    Writes the full summary into the first slot only; leaves other summary paragraphs untouched.
+    """
+    lines = _split_tailored_lines(new_text)
+    if not lines or not indices:
+        return
+    paragraphs = _all_document_paragraphs(doc)
+    first_idx = indices[0]
+    if first_idx >= len(paragraphs):
+        return
+    summary_text = " ".join(lines)
+    _apply_paragraph_text(
+        paragraphs[first_idx],
+        summary_text,
+        highlight_terms=highlight_terms,
+        enable_bold=enable_bold,
+    )
+
+
 def _update_section_inplace(
     doc: Document,
     section_name: str,
@@ -1380,16 +1937,16 @@ def _update_section_inplace(
             doc, indices, new_text, highlight_terms, enable_bold=enable_bold
         )
     elif section_name == "skills":
-        _update_lines_index_preserving(
+        _update_skills_preserving_template(
             doc,
             indices,
             new_text,
+            source_text,
             highlight_terms=highlight_terms,
-            selective_highlight=True,
             enable_bold=enable_bold,
         )
     elif section_name == "professional_summary":
-        _update_lines_index_preserving(
+        _update_summary_preserving_spacing(
             doc,
             indices,
             new_text,
@@ -1473,13 +2030,19 @@ def _rebuild_orig_document_selective(
             continue
         if child.startswith("<w:tbl"):
             if tbl_idx in editable_table_indices and tbl_idx < len(mem_tables):
-                merged_parts.append(mem_tables[tbl_idx]._element.xml)
+                merged_parts.append(
+                    _merge_table_xml_preserving_ppr(child, mem_tables[tbl_idx]._element.xml)
+                )
             else:
                 merged_parts.append(child)
             tbl_idx += 1
             continue
         if child.startswith("<w:p"):
-            merged_parts.append(editable_para_xml.get(body_para_idx, child))
+            mod_xml = editable_para_xml.get(body_para_idx)
+            if mod_xml is not None:
+                merged_parts.append(_merge_paragraph_xml_preserving_ppr(child, mod_xml))
+            else:
+                merged_parts.append(child)
             body_para_idx += 1
             continue
         merged_parts.append(child)
@@ -1488,7 +2051,8 @@ def _rebuild_orig_document_selective(
     if not body_match:
         return None
     merged_body = body_match.group(1) + "".join(merged_parts) + body_match.group(2)
-    return orig_document_xml[: body_match.start()] + merged_body + orig_document_xml[body_match.end() :]
+    result = orig_document_xml[: body_match.start()] + merged_body + orig_document_xml[body_match.end() :]
+    return _postprocess_document_xml(result)
 
 
 def _first_table_xml(document_xml: str) -> str | None:
@@ -1600,6 +2164,191 @@ def _paragraph_plain_text_from_xml(paragraph_xml: str) -> str:
     return "".join(parts).strip()
 
 
+def _minimize_empty_paragraph_xml(paragraph_xml: str) -> str:
+    """Collapse empty paragraphs to near-zero height in merged document.xml."""
+    if not paragraph_xml.startswith("<w:p"):
+        return paragraph_xml
+    xml = paragraph_xml
+    spacing_el = '<w:spacing w:before="0" w:after="0" w:line="1" w:lineRule="exact"/>'
+    if "<w:pPr" in xml:
+        xml = re.sub(r"<w:numPr\b[^>]*/>", "", xml)
+        xml = re.sub(r"<w:numPr\b[^>]*>.*?</w:numPr>", "", xml, flags=re.S)
+        if re.search(r"<w:spacing\b", xml):
+            xml = re.sub(r"<w:spacing[^>]*/>", spacing_el, xml, count=1)
+        else:
+            xml = re.sub(r"(<w:pPr[^>]*>)", r"\1" + spacing_el, xml, count=1)
+    else:
+        xml = re.sub(r"(<w:p[^>]*>)", r"\1<w:pPr>" + spacing_el + "</w:pPr>", xml, count=1)
+
+    def _vanish_run(run_xml: str) -> str:
+        if "<w:rPr" in run_xml:
+            if "<w:vanish" not in run_xml:
+                run_xml = re.sub(r"(<w:rPr[^>]*>)", r"\1<w:vanish/>", run_xml, count=1)
+            if re.search(r"<w:sz\b", run_xml):
+                run_xml = re.sub(r"<w:sz\b[^>]*/>", '<w:sz w:val="2"/>', run_xml, count=1)
+            else:
+                run_xml = re.sub(r"(<w:rPr[^>]*>)", r'\1<w:sz w:val="2"/>', run_xml, count=1)
+        else:
+            run_xml = run_xml.replace(
+                "<w:r>",
+                '<w:r><w:rPr><w:vanish/><w:sz w:val="2"/></w:rPr>',
+                1,
+            )
+        return run_xml
+
+    if re.search(r"<w:r\b", xml):
+        xml = re.sub(r"<w:r\b[^>]*>.*?</w:r>", lambda m: _vanish_run(m.group(0)), xml, flags=re.S)
+    else:
+        xml = xml.replace("</w:p>", '<w:r><w:rPr><w:vanish/><w:sz w:val="2"/></w:rPr><w:t></w:t></w:r></w:p>')
+    return xml
+
+
+def _collapse_spacing_in_paragraph_xml(paragraph_xml: str) -> str:
+    """Alias for empty-paragraph minimization in XML merge passes."""
+    return _minimize_empty_paragraph_xml(paragraph_xml)
+
+
+def _strip_italic_from_paragraph_xml(paragraph_xml: str) -> str:
+    """Remove italic and force normal emphasis on role-header paragraphs."""
+    xml = re.sub(r"<w:i\b[^>]*/>", "", paragraph_xml)
+    xml = re.sub(r"<w:iCs\b[^>]*/>", "", xml)
+    xml = re.sub(r"<w:i\b[^>]*>.*?</w:i>", "", xml, flags=re.S)
+    xml = re.sub(r"<w:iCs\b[^>]*>.*?</w:iCs>", "", xml, flags=re.S)
+
+    def _force_run_non_italic(run_xml: str) -> str:
+        if "<w:rPr" in run_xml:
+            if re.search(r"<w:i\b", run_xml):
+                run_xml = re.sub(r"<w:i\b[^>]*/>", '<w:i w:val="0"/>', run_xml)
+                run_xml = re.sub(r"<w:iCs\b[^>]*/>", '<w:iCs w:val="0"/>', run_xml)
+            else:
+                run_xml = re.sub(
+                    r"(<w:rPr[^>]*>)",
+                    r'\1<w:i w:val="0"/><w:iCs w:val="0"/>',
+                    run_xml,
+                    count=1,
+                )
+        else:
+            run_xml = run_xml.replace(
+                "<w:r>",
+                '<w:r><w:rPr><w:i w:val="0"/><w:iCs w:val="0"/></w:rPr>',
+                1,
+            )
+        return run_xml
+
+    return re.sub(r"<w:r\b[^>]*>.*?</w:r>", lambda m: _force_run_non_italic(m.group(0)), xml, flags=re.S)
+
+
+def _paragraph_ppr_xml(paragraph_xml: str) -> str:
+    match = re.search(r"<w:pPr\b[^>]*>.*?</w:pPr>", paragraph_xml, re.S)
+    if match:
+        return match.group(0)
+    match = re.search(r"<w:pPr\b[^>]*/>", paragraph_xml)
+    return match.group(0) if match else ""
+
+
+def _paragraph_body_without_ppr(paragraph_xml: str) -> str:
+    body = paragraph_xml
+    body = re.sub(r"<w:pPr\b[^>]*>.*?</w:pPr>", "", body, count=1, flags=re.S)
+    body = re.sub(r"<w:pPr\b[^>]*/>", "", body, count=1)
+    body = re.sub(r"^<w:p[^>]*>", "", body)
+    body = re.sub(r"</w:p>\s*$", "", body)
+    return body
+
+
+def _patch_paragraph_content_preserve_ppr(orig_xml: str, mod_xml: str) -> str:
+    """Swap run content from mod while keeping original w:pPr (spacing/indents unchanged)."""
+    close = orig_xml.rfind("</w:p>")
+    open_end = orig_xml.find(">")
+    if close < 0 or open_end < 0:
+        return mod_xml
+    ppr = _paragraph_ppr_xml(orig_xml)
+    mod_body = _paragraph_body_without_ppr(mod_xml)
+    if ppr:
+        return orig_xml[: open_end + 1] + ppr + mod_body + orig_xml[close:]
+    return mod_xml
+
+
+def _merge_paragraph_xml_preserving_ppr(orig_xml: str, mod_xml: str) -> str:
+    """
+    Content-only merge: never replace layout/spacing from the upload.
+    - Empty original → keep original (template spacer).
+    - Cleared bullet slot → minimize height.
+    - Updated text → new runs, original w:pPr.
+    """
+    orig_text = _paragraph_plain_text_from_xml(orig_xml)
+    mod_text = _paragraph_plain_text_from_xml(mod_xml)
+    if orig_text == mod_text:
+        return orig_xml
+    if not orig_text:
+        return orig_xml
+    if not mod_text:
+        cleared = _paragraph_xml_with_empty_text(orig_xml)
+        return _minimize_empty_paragraph_xml(cleared)
+    return _patch_paragraph_content_preserve_ppr(orig_xml, mod_xml)
+
+
+def _paragraph_xml_with_empty_text(paragraph_xml: str) -> str:
+    """Clear visible text but keep original w:pPr spacing/indents (unused bullet slots)."""
+    if not paragraph_xml.startswith("<w:p"):
+        return paragraph_xml
+    xml = re.sub(
+        r"(<w:t(?:\s[^>]*)?>)(.*?)(</w:t>)",
+        r"\1\3",
+        paragraph_xml,
+        flags=re.S,
+    )
+    xml = re.sub(r"<w:vanish[^>]*/>", "", xml)
+    xml = re.sub(r"<w:sz w:val=\"2\"[^>]*/>", "", xml)
+    return xml
+
+
+def _merge_table_xml_preserving_ppr(orig_xml: str, mod_xml: str) -> str:
+    """Patch table cell paragraph text only; keep original table/cell/paragraph spacing."""
+    o_parts = re.split(r"(<w:p\b.*?</w:p>)", orig_xml, flags=re.S)
+    m_paras = re.findall(r"<w:p\b.*?</w:p>", mod_xml, flags=re.S)
+    if not m_paras:
+        return orig_xml
+    para_i = 0
+    merged: list[str] = []
+    for part in o_parts:
+        if part.startswith("<w:p"):
+            if para_i < len(m_paras):
+                merged.append(_merge_paragraph_xml_preserving_ppr(part, m_paras[para_i]))
+                para_i += 1
+            else:
+                merged.append(part)
+        else:
+            merged.append(part)
+    return "".join(merged)
+
+
+def _postprocess_paragraph_xml(paragraph_xml: str) -> str:
+    """Final layout pass — never remove template spacing from empty paragraphs."""
+    text = _paragraph_plain_text_from_xml(paragraph_xml)
+    if not text:
+        return paragraph_xml
+    if _looks_like_role_header_line(text):
+        return _strip_italic_from_paragraph_xml(paragraph_xml)
+    return paragraph_xml
+
+
+def _postprocess_document_xml(document_xml: str) -> str:
+    """Apply spacing and role-header fixes to the merged document.xml."""
+    children = _split_document_body_children(document_xml)
+    if not children:
+        return document_xml
+    merged_parts: list[str] = []
+    for child in children:
+        if child.startswith("<w:p"):
+            child = _postprocess_paragraph_xml(child)
+        merged_parts.append(child)
+    body_match = re.search(r"(<w:body>).*?(</w:body>)", document_xml, re.S)
+    if not body_match:
+        return document_xml
+    merged_body = body_match.group(1) + "".join(merged_parts) + body_match.group(2)
+    return document_xml[: body_match.start()] + merged_body + document_xml[body_match.end() :]
+
+
 def _merge_document_xml_preserving_layout(
     original_xml: str,
     modified_xml: str,
@@ -1626,15 +2375,14 @@ def _merge_document_xml_preserving_layout(
             continue
         if o_child.startswith("<w:tbl"):
             use_modified = editable_table_index is not None and tbl_idx == editable_table_index
-            merged_parts.append(m_child if use_modified else o_child)
+            merged_parts.append(
+                _merge_table_xml_preserving_ppr(o_child, m_child) if use_modified else o_child
+            )
             tbl_idx += 1
             continue
         if o_child.startswith("<w:p"):
             if para_idx in editable_paragraph_indices:
-                if _paragraph_plain_text_from_xml(o_child) == _paragraph_plain_text_from_xml(m_child):
-                    merged_parts.append(o_child)
-                else:
-                    merged_parts.append(m_child)
+                merged_parts.append(_merge_paragraph_xml_preserving_ppr(o_child, m_child))
             else:
                 merged_parts.append(o_child)
             para_idx += 1
@@ -1645,7 +2393,8 @@ def _merge_document_xml_preserving_layout(
     if not body_match:
         return None
     merged_body = body_match.group(1) + "".join(merged_parts) + body_match.group(2)
-    return original_xml[: body_match.start()] + merged_body + original_xml[body_match.end() :]
+    result = original_xml[: body_match.start()] + merged_body + original_xml[body_match.end() :]
+    return _postprocess_document_xml(result)
 
 
 def _merge_document_xml_selective_fallback(
@@ -1656,8 +2405,8 @@ def _merge_document_xml_selective_fallback(
     editable_table_index: int | None,
 ) -> str | None:
     """
-    When python-docx save flattens tables, swap only editable paragraphs and the
-    experience table from the modified doc; keep header/contact tables from original.
+    When python-docx save flattens tables, swap editable paragraphs by ORIGINAL index
+    (not sequential counter) so empty/cleared slots do not shift later sections.
     """
     orig_children = _split_document_body_children(original_xml)
     mod_children = _split_document_body_children(modified_xml)
@@ -1669,7 +2418,6 @@ def _merge_document_xml_selective_fallback(
 
     para_idx = 0
     tbl_idx = 0
-    mod_para_idx = 0
     mod_tbl_idx = 0
     merged_parts: list[str] = []
 
@@ -1679,16 +2427,19 @@ def _merge_document_xml_selective_fallback(
             continue
         if child.startswith("<w:tbl"):
             if editable_table_index is not None and tbl_idx == editable_table_index and mod_tbl_idx < len(mod_tables):
-                merged_parts.append(mod_tables[mod_tbl_idx])
+                merged_parts.append(
+                    _merge_table_xml_preserving_ppr(child, mod_tables[mod_tbl_idx])
+                )
                 mod_tbl_idx += 1
             else:
                 merged_parts.append(child)
             tbl_idx += 1
             continue
         if child.startswith("<w:p"):
-            if para_idx in editable_paragraph_indices and mod_para_idx < len(mod_paragraphs):
-                merged_parts.append(mod_paragraphs[mod_para_idx])
-                mod_para_idx += 1
+            if para_idx in editable_paragraph_indices and para_idx < len(mod_paragraphs):
+                merged_parts.append(
+                    _merge_paragraph_xml_preserving_ppr(child, mod_paragraphs[para_idx])
+                )
             else:
                 merged_parts.append(child)
             para_idx += 1
@@ -1699,7 +2450,8 @@ def _merge_document_xml_selective_fallback(
     if not body_match:
         return None
     merged_body = body_match.group(1) + "".join(merged_parts) + body_match.group(2)
-    return original_xml[: body_match.start()] + merged_body + original_xml[body_match.end() :]
+    result = original_xml[: body_match.start()] + merged_body + original_xml[body_match.end() :]
+    return _postprocess_document_xml(result)
 
 
 def _restore_frozen_docx_parts(
@@ -1826,6 +2578,10 @@ def _restore_frozen_docx_parts(
                                 editable_table_index=editable_table_index,
                             )
                             data = (fallback if fallback is not None else orig_document).encode("utf-8")
+                try:
+                    data = _postprocess_document_xml(data.decode("utf-8")).encode("utf-8")
+                except Exception:
+                    pass
             out_zip.writestr(item, data)
 
         for name, data in preserved.items():
@@ -1852,8 +2608,7 @@ def apply_tailored_sections_to_docx(
     experience_table_rows: list[ExperienceRowRef] | None = None,
     highlight_keywords: list[str] | None = None,
     skills_highlight_keywords: list[str] | None = None,
-    experience_role_titles: list[str] | None = None,
-    target_job_role: str = "",
+    experience_bullets_per_role: list[int] | None = None,
     enable_bold: bool = True,
 ) -> tuple[bytes, str] | None:
     exp_rows = experience_table_rows or []
@@ -1867,8 +2622,6 @@ def apply_tailored_sections_to_docx(
         if enable_bold
         else []
     )
-    role_titles = [t.strip() for t in (experience_role_titles or []) if t and t.strip()]
-    header_role = sanitize_target_job_role(target_job_role) or (role_titles[0] if role_titles else "")
     if not _has_editable_docx_targets(section_body_indices, exp_rows):
         return None
 
@@ -1904,11 +2657,21 @@ def apply_tailored_sections_to_docx(
                 continue
             if exp_rows:
                 _update_experience_table_rows(
-                    doc, exp_rows, text, highlights, role_titles=role_titles, enable_bold=enable_bold
+                    doc,
+                    exp_rows,
+                    text,
+                    highlights,
+                    enable_bold=enable_bold,
+                    bullets_per_role=experience_bullets_per_role,
                 )
             elif exp_indices:
                 _update_experience_bullets_only(
-                    doc, exp_indices, text, highlights, role_titles=role_titles, enable_bold=enable_bold
+                    doc,
+                    exp_indices,
+                    text,
+                    highlights,
+                    enable_bold=enable_bold,
+                    bullets_per_role=experience_bullets_per_role,
                 )
             continue
         indices = section_body_indices.get(section_name, [])
@@ -1927,14 +2690,12 @@ def apply_tailored_sections_to_docx(
             enable_bold=enable_bold,
         )
 
-    header_role_updated, header_para_indices = _update_contact_header_job_role(doc, header_role)
-
     out = BytesIO()
     doc.save(out)
 
     editable_paragraph_indices: set[int] = set(section_body_indices.get("professional_summary", []))
-    editable_paragraph_indices.update(section_body_indices.get("skills", []))
-    editable_paragraph_indices.update(header_para_indices)
+    skill_indices = section_body_indices.get("skills", [])
+    editable_paragraph_indices.update(_skill_content_indices(doc, skill_indices))
     editable_table_indices: set[int] = set()
     editable_table_index: int | None = None
     if exp_rows:
@@ -1942,8 +2703,6 @@ def apply_tailored_sections_to_docx(
         editable_table_indices.add(editable_table_index)
     else:
         editable_paragraph_indices.update(section_body_indices.get("professional_experience", []))
-    if header_role_updated and doc.tables:
-        editable_table_indices.add(0)
 
     merged = _restore_frozen_docx_parts(
         docx_bytes,

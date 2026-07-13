@@ -102,6 +102,36 @@ function isJobHeaderTriple(lines: string[], titleIdx: number): boolean {
   return false;
 }
 
+function isPipeSeparatedRoleHeader(line: string): boolean {
+  const s = norm(line);
+  if (!s || isBulletLine(line)) return false;
+  if (!s.includes("|")) return false;
+  if (/@|\+\d{1,3}|\(\d{3}\)\s*\d/.test(s)) return false;
+  const roleHints =
+    /\b(engineer|engineering|developer|scientist|architect|designer|analyst|consultant|specialist|manager|director|lead|head|principal|staff|associate|intern|programmer|devops|officer|coordinator|executive|full[-\s]?stack|software|platform)\b/i;
+  const hasDate = /\d{1,2}\/\s*\d{4}\s*[-–—]\s*(?:\d{1,2}\/\s*\d{4}|present|current)/i.test(s);
+  return hasDate || roleHints.test(s);
+}
+
+function splitExperienceByPipeHeaders(lines: string[]): string[] {
+  const starts: number[] = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i] ?? "";
+    if (!norm(line)) continue;
+    if (!isPipeSeparatedRoleHeader(line)) continue;
+    starts.push(i);
+  }
+  if (starts.length <= 1) return [];
+
+  const blocks: string[] = [];
+  for (let b = 0; b < starts.length; b += 1) {
+    const from = starts[b]!;
+    const to = b + 1 < starts.length ? starts[b + 1]! : lines.length;
+    blocks.push(lines.slice(from, to).join("\n").trim());
+  }
+  return blocks.filter(Boolean);
+}
+
 function splitExperienceByJobHeaders(lines: string[]): string[] {
   const starts: number[] = [];
   for (let i = 0; i < lines.length; i += 1) {
@@ -124,6 +154,8 @@ function splitExperienceByJobHeaders(lines: string[]): string[] {
 
 /** Presentational metadata for one experience block (plain text from PDF). */
 export type ExperienceCardMeta = {
+  /** Full role header line as shown on the resume (title, company, location, dates). */
+  headerLine: string;
   titleLine: string;
   companyLine?: string;
   periodLine?: string;
@@ -136,53 +168,79 @@ export type ExperienceCardMeta = {
 export function parseExperienceCardMeta(block: string): ExperienceCardMeta {
   const raw = block.split(/\r?\n/);
   const n = raw.map((l) => norm(l));
-  let i = 0;
-  while (i < n.length && !n[i]) i += 1;
-  const titleLine = n[i] ?? "";
-  i += 1;
-  while (i < n.length && !n[i]) i += 1;
 
+  let headerIdx = 0;
+  while (headerIdx < raw.length && !n[headerIdx]) headerIdx += 1;
+  const headerLine = n[headerIdx] ?? "";
+
+  let titleLine = headerLine;
   let companyLine: string | undefined;
-  if (
-    i < n.length &&
-    n[i] &&
-    !isBulletLine(raw[i]!) &&
-    !isDateLine(raw[i]!) &&
-    !isLikelyLocationOnly(raw[i]!) &&
-    looksLikeCompanyLine(raw[i]!)
-  ) {
-    companyLine = n[i];
-    i += 1;
-  }
-
   let periodLine: string | undefined;
   let locationLine: string | undefined;
-  for (let k = i; k < n.length; k += 1) {
-    if (!n[k]) continue;
-    if (isDateLine(raw[k]!)) {
-      periodLine = n[k];
-      const nextLn = raw[k + 1];
-      if (nextLn !== undefined && n[k + 1] && isLikelyLocationOnly(nextLn)) {
-        locationLine = n[k + 1];
+
+  if (headerLine.includes("|") && isPipeSeparatedRoleHeader(headerLine)) {
+    const parts = headerLine.split("|").map((p) => p.trim()).filter(Boolean);
+    const dateMatch = headerLine.match(
+      /\d{1,2}\/\s*\d{4}\s*[-–—]\s*(?:\d{1,2}\/\s*\d{4}|present|current)/i,
+    );
+    if (dateMatch) periodLine = norm(dateMatch[0] ?? "");
+    const roleHints =
+      /\b(engineer|engineering|developer|scientist|architect|designer|analyst|consultant|specialist|manager|director|lead|head|principal|staff|associate|intern|programmer|devops|officer|coordinator|executive|full[-\s]?stack|software|platform)\b/i;
+    if (parts.length >= 2) {
+      const firstIsRole = roleHints.test(parts[0] ?? "");
+      const secondIsRole = roleHints.test(parts[1] ?? "");
+      if (firstIsRole && !secondIsRole) {
+        titleLine = parts[0] ?? titleLine;
+        companyLine = parts[1];
+        locationLine = parts.slice(2).join(" | ").replace(dateMatch?.[0] ?? "", "").trim() || undefined;
+      } else if (secondIsRole && !firstIsRole) {
+        companyLine = parts[0];
+        titleLine = parts[1] ?? titleLine;
+        locationLine = parts.slice(2).join(" | ").replace(dateMatch?.[0] ?? "", "").trim() || undefined;
+      } else {
+        titleLine = parts[0] ?? titleLine;
+        companyLine = parts[1];
+        locationLine = parts.slice(2).join(" | ").replace(dateMatch?.[0] ?? "", "").trim() || undefined;
       }
-      break;
+    }
+  } else {
+    let i = headerIdx + 1;
+    while (i < n.length && !n[i]) i += 1;
+    if (
+      i < n.length &&
+      n[i] &&
+      !isBulletLine(raw[i]!) &&
+      !isDateLine(raw[i]!) &&
+      !isLikelyLocationOnly(raw[i]!) &&
+      looksLikeCompanyLine(raw[i]!)
+    ) {
+      companyLine = n[i];
+      i += 1;
+    }
+    if (!periodLine) {
+      for (let k = i; k < n.length; k += 1) {
+        if (!n[k]) continue;
+        if (isDateLine(raw[k]!)) {
+          periodLine = n[k];
+          const nextLn = raw[k + 1];
+          if (nextLn !== undefined && n[k + 1] && isLikelyLocationOnly(nextLn)) {
+            locationLine = n[k + 1];
+          }
+          break;
+        }
+      }
     }
   }
 
-  let detailLines = raw.slice(i);
-  const drop = new Set<string>();
-  if (periodLine) drop.add(periodLine);
-  if (locationLine) drop.add(locationLine);
-  if (drop.size > 0) {
-    detailLines = detailLines.filter((l) => {
-      const t = norm(l);
-      if (!t) return true;
-      return !drop.has(t);
-    });
-  }
-  const detailBody = detailLines.join("\n").trim();
+  const detailBody = raw
+    .slice(headerIdx + 1)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .join("\n")
+    .trim();
 
   return {
+    headerLine,
     titleLine,
     companyLine,
     periodLine,
@@ -205,6 +263,9 @@ export function splitExperienceBlocks(raw: string): string[] {
 
   const blob = blocks[0] ?? t;
   const lines = blob.split(/\r?\n/);
+
+  const byPipeHeaders = splitExperienceByPipeHeaders(lines);
+  if (byPipeHeaders.length > 1) return byPipeHeaders;
 
   const byHeaders = splitExperienceByJobHeaders(lines);
   if (byHeaders.length > 1) return byHeaders;

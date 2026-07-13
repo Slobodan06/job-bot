@@ -1,6 +1,7 @@
 """Generate a clean, Unicode-safe PDF from tailored sections (ReportLab + embedded FiraGO)."""
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 from io import BytesIO
@@ -147,6 +148,8 @@ _CONTACT_DETAIL_RE = re.compile(
 
 
 def _looks_like_contact_detail(line: str) -> bool:
+    if _looks_like_role_header_line(line.strip()):
+        return False
     if _extract_url(line):
         return True
     if _CONTACT_DETAIL_RE.search(line):
@@ -371,6 +374,25 @@ def format_contact_details_markup(
     return " · ".join(parts)
 
 
+def format_contact_details_pipe_markup(
+    parsed: ParsedContact,
+    *,
+    detail_color: str = "#64748b",
+    link_color: str = "#0d9488",
+) -> str:
+    """Scott-style contact row: email | location | phone | LinkedIn."""
+    parts: list[str] = []
+    for item in parsed.details:
+        parts.append(f'<font color="{detail_color}">{escape(item)}</font>')
+    if parsed.linkedin_url:
+        parts.append(_href_markup("LinkedIn", parsed.linkedin_url, link_color))
+    for label, url in parsed.links:
+        if parsed.linkedin_url and url == parsed.linkedin_url:
+            continue
+        parts.append(_href_markup(label, url, link_color))
+    return " | ".join(parts)
+
+
 def format_contact_header_markup(
     contact: str,
     *,
@@ -584,7 +606,11 @@ def _looks_like_summary_line(line: str) -> bool:
 
 def _looks_like_job_title_line(line: str) -> bool:
     stripped = line.strip()
-    if not stripped or _BULLET_RE.match(stripped) or _is_education_date_line(stripped):
+    if not stripped or _BULLET_RE.match(stripped):
+        return False
+    if _looks_like_role_header_line(stripped):
+        return True
+    if _is_education_date_line(stripped):
         return False
     if _looks_like_summary_line(stripped):
         return False
@@ -1056,7 +1082,11 @@ def _split_experience_lines(text: str) -> list[list[str]]:
     i = 0
     while i < len(lines):
         line = lines[i]
-        if _looks_like_job_title_line(line):
+        if _looks_like_job_title_line(line) or (
+            current
+            and any(_BULLET_RE.match(entry) for entry in current)
+            and is_experience_role_header_line(line)
+        ):
             if current:
                 blocks.append(current)
             current = [line]
@@ -1083,6 +1113,11 @@ def _split_experience_lines(text: str) -> list[list[str]]:
     return blocks
 
 
+def is_experience_role_header_line(line: str) -> bool:
+    """True for 'Title | Company | Location | MM/YYYY – MM/YYYY' experience headers."""
+    return _looks_like_role_header_line((line or "").strip())
+
+
 def split_experience_line_blocks(text: str) -> list[list[str]]:
     """Public API: group experience plain-text lines into per-role blocks."""
     return _split_experience_lines(text)
@@ -1091,26 +1126,160 @@ def split_experience_line_blocks(text: str) -> list[list[str]]:
 _BULLET_LINE_RE = re.compile(rf"^[{_BULLET_CHARS}]\s+")
 
 
-def _partition_bullets_for_role_blocks(bullets: list[str], counts: list[int]) -> list[list[str]]:
-    if not counts:
-        return [bullets] if bullets else []
-    out: list[list[str]] = []
-    pos = 0
-    for count in counts:
-        chunk = bullets[pos : pos + count] if count > 0 else []
-        out.append(chunk)
-        pos += max(count, 0)
-    if pos < len(bullets) and out:
-        extras = bullets[pos:]
-        for i, bullet in enumerate(extras):
-            out[i % len(out)].append(bullet)
+def _min_bullets_per_role_env() -> int:
+    raw = os.getenv("OPENAI_MIN_BULLETS_PER_ROLE", "2").strip()
+    try:
+        n = int(raw)
+    except ValueError:
+        n = 2
+    return max(1, min(n, 8))
+
+
+def ats_bullets_for_generation(
+    ats_targets: list[int],
+    *,
+    min_per_role: int | None = None,
+    max_per_role: int = 22,
+) -> list[int]:
+    """
+    Bullet targets for LLM generation and API text merge.
+    NOT capped by how many bullets the source resume happened to have — only by ATS targets and min floor.
+    """
+    floor = min_per_role if min_per_role is not None else _min_bullets_per_role_env()
+    if not ats_targets:
+        return [floor]
+    return [max(floor, min(ats, max_per_role)) for ats in ats_targets]
+
+
+def effective_bullets_per_role(
+    ats_targets: list[int],
+    template_slots: list[int],
+    *,
+    min_per_role: int = 3,
+) -> list[int]:
+    """
+    ATS bullet targets capped to each role's Word template slot count.
+    Every role gets at least min(3, slots) bullets when slots allow — never 1 bullet in a 3-slot role.
+    """
+    if not template_slots:
+        return list(ats_targets)
+    out: list[int] = []
+    for i, slots in enumerate(template_slots):
+        if slots <= 0:
+            out.append(0)
+            continue
+        ats = ats_targets[i] if i < len(ats_targets) else min_per_role
+        floor = min(min_per_role, slots)
+        out.append(max(floor, min(ats, slots)))
     return out
 
 
-_ROLE_HEADER_DATE_RE = re.compile(
-    r"\b\d{1,2}/\d{4}\s*[–\-—]\s*(\d{1,2}/\d{4}|present|current)\b",
+def fill_experience_bullets_to_minimums(
+    source: str,
+    tailored_bullets: list[str],
+    minimums_per_role: list[int],
+) -> list[str]:
+    """
+    When the LLM returns too few bullets for a role, pad from source accomplishments for that employer.
+    Keeps chronological order; does not exceed per-role minimums (template slot caps).
+    """
+    source_blocks = split_experience_line_blocks(source or "")
+    if not minimums_per_role:
+        return list(tailored_bullets)
+    partitioned = partition_experience_bullets_by_role(tailored_bullets, minimums_per_role)
+    filled: list[str] = []
+    for block_i, minimum in enumerate(minimums_per_role):
+        role_bullets = list(partitioned[block_i]) if block_i < len(partitioned) else []
+        src_block = source_blocks[block_i] if block_i < len(source_blocks) else []
+        src_bullets = [
+            line.strip()
+            for line in src_block
+            if line.strip() and _BULLET_LINE_RE.match(line.strip())
+        ]
+        seen = {b.lower() for b in role_bullets}
+        for src_bullet in src_bullets:
+            if len(role_bullets) >= minimum:
+                break
+            key = src_bullet.lower()
+            if key not in seen:
+                role_bullets.append(src_bullet)
+                seen.add(key)
+        filled.extend(role_bullets[:minimum])
+    return filled
+
+
+def default_ats_bullets_per_role(role_count: int) -> list[int]:
+    """
+    Minimum ATS bullets per role (oldest first). Independent of source resume bullet counts.
+    Recent roles get substantially more bullets for keyword density.
+    """
+    if role_count <= 0:
+        return []
+    if role_count == 1:
+        return [22]
+
+    newest = min(22, 16 + role_count * 2)
+    oldest = max(5, round(newest * 0.28))
+    if role_count == 2:
+        return [oldest, newest]
+
+    counts: list[int] = []
+    for i in range(role_count):
+        t = i / (role_count - 1)
+        value = oldest + (newest - oldest) * (t**1.35)
+        counts.append(max(6, round(value)))
+
+    for i in range(1, len(counts)):
+        if counts[i] <= counts[i - 1]:
+            counts[i] = counts[i - 1] + 4
+    return counts
+
+
+def partition_experience_bullets_by_role(
+    bullets: list[str],
+    minimums_per_role: list[int],
+) -> list[list[str]]:
+    """
+    Split a flat bullet list across roles in order.
+    Reserves bullets for later roles so no role is left empty when bullets are available.
+    """
+    if not minimums_per_role:
+        return [bullets] if bullets else []
+    role_count = len(minimums_per_role)
+    if not bullets:
+        return [[] for _ in minimums_per_role]
+
+    out: list[list[str]] = []
+    pos = 0
+    total = len(bullets)
+    for i, minimum in enumerate(minimums_per_role):
+        remaining_roles = role_count - i
+        remaining_bullets = total - pos
+        if i < role_count - 1:
+            max_take = max(0, remaining_bullets - (remaining_roles - 1))
+            take = min(max(minimum, 1), max_take) if remaining_bullets > 0 else 0
+            chunk = bullets[pos : pos + take]
+            pos += len(chunk)
+        else:
+            chunk = bullets[pos:]
+        out.append(chunk)
+    return out
+
+
+def _partition_bullets_for_role_blocks(bullets: list[str], counts: list[int]) -> list[list[str]]:
+    return partition_experience_bullets_by_role(bullets, counts)
+
+
+_EXPERIENCE_DATE_RANGE_RE = re.compile(
+    r"\b\d{1,2}/\s*\d{4}\s*[–\-—]\s*(?:\d{1,2}/\s*\d{4}|present|current)\b",
     re.I,
 )
+_ROLE_HEADER_DATE_RE = _EXPERIENCE_DATE_RANGE_RE
+
+
+def has_experience_date_range(line: str) -> bool:
+    """True when a line contains MM/YYYY – MM/YYYY (or Present) employment dates."""
+    return bool(_EXPERIENCE_DATE_RANGE_RE.search((line or "").strip()))
 _ROLE_HEADER_TITLE_RE = re.compile(
     r"\b(developer|engineer|manager|lead|specialist|architect|consultant|analyst|"
     r"director|coordinator|head|principal|designer|operations?|automation|fullstack|"
@@ -1136,9 +1305,11 @@ def _looks_like_role_header_line(line: str) -> bool:
     stripped = (line or "").strip()
     if not stripped or _BULLET_LINE_RE.match(stripped):
         return False
-    if _ROLE_HEADER_DATE_RE.search(stripped):
+    if re.search(r"@|\+\d{1,3}|\(\d{3}\)\s*\d", stripped):
+        return False
+    if has_experience_date_range(stripped):
         return True
-    if "|" in stripped and len(stripped) < 140:
+    if "|" in stripped and len(stripped) < 140 and _ROLE_HEADER_TITLE_RE.search(stripped):
         return True
     return bool(_ROLE_HEADER_TITLE_RE.search(stripped) and len(stripped) < 100)
 
@@ -1347,6 +1518,7 @@ def merge_experience_headers_with_bullets(
     tailored: str,
     *,
     tailored_role_titles: list[str] | None = None,
+    bullets_per_role: list[int] | None = None,
 ) -> str:
     """
     Keep company/location/date lines from source; replace job titles and bullet lines
@@ -1367,22 +1539,34 @@ def merge_experience_headers_with_bullets(
         for line in tailored.splitlines()
         if line.strip() and _BULLET_LINE_RE.match(line.strip())
     ]
+    if bullets_per_role and len(bullets_per_role) == len(source_blocks) and tailored_bullets:
+        tailored_bullets = fill_experience_bullets_to_minimums(
+            source,
+            tailored_bullets,
+            bullets_per_role,
+        )
     if not tailored_bullets:
-        return source
+        if not source_blocks:
+            return tailored
+        out: list[str] = []
+        for block_i, block in enumerate(source_blocks):
+            headers = [line for line in block if not _BULLET_LINE_RE.match(line.strip())]
+            out.extend(headers)
+            if block_i < len(source_blocks) - 1:
+                out.append("")
+        return "\n".join(out).strip()
 
-    bullet_counts = [
-        sum(1 for line in block if _BULLET_LINE_RE.match(line.strip()))
-        for block in source_blocks
-    ]
-    bullets_by_block = _partition_bullets_for_role_blocks(tailored_bullets, bullet_counts)
+    role_count = len(source_blocks)
+    if bullets_per_role and len(bullets_per_role) == role_count:
+        bullet_counts = bullets_per_role
+    else:
+        bullet_counts = default_ats_bullets_per_role(role_count)
+    bullets_by_block = partition_experience_bullets_by_role(tailored_bullets, bullet_counts)
 
     out: list[str] = []
     for block_i, block in enumerate(source_blocks):
         headers = [line for line in block if not _BULLET_LINE_RE.match(line.strip())]
-        source_bullets = [line for line in block if _BULLET_LINE_RE.match(line.strip())]
         new_bullets = bullets_by_block[block_i] if block_i < len(bullets_by_block) else []
-        if not new_bullets:
-            new_bullets = source_bullets
         out.extend(headers)
         out.extend(new_bullets)
         if block_i < len(source_blocks) - 1:
@@ -1391,7 +1575,7 @@ def merge_experience_headers_with_bullets(
 
 
 def merge_skills_preserving_labels(source: str, tailored: str) -> str:
-    """One output line per source line; keep category labels from the uploaded resume."""
+    """Prefer tailored skill lines (labels + lists); fall back to source labels when tailored omits a label."""
     source_lines = [line.strip() for line in (source or "").splitlines() if line.strip()]
     tailored_lines = [line.strip() for line in (tailored or "").splitlines() if line.strip()]
     if not source_lines:
@@ -1405,17 +1589,27 @@ def merge_skills_preserving_labels(source: str, tailored: str) -> str:
             merged.append(src)
             continue
         tailored_line = tailored_lines[i]
+        tailored_match = re.match(r"^([^:]+:)\s*(.*)$", tailored_line)
+        if tailored_match:
+            merged.append(tailored_line.strip())
+            continue
         label_match = re.match(r"^([^:]+:)\s*(.*)$", src)
         if not label_match:
             merged.append(tailored_line)
             continue
         label = label_match.group(1)
-        tailored_match = re.match(r"^([^:]+:)\s*(.*)$", tailored_line)
-        if tailored_match:
-            merged.append(f"{label} {tailored_match.group(2).strip()}".strip())
-        else:
-            merged.append(f"{label} {tailored_line}".strip())
+        merged.append(f"{label} {tailored_line}".strip())
+    if len(tailored_lines) > len(source_lines):
+        merged.extend(tailored_lines[len(source_lines) :])
     return "\n".join(merged)
+
+
+def merge_skills_for_ats(source: str, tailored: str, *, replace_entirely: bool = False) -> str:
+    """Replace the entire skills section for ATS (AI roles) or merge line-by-line."""
+    tailored_lines = [line.strip() for line in (tailored or "").splitlines() if line.strip()]
+    if replace_entirely and tailored_lines:
+        return "\n".join(tailored_lines)
+    return merge_skills_preserving_labels(source, tailored)
 
 
 def _section_body_markup(title: str, content: str) -> str:
@@ -1524,6 +1718,103 @@ def build_tailored_resume_pdf(
     add_section("Summary", professional_summary)
     add_section("Experience", professional_experience)
     add_section("Skills", skills)
+    add_section("Education", education)
+    add_section("Additional", other)
+
+    if len(story) == 0:
+        story.append(Paragraph(_para_markup("(No content)"), body))
+
+    doc.build(story)
+    return buf.getvalue()
+
+
+def build_scott_ats_professional_pdf(
+    *,
+    contact: str,
+    professional_summary: str,
+    professional_experience: str,
+    skills: str,
+    education: str,
+    other: str,
+) -> bytes:
+    """Single-column ATS layout: pipe contact row, pipe job headers, Technical Skills section."""
+    body_font, heading_font = register_reportlab_fira_fonts()
+    buf = BytesIO()
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=letter,
+        rightMargin=MODERN_MARGIN_LR,
+        leftMargin=MODERN_MARGIN_LR,
+        topMargin=MODERN_MARGIN_TOP,
+        bottomMargin=MODERN_MARGIN_BOTTOM,
+        title="Tailored resume",
+    )
+    base = getSampleStyleSheet()
+    ink = colors.HexColor("#0f172a")
+    muted = colors.HexColor("#64748b")
+    heading = ParagraphStyle(
+        "ScottSecHeading",
+        parent=base["Heading2"],
+        fontName=heading_font,
+        fontSize=8,
+        leading=11,
+        spaceBefore=10,
+        spaceAfter=4,
+        textColor=muted,
+        alignment=TA_LEFT,
+    )
+    body = ParagraphStyle(
+        "ScottSecBody",
+        parent=base["Normal"],
+        fontName=body_font,
+        fontSize=9.5,
+        leading=13,
+        alignment=TA_LEFT,
+        textColor=ink,
+        wordWrap="CJK",
+    )
+    contact_name_style = ParagraphStyle(
+        "ScottContactName",
+        parent=body,
+        fontName=heading_font,
+        fontSize=15,
+        leading=18,
+        spaceAfter=2,
+    )
+    contact_detail_style = ParagraphStyle(
+        "ScottContactDetail",
+        parent=body,
+        fontSize=9,
+        leading=12,
+        textColor=muted,
+        spaceAfter=4,
+    )
+    story: list = []
+
+    lead = sanitize_for_pdf(contact or "").strip()
+    if lead:
+        parsed_contact = parse_contact(lead)
+        name_html = format_contact_name_markup(parsed_contact)
+        if name_html:
+            story.append(Paragraph(name_html, contact_name_style))
+        if parsed_contact.headline:
+            story.append(Paragraph(escape(parsed_contact.headline), contact_detail_style))
+        details_html = format_contact_details_pipe_markup(parsed_contact)
+        if details_html:
+            story.append(Paragraph(details_html, contact_detail_style))
+        story.append(Spacer(1, 10))
+
+    def add_section(title: str, content: str) -> None:
+        c = (content or "").strip()
+        if not c:
+            return
+        story.append(Paragraph(_para_markup(title.upper()), heading))
+        story.append(Paragraph(_section_body_markup(title, c), body))
+        story.append(Spacer(1, 6))
+
+    add_section("Summary", professional_summary)
+    add_section("Technical Skills", skills)
+    add_section("Professional Experience", professional_experience)
     add_section("Education", education)
     add_section("Additional", other)
 

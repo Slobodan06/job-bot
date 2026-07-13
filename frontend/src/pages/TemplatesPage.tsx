@@ -145,7 +145,7 @@ export default function TemplatesPage() {
             <Title order={2}>Choose your CV template</Title>
           </Group>
           <Text c="dimmed" size="sm" maw={680}>
-            Browse 40 smart resume layouts with mini previews. Click <strong>View sample PDF</strong> for the full example.
+            Browse 49 smart resume layouts, including RenderCV themes, with mini previews. Click <strong>View sample PDF</strong> for the full example.
             Each member holds one template at a time; switch anytime to another available design.
           </Text>
         </Stack>

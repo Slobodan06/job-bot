@@ -9,6 +9,7 @@ from io import BytesIO
 from pathlib import Path
 
 from openai import AsyncOpenAI
+from app.services.openai_compat import chat_completion_controls
 from reportlab.lib.enums import TA_LEFT
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle
@@ -123,10 +124,10 @@ async def _llm_cover_letter(
         f"RESUME CONTEXT JSON:\n{json.dumps(payload, ensure_ascii=False)}"
     )
     client = AsyncOpenAI(api_key=api_key)
+    model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
     completion = await client.chat.completions.create(
-        model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
-        temperature=0.55,
-        max_tokens=1200,
+        model=model,
+        **chat_completion_controls(model, max_output_tokens=1200, temperature=0.55),
         response_format={"type": "json_object"},
         messages=[
             {"role": "system", "content": _COVER_LETTER_SYSTEM},
@@ -228,7 +229,7 @@ async def generate_cover_letter(
         education=parsed.education,
         other=parsed.other,
     )
-    role = sanitize_target_job_role(target_job_role)
+    role = sanitize_target_job_role(target_job_role) or extract_jd_target_role_title(job_description) or "this role"
     candidate_name = _extract_candidate_name(parsed.contact)
     email = _extract_email(parsed.contact)
     phone = _extract_phone(parsed.contact)

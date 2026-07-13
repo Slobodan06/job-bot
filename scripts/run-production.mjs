@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
+import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-
+import { loadBackendEnv } from "./load-backend-env.mjs";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(__dirname, "..");
 const backend = path.join(root, "backend");
@@ -21,6 +22,32 @@ const venvPython =
 const python = fs.existsSync(venvPython) ? venvPython : process.platform === "win32" ? "py" : "python3";
 const port = process.env.PORT || "8080";
 
+function portInUse(checkPort) {
+  return new Promise((resolve) => {
+    const probe = net.createServer();
+    probe.once("error", () => resolve(true));
+    probe.once("listening", () => {
+      probe.close(() => resolve(false));
+    });
+    probe.listen(checkPort, "0.0.0.0");
+  });
+}
+
+if (await portInUse(Number(port))) {
+  console.error(`
+  Port ${port} is already in use — a server is probably already running.
+
+  Open:  http://127.0.0.1:${port}/builder
+
+  To restart, stop the old process first:
+    netstat -ano | findstr ":${port}"
+    Stop-Process -Id <PID> -Force
+
+  Then run: npm start
+`);
+  process.exit(1);
+}
+
 console.log(`
   Open in your browser (not 0.0.0.0 — module scripts often fail to load there):
     http://127.0.0.1:${port}/
@@ -34,10 +61,9 @@ const child = spawn(
   {
     cwd: backend,
     stdio: "inherit",
-    env: { ...process.env, FRONTEND_DIST: dist },
+    env: loadBackendEnv({ ...process.env, FRONTEND_DIST: dist }, backend),
   },
 );
-
 child.on("exit", (code, signal) => {
   if (signal) process.kill(process.pid, signal);
   process.exit(code ?? 1);

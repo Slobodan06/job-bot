@@ -22,6 +22,7 @@ import {
   Tooltip,
   Tabs,
 } from "@mantine/core";
+import { highlightTermsInText } from "../highlightTerms";
 import { useDisclosure, useMediaQuery } from "@mantine/hooks";
 import { notifications } from "@mantine/notifications";
 import { Dropzone } from "@mantine/dropzone";
@@ -41,7 +42,12 @@ import {
 } from "@tabler/icons-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { tailorApi, coverLetterApi, type TailorResponse, type CoverLetterResponse } from "../auth/api";
+import {
+  tailorApi,
+  coverLetterApi,
+  type TailorResponse,
+  type CoverLetterResponse,
+} from "../auth/api";
 
 import {
   parseExperienceCardMeta,
@@ -56,7 +62,6 @@ export default function HomePage() {
   const [activeTab, setActiveTab] = useState<string | null>("resume");
   const [file, setFile] = useState<File | null>(null);
   const [jobDescription, setJobDescription] = useState("");
-  const [targetJobRole, setTargetJobRole] = useState("");
   const [companyName, setCompanyName] = useState("");
   const [enableBold, setEnableBold] = useState(true);
   const [loading, setLoading] = useState(false);
@@ -131,14 +136,13 @@ export default function HomePage() {
   }, [coverLetterResult?.pdf_base64]);
 
   const canSubmit = useMemo(
-    () =>
-      Boolean(
-        file &&
-          jobDescription.trim().length > 20 &&
-          targetJobRole.trim().length > 2,
-      ),
-    [file, jobDescription, targetJobRole],
+    () => Boolean(file && jobDescription.trim().length > 20),
+    [file, jobDescription],
   );
+
+  const resetQualificationReview = useCallback(() => {
+    setResult(null);
+  }, []);
 
   const onRejectFiles = useCallback(() => {
     notifications.show({
@@ -155,7 +159,11 @@ export default function HomePage() {
     setError(null);
     setResult(null);
     try {
-      const data = await tailorApi.tailor(file, jobDescription, targetJobRole.trim(), enableBold);
+      const data = await tailorApi.tailor(
+        file,
+        jobDescription,
+        enableBold,
+      );
       setResult(data);
       if (isNarrow) openResultPanel();
     } catch (e) {
@@ -163,7 +171,13 @@ export default function HomePage() {
     } finally {
       setLoading(false);
     }
-  }, [file, jobDescription, targetJobRole, enableBold, isNarrow, openResultPanel]);
+  }, [
+    file,
+    jobDescription,
+    enableBold,
+    isNarrow,
+    openResultPanel,
+  ]);
 
   const onCoverLetterSubmit = useCallback(async () => {
     if (!file) return;
@@ -171,12 +185,7 @@ export default function HomePage() {
     setCoverLetterError(null);
     setCoverLetterResult(null);
     try {
-      const data = await coverLetterApi.generate(
-        file,
-        jobDescription,
-        targetJobRole.trim(),
-        companyName.trim(),
-      );
+      const data = await coverLetterApi.generate(file, jobDescription, companyName.trim());
       setCoverLetterResult(data);
       if (isNarrow) openResultPanel();
     } catch (e) {
@@ -184,7 +193,7 @@ export default function HomePage() {
     } finally {
       setCoverLetterLoading(false);
     }
-  }, [file, jobDescription, targetJobRole, companyName, isNarrow, openResultPanel]);
+  }, [file, jobDescription, companyName, isNarrow, openResultPanel]);
 
   const copyResult = async () => {
     if (!result) return;
@@ -248,6 +257,10 @@ export default function HomePage() {
     () => splitExperienceBlocks(result?.tailored_experience ?? ""),
     [result?.tailored_experience],
   );
+  const experienceBulletCount = useMemo(() => {
+    const exp = result?.tailored_experience ?? "";
+    return exp.split(/\r?\n/).filter((line) => /^\s*[-•*–—●]\s+\S/.test(line.trim())).length;
+  }, [result?.tailored_experience]);
 
   const skillsDisplay = useMemo(() => {
     const raw = result?.tailored_skills ?? "";
@@ -257,7 +270,33 @@ export default function HomePage() {
   }, [result?.tailored_skills]);
 
   const docxExportPanel =
-    result && tailoredDocxUrl ? (
+    result && result.export_mode === "fresh_pdf" && tailoredPdfUrl ? (
+      <Paper withBorder radius="md" p="md" bg="dark.7">
+        <Stack gap="sm">
+          <Stack gap={4}>
+            <Text fw={600} size="sm">
+              Your tailored resume (fresh PDF)
+            </Text>
+            <Text size="xs" c="dimmed" maw={520}>
+              Built with your selected smart CV template
+              {result.template_label ? `: ${result.template_label}` : ""}. Sections are mapped to the correct
+              layout fields (contact, summary, skills, experience, education).
+            </Text>
+          </Stack>
+          <Button
+            component="a"
+            href={tailoredPdfUrl}
+            download={result.pdf_download_filename || "resume-tailored.pdf"}
+            leftSection={<IconDownload size={18} />}
+            variant="filled"
+            color="teal"
+            size="sm"
+          >
+            Download PDF
+          </Button>
+        </Stack>
+      </Paper>
+    ) : result && tailoredDocxUrl ? (
       <Paper withBorder radius="md" p="md" bg="dark.7">
         <Stack gap="sm">
           <Stack gap={4}>
@@ -301,7 +340,7 @@ export default function HomePage() {
           ) : null}
         </Stack>
       </Paper>
-    ) : result && !tailoredDocxUrl ? (
+    ) : result && !tailoredDocxUrl && result.export_mode !== "fresh_pdf" ? (
       <Alert variant="light" color="orange" title="Word export unavailable" icon={<IconAlertCircle size={18} />}>
         Tailored text sections were generated, but the .docx could not be updated. Add clear section headers (Summary,
         Experience, Skills, Education) to your template and try again.
@@ -339,6 +378,7 @@ export default function HomePage() {
             setFile(files[0]);
             setError(null);
             setCoverLetterError(null);
+            resetQualificationReview();
           }}
           onReject={onRejectFiles}
           maxSize={15 * 1024 ** 2}
@@ -387,25 +427,18 @@ export default function HomePage() {
               </Text>{" "}
               {file.name}
             </Text>
-            <Button variant="default" size="compact-sm" onClick={() => setFile(null)}>
+            <Button
+              variant="default"
+              size="compact-sm"
+              onClick={() => {
+                setFile(null);
+                resetQualificationReview();
+              }}
+            >
               Clear
             </Button>
           </Group>
         ) : null}
-
-        <TextInput
-          label="Target job role"
-          description="Required. Used for experience titles and the cover letter."
-          placeholder="Senior AI Engineer"
-          value={targetJobRole}
-          onChange={(e) => {
-            setTargetJobRole(e.target.value);
-            setError(null);
-            setCoverLetterError(null);
-          }}
-          required
-          size="md"
-        />
 
         <Textarea
           label="Job description"
@@ -416,6 +449,7 @@ export default function HomePage() {
             setJobDescription(e.target.value);
             setError(null);
             setCoverLetterError(null);
+            resetQualificationReview();
           }}
           autosize
           minRows={isNarrow ? 8 : 10}
@@ -428,10 +462,17 @@ export default function HomePage() {
 
   const resumeControls = (
     <Paper p={{ base: "md", sm: "lg" }} radius="lg" withBorder shadow="sm">
-      <Stack gap="sm">
+      <Stack gap="md">
+        <Paper withBorder radius="md" p="md" bg="dark.7">
+          <Stack gap={4}>
+            <Text fw={700}>Generate an ideal sample résumé</Text>
+            <Text size="sm" c="dimmed">
+              The generator preserves the source name, contact details, employers, titles, dates, and education, then creates fictional perfect-match Summary, Skills, and Work Experience content for developer testing.
+            </Text>
+          </Stack>
+        </Paper>
         <Checkbox
-          label="Bold important keywords in the Word download"
-          description="Highlights JD-critical terms in Profile, Experience, and top Skills."
+          label="Bold important job keywords in the Word download"
           checked={enableBold}
           onChange={(e) => setEnableBold(e.currentTarget.checked)}
         />
@@ -445,11 +486,266 @@ export default function HomePage() {
           variant="gradient"
           gradient={{ from: "teal", to: "cyan", deg: 105 }}
         >
-          {loading ? "Tailoring…" : "Generate tailored resume"}
+          {loading ? "Generating ideal sample..." : "Generate perfect-match sample résumé"}
         </Button>
+        {/* Legacy qualification questionnaire intentionally removed from the visible sample-generation flow.
+        {!qualificationAnalysis ? (
+          <>
+            <Stack gap={4}>
+              <Text fw={700}>Check missing qualifications first</Text>
+              <Text size="sm" c="dimmed">
+                The app compares the job requirements with the uploaded resume and asks only about important evidence
+                that is missing or too vague. It does not generate the resume during this step.
+              </Text>
+            </Stack>
+            <Button
+              fullWidth
+              size="md"
+              leftSection={<IconSparkles size={20} />}
+              disabled={!canSubmit || analysisLoading}
+              loading={analysisLoading}
+              onClick={onAnalyzeQualifications}
+              variant="gradient"
+              gradient={{ from: "teal", to: "cyan", deg: 105 }}
+            >
+              {analysisLoading ? "Checking resume evidence..." : "Review missing qualifications"}
+            </Button>
+          </>
+        ) : (
+          <>
+            <Paper withBorder radius="md" p="md" bg="dark.7">
+              <Stack gap="xs">
+                <Group justify="space-between" align="flex-start" wrap="wrap">
+                  <div>
+                    <Text fw={700}>
+                      Before I write it, I have {qualificationAnalysis.question_count} important questions
+                    </Text>
+                    <Text size="xs" c="dimmed">Target: {qualificationAnalysis.target_role}</Text>
+                  </div>
+                  <Button size="compact-xs" variant="subtle" onClick={resetQualificationReview}>
+                    Run review again
+                  </Button>
+                </Group>
+                <Text size="sm" c="dimmed">{qualificationAnalysis.intro}</Text>
+                {qualificationAnalysis.already_supported.length ? (
+                  <Group gap={6} wrap="wrap">
+                    <Text size="xs" c="dimmed">Already supported:</Text>
+                    {qualificationAnalysis.already_supported.slice(0, 8).map((item) => (
+                      <Badge key={item} size="sm" variant="light" color="teal">{item}</Badge>
+                    ))}
+                  </Group>
+                ) : null}
+              </Stack>
+            </Paper>
+
+            {qualificationAnalysis.questions.length ? (
+              <Stack gap="sm">
+                {qualificationAnalysis.questions.map((question, index) => {
+                  const answer = qualificationAnswers[question.id] ?? { choice: "", details: "", skills: "" };
+                  return (
+                    <Paper key={question.id} withBorder radius="md" p="md" bg="dark.8">
+                      <Stack gap="sm">
+                        <Stack gap={4}>
+                          <Group gap="xs" wrap="wrap">
+                            <Badge variant="light" color="cyan">{index + 1}</Badge>
+                            <Text fw={700}>{question.title}</Text>
+                            <Badge size="xs" variant="outline" color="gray">{question.category}</Badge>
+                          </Group>
+                          <Text size="sm">{question.prompt}</Text>
+                          <Text size="xs" c="dimmed">{question.why_it_matters}</Text>
+                        </Stack>
+                        <SegmentedControl
+                          fullWidth
+                          value={answer.choice}
+                          onChange={(value) =>
+                            setQualificationAnswers((current) => ({
+                              ...current,
+                              [question.id]: {
+                                ...answer,
+                                choice: value as QualificationAnswerState["choice"],
+                              },
+                            }))
+                          }
+                          data={[
+                            { label: "Yes, I have these skills/experience", value: "yes" },
+                            { label: "No", value: "no" },
+                          ]}
+                          color={answer.choice === "no" ? "gray" : "teal"}
+                        />
+                        {answer.choice === "yes" ? (
+                          <Stack gap="xs">
+                            <Group justify="space-between" align="center" wrap="wrap">
+                              <Text size="sm" fw={600}>Confirmed experience</Text>
+                              <Button
+                                size="compact-xs"
+                                variant="subtle"
+                                color="cyan"
+                                leftSection={<IconCopy size={14} />}
+                                onClick={() => copySection(question.example_answer, `${question.title} fictional example`)}
+                              >
+                                Copy experience example
+                              </Button>
+                            </Group>
+                            <Textarea
+                              label="Supporting details (optional)"
+                              description={`The placeholder below is fictional and is never submitted. Replace it only with facts you can defend. AI will draft conservative wording when this field is blank. ${question.detail_prompt}`}
+                              placeholder={question.example_answer}
+                              value={answer.details}
+                              onChange={(event) =>
+                                setQualificationAnswers((current) => ({
+                                  ...current,
+                                  [question.id]: { ...answer, choice: "yes", details: event.currentTarget.value },
+                                }))
+                              }
+                              error={
+                                answer.details.trim().toUpperCase().startsWith("FICTIONAL EXAMPLE")
+                                  ? "Replace the fictional example with your real facts, or clear the field to let AI use the Yes confirmation."
+                                  : undefined
+                              }
+                              autosize
+                              minRows={4}
+                              maxRows={10}
+                            />
+                            <Group justify="space-between" align="center" wrap="wrap">
+                              <Text size="sm" fw={600}>Confirmed skills</Text>
+                              <Button
+                                size="compact-xs"
+                                variant="subtle"
+                                color="cyan"
+                                leftSection={<IconCopy size={14} />}
+                                onClick={() => copySection(question.example_skills, `${question.title} skills example`)}
+                              >
+                                Copy skills example
+                              </Button>
+                            </Group>
+                            <Textarea
+                              label="Relevant skills (optional)"
+                              description={`Add every genuine tool, platform, method, and domain skill connected to this qualification. ${question.skills_prompt}`}
+                              placeholder={question.example_skills}
+                              value={answer.skills}
+                              onChange={(event) =>
+                                setQualificationAnswers((current) => ({
+                                  ...current,
+                                  [question.id]: { ...answer, choice: "yes", skills: event.currentTarget.value },
+                                }))
+                              }
+                              error={
+                                answer.skills.trim().toUpperCase().startsWith("FICTIONAL SKILLS EXAMPLE")
+                                  ? "Remove the fictional label and keep only skills you genuinely possess, or clear the field."
+                                  : undefined
+                              }
+                              autosize
+                              minRows={2}
+                              maxRows={8}
+                            />
+                          </Stack>
+                        ) : null}
+                      </Stack>
+                    </Paper>
+                  );
+                })}
+              </Stack>
+            ) : (
+              <Alert color="teal" variant="light" icon={<IconCheck size={18} />}>
+                No critical missing qualification questions were detected. You can generate the resume now.
+              </Alert>
+            )}
+
+            <Accordion variant="contained" radius="md">
+              <Accordion.Item value="other-confirmed">
+                <Accordion.Control>Other truthful qualifications not covered above (optional)</Accordion.Control>
+                <Accordion.Panel>
+                  <Stack gap="sm">
+                    <Stack gap={4}>
+                      <Group justify="space-between" align="center" wrap="wrap">
+                        <Text size="sm" fw={600}>Additional skills</Text>
+                        <Button
+                          size="compact-xs"
+                          variant="subtle"
+                          color="cyan"
+                          leftSection={<IconCopy size={14} />}
+                          onClick={() => copySection(missingSkillsExample, "additional skills example")}
+                        >
+                          Copy skills placeholder
+                        </Button>
+                      </Group>
+                      <Textarea
+                        description="Add genuine technologies, platforms, methods, and domain skills omitted from the original resume. The AI-written placeholder reflects missing job requirements; keep only truthful items."
+                        placeholder={missingSkillsExample}
+                        value={confirmedSkills}
+                        onChange={(e) => setConfirmedSkills(e.currentTarget.value)}
+                        error={
+                          /(?:FICTIONAL SKILLS EXAMPLE|^EXAMPLE - KEEP ONLY)/im.test(confirmedSkills.trim())
+                            ? "Edit the copied sample and keep only skills you genuinely possess, or clear this field."
+                            : undefined
+                        }
+                        autosize
+                        minRows={3}
+                        maxRows={10}
+                      />
+                    </Stack>
+                    <Stack gap={4}>
+                      <Group justify="space-between" align="center" wrap="wrap">
+                        <Text size="sm" fw={600}>Additional experience or accomplishments</Text>
+                        <Button
+                          size="compact-xs"
+                          variant="subtle"
+                          color="cyan"
+                          leftSection={<IconCopy size={14} />}
+                          onClick={() => copySection(missingExperienceExample, "additional experience example")}
+                        >
+                          Copy experience placeholder
+                        </Button>
+                      </Group>
+                      <Textarea
+                        description="Include employer, contribution, production status, tools, validation, result, and only supportable metrics. Detailed facts can support several distinct work-experience bullets."
+                        placeholder={missingExperienceExample}
+                        value={confirmedExperience}
+                        onChange={(e) => setConfirmedExperience(e.currentTarget.value)}
+                        error={
+                          confirmedExperience.trim().toUpperCase().startsWith("FICTIONAL EXAMPLE")
+                            ? "Replace every fictional detail with your real experience, or clear this field."
+                            : undefined
+                        }
+                        autosize
+                        minRows={4}
+                        maxRows={14}
+                      />
+                    </Stack>
+                  </Stack>
+                </Accordion.Panel>
+              </Accordion.Item>
+            </Accordion>
+
+            <Checkbox
+              label="Bold important keywords in the Word download"
+              description="Highlights JD-critical terms in Profile, Experience, and top Skills."
+              checked={enableBold}
+              onChange={(e) => setEnableBold(e.currentTarget.checked)}
+            />
+            <Button
+              fullWidth
+              size="md"
+              leftSection={<IconSparkles size={20} />}
+              disabled={!canSubmit || !qualificationReviewComplete || loading}
+              loading={loading}
+              onClick={onSubmit}
+              variant="gradient"
+              gradient={{ from: "teal", to: "cyan", deg: 105 }}
+            >
+              {loading ? "Tailoring..." : "Generate tailored resume with confirmed answers"}
+            </Button>
+            {!qualificationReviewComplete && qualificationAnalysis.questions.length ? (
+              <Text size="xs" c="orange" ta="center">
+                Answer every question Yes or No. Supporting details for Yes answers are optional but produce stronger bullets.
+              </Text>
+            ) : null}
+          </>
+        )}
+        */}
         {!canSubmit && !loading ? (
           <Text size="xs" c="dimmed" ta="center">
-            Add a .docx resume, target job role, and a job description (20+ characters).
+            Add a .docx resume and a job description (20+ characters).
           </Text>
         ) : null}
         {error ? (
@@ -489,7 +785,7 @@ export default function HomePage() {
         </Button>
         {!canSubmit && !coverLetterLoading ? (
           <Text size="xs" c="dimmed" ta="center">
-            Add a .docx resume, target job role, and a job description (20+ characters).
+            Add a .docx resume and a job description (20+ characters).
           </Text>
         ) : null}
         {coverLetterError ? (
@@ -543,16 +839,49 @@ export default function HomePage() {
           </Group>
 
           {result.keywords_highlighted.length > 0 ? (
-            <Group gap={6} wrap="wrap" aria-label="Keywords from job description">
-              {result.keywords_highlighted.slice(0, 20).map((k) => (
-                <Badge key={k} variant="outline" color="gray" size="sm">
-                  {k}
-                </Badge>
-              ))}
-            </Group>
+            <Stack gap={6}>
+              <Text size="xs" c="dimmed">
+                Bold in Word export: JD-critical tools, keywords, and metrics in experience; top-matched skills in
+                Skills.
+              </Text>
+              <Group gap={6} wrap="wrap" aria-label="Keywords bolded in tailored resume">
+                {result.keywords_highlighted.slice(0, 20).map((k) => (
+                  <Badge key={k} variant="outline" color="gray" size="sm">
+                    {k}
+                  </Badge>
+                ))}
+              </Group>
+            </Stack>
           ) : null}
 
           {docxExportPanel}
+
+          {!result.used_llm ? (
+            <Alert variant="light" color="orange" title="AI experience bullets not generated" icon={<IconAlertCircle size={18} />}>
+              {result.openai_configured === false ? (
+                <>
+                  This backend has no <code>OPENAI_API_KEY</code>. Add it to <code>backend/.env</code> for local dev
+                  (port <code>8010</code> via <code>npm run dev</code>) or set the variable in Railway/Render for
+                  production, then restart the server.
+                </>
+              ) : result.llm_error ? (
+                <>
+                  OpenAI is configured but the AI pass failed: <Text span fw={500}>{result.llm_error}</Text> Your original
+                  experience bullets are shown below. Check backend logs, API billing, and network access to OpenAI.
+                </>
+              ) : (
+                <>
+                  OpenAI is configured but the AI pass did not run successfully. Restart the backend and try again. Until
+                  then, your original experience bullets are shown below (summary/skills get keyword notes only).
+                </>
+              )}
+            </Alert>
+          ) : experienceBulletCount === 0 ? (
+            <Alert variant="light" color="orange" title="No experience bullets in response" icon={<IconAlertCircle size={18} />}>
+              The tailor response did not include accomplishment bullets. Try again or check backend logs. Full experience text
+              is shown below if present.
+            </Alert>
+          ) : null}
 
           <Stack gap="md">
             <Paper withBorder radius="md" p="md" bg="dark.7">
@@ -622,6 +951,11 @@ export default function HomePage() {
                   <Title order={3} size="h5">
                     Experience
                   </Title>
+                  {experienceBulletCount > 0 ? (
+                    <Badge size="sm" variant="light" color="cyan">
+                      {experienceBulletCount} bullets
+                    </Badge>
+                  ) : null}
                 </Group>
                 <Tooltip label={experienceBlocks.length > 1 ? "Copy all positions (plain text)" : "Copy experience"}>
                   <ActionIcon
@@ -641,8 +975,11 @@ export default function HomePage() {
                 <Stack gap="sm">
                   {(experienceBlocks.length ? experienceBlocks : []).map((block, i) => {
                     const meta = parseExperienceCardMeta(block);
-                    const detail =
-                      meta.detailBody.trim().length > 0 ? meta.detailBody : block;
+                    const detail = meta.detailBody.trim();
+                    const hasBullets = detail.length > 0;
+                    const showSplitMeta =
+                      !meta.headerLine.includes("|") &&
+                      (meta.companyLine || meta.periodLine || meta.locationLine);
                     return (
                       <Paper
                         key={`exp-${i}`}
@@ -680,13 +1017,13 @@ export default function HomePage() {
                           </Tooltip>
                         </Group>
                         <Stack gap={6}>
-                          <Text fw={700} size="sm" lh={1.35}>
-                            {meta.titleLine || block.split(/\r?\n/).find((l) => l.trim()) || "—"}
+                          <Text fw={700} size="sm" lh={1.4} c="gray.0">
+                            {meta.headerLine || meta.titleLine || block.split(/\r?\n/).find((l) => l.trim()) || "—"}
                           </Text>
-                          {(meta.companyLine || meta.periodLine || meta.locationLine) && (
+                          {showSplitMeta ? (
                             <Group gap="xs" wrap="wrap" align="center">
                               {meta.companyLine ? (
-                                <Text fw={600} size="sm" c="gray.2">
+                                <Text fw={700} size="sm" c="gray.2">
                                   {meta.companyLine}
                                 </Text>
                               ) : null}
@@ -701,22 +1038,34 @@ export default function HomePage() {
                                 </Text>
                               ) : null}
                             </Group>
-                          )}
+                          ) : null}
                           <Divider my={4} label="Details" labelPosition="center" />
-                          <Text
-                            component="pre"
-                            fz="sm"
-                            ff="inherit"
-                            c="gray.1"
-                            style={{
-                              whiteSpace: "pre-wrap",
-                              wordBreak: "break-word",
-                              margin: 0,
-                              lineHeight: 1.65,
-                            }}
-                          >
-                            {detail}
-                          </Text>
+                          {hasBullets ? (
+                            <Stack gap={4}>
+                              {detail.split(/\r?\n/).map((line, li) =>
+                                line.trim() ? (
+                                  <Text
+                                    key={`exp-line-${i}-${li}`}
+                                    fz="sm"
+                                    c="gray.1"
+                                    style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", lineHeight: 1.65 }}
+                                  >
+                                    {highlightTermsInText(
+                                      line,
+                                      result.experience_keywords_highlighted?.length
+                                        ? result.experience_keywords_highlighted
+                                        : result.keywords_highlighted,
+                                    )}
+                                  </Text>
+                                ) : null,
+                              )}
+                            </Stack>
+                          ) : (
+                            <Text size="sm" c="dimmed" fs="italic">
+                              No accomplishment bullets for this role yet. Run with OPENAI_API_KEY set for JD-generated
+                              bullets, or check the downloaded Word file.
+                            </Text>
+                          )}
                         </Stack>
                       </Paper>
                     );
@@ -725,6 +1074,20 @@ export default function HomePage() {
                     <Text size="sm" c="dimmed">
                       —
                     </Text>
+                  ) : null}
+                  {experienceBlocks.length > 0 && experienceBulletCount === 0 && result.tailored_experience?.trim() ? (
+                    <>
+                      <Divider my={4} label="Full experience text" labelPosition="center" />
+                      <Text
+                        component="pre"
+                        fz="sm"
+                        ff="inherit"
+                        c="gray.1"
+                        style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", margin: 0, lineHeight: 1.65 }}
+                      >
+                        {result.tailored_experience}
+                      </Text>
+                    </>
                   ) : null}
                 </Stack>
               </ScrollArea>
@@ -778,7 +1141,13 @@ export default function HomePage() {
                           <Text component="span" fw={700} c="gray.1">
                             {seg.label}:
                           </Text>{" "}
-                          {seg.text}
+                          {highlightTermsInText(
+                            seg.text,
+                            result.skills_keywords_highlighted?.length
+                              ? result.skills_keywords_highlighted
+                              : result.keywords_highlighted,
+                            { boldColor: "gray.1" },
+                          )}
                         </Text>
                         <Tooltip label={`Copy ${seg.label} line`}>
                           <ActionIcon
@@ -913,6 +1282,52 @@ export default function HomePage() {
             </Accordion.Item>
           </Accordion>
 
+          {result.match_scores && Object.keys(result.match_scores).length > 0 ? (
+            <>
+              <Divider label="Evidence audit" labelPosition="left" />
+              <Group gap="xs" wrap="wrap">
+                {Object.entries(result.match_scores).map(([key, value]) => (
+                  <Badge key={key} variant="light" color={value >= 75 ? "teal" : value >= 50 ? "yellow" : "orange"}>
+                    {key.replaceAll("_", " ")}: {value}
+                  </Badge>
+                ))}
+                {result.audit_report?.validation?.status ? (
+                  <Badge
+                    variant="light"
+                    color={result.audit_report.validation.status === "PASS" ? "teal" : "red"}
+                  >
+                    validator: {result.audit_report.validation.status}
+                  </Badge>
+                ) : null}
+              </Group>
+              {result.gap_report?.length ? (
+                <Alert color="orange" variant="light" icon={<IconAlertCircle size={18} />}>
+                  <Stack gap={6}>
+                    {result.gap_report.slice(0, 4).map((gap) => (
+                      <Text key={gap} size="sm">
+                        {gap}
+                      </Text>
+                    ))}
+                  </Stack>
+                </Alert>
+              ) : null}
+              {result.integration_report?.length ? (
+                <Paper withBorder radius="md" p="md" bg="dark.7">
+                  <Stack gap={6}>
+                    <Text fw={600} size="sm">
+                      Integration report
+                    </Text>
+                    <List size="sm" spacing={4} c="dimmed">
+                      {result.integration_report.map((item) => (
+                        <List.Item key={item}>{item}</List.Item>
+                      ))}
+                    </List>
+                  </Stack>
+                </Paper>
+              ) : null}
+            </>
+          ) : null}
+
           {result.ats_tips.length > 0 ? (
             <>
               <Divider label="ATS tips" labelPosition="left" />
@@ -949,8 +1364,8 @@ export default function HomePage() {
         <ThemeIcon size={64} radius="xl" variant="light" color="gray">
           <IconFileCv size={32} stroke={1.25} />
         </ThemeIcon>
-            <Text ta="center" maw={380} c="dimmed" size="sm">
-                  Upload a Word resume (.docx), paste a job description, and get a complete resume tailored for that role.
+        <Text ta="center" maw={380} c="dimmed" size="sm">
+          Upload a Word resume (.docx), paste a job description, and get a complete resume tailored for that role.
         </Text>
       </Stack>
     </Paper>

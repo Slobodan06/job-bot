@@ -169,19 +169,95 @@ export type TailorResponse = {
   pdf_base64: string;
   pdf_download_filename: string;
   keywords_highlighted: string[];
+  experience_keywords_highlighted: string[];
+  skills_keywords_highlighted: string[];
   ats_tips: string[];
   used_llm: boolean;
+  openai_configured?: boolean;
+  llm_error?: string;
   enable_bold_applied: boolean;
+  export_mode?: string;
+  template_key?: string;
+  template_label?: string;
+  match_scores?: Record<string, number>;
+  gap_report?: string[];
+  clarifying_questions?: string[];
+  integration_report?: string[];
+  audit_report?: {
+    validation?: { status?: string; issues?: Array<{ severity?: string; claim?: string; reason?: string }> };
+    scoring?: Record<string, unknown>;
+    bullet_audit?: Array<Record<string, unknown>>;
+    [key: string]: unknown;
+  };
+};
+
+export type QualificationQuestion = {
+  id: string;
+  category: string;
+  title: string;
+  prompt: string;
+  why_it_matters: string;
+  detail_prompt: string;
+  suggested_details: string[];
+  missing_requirements: string[];
+  confirmation_claim: string;
+  example_answer: string;
+  example_skills: string;
+  skills_prompt: string;
+  details_required_when_yes: boolean;
+};
+
+export type QualificationAnalysisResponse = {
+  target_role: string;
+  intro: string;
+  questions: QualificationQuestion[];
+  already_supported: string[];
+  question_count: number;
+};
+
+export type CandidateQualificationAnswer = {
+  question_id?: string;
+  category?: string;
+  question: string;
+  answer: string;
 };
 
 export const tailorApi = {
-  tailor(resume: File, jobDescription: string, targetJobRole: string, enableBold = true) {
+  tailor(
+    resume: File,
+    jobDescription: string,
+    enableBold = true,
+    candidateAnswers: CandidateQualificationAnswer[] = [],
+    confirmedSkills = "",
+    confirmedExperience = "",
+  ) {
     const body = new FormData();
     body.append("resume", resume);
     body.append("job_description", jobDescription);
-    body.append("target_job_role", targetJobRole);
+    const verifiedAnswers = ([
+      ...candidateAnswers,
+      confirmedSkills.trim()
+        ? { question: "Which missing skills can you personally confirm?", answer: confirmedSkills.trim() }
+        : null,
+      confirmedExperience.trim()
+        ? { question: "What omitted experience can you personally confirm?", answer: confirmedExperience.trim() }
+        : null,
+    ] as Array<CandidateQualificationAnswer | null>).filter(
+      (item): item is CandidateQualificationAnswer => Boolean(item),
+    );
+    if (verifiedAnswers.length) body.append("candidate_answers", JSON.stringify(verifiedAnswers));
+    body.append("sample_mode", "true");
     body.append("enable_bold", enableBold ? "true" : "false");
     return apiFetch<TailorResponse>("/api/tailor", { method: "POST", body });
+  },
+  analyzeQualifications(resume: File, jobDescription: string) {
+    const body = new FormData();
+    body.append("resume", resume);
+    body.append("job_description", jobDescription);
+    return apiFetch<QualificationAnalysisResponse>("/api/qualification-analysis", {
+      method: "POST",
+      body,
+    });
   },
 };
 
@@ -199,13 +275,15 @@ export const coverLetterApi = {
   generate(
     resume: File,
     jobDescription: string,
-    targetJobRole: string,
     companyName = "",
+    targetJobRole = "",
   ) {
     const body = new FormData();
     body.append("resume", resume);
     body.append("job_description", jobDescription);
-    body.append("target_job_role", targetJobRole);
+    if (targetJobRole.trim()) {
+      body.append("target_job_role", targetJobRole.trim());
+    }
     if (companyName.trim()) body.append("company_name", companyName.trim());
     return apiFetch<CoverLetterResponse>("/api/cover-letter", { method: "POST", body });
   },

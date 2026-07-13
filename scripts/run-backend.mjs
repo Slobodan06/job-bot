@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { loadBackendEnv } from "./load-backend-env.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(__dirname, "..");
@@ -13,7 +14,7 @@ const venvPython =
 
 const python = fs.existsSync(venvPython) ? venvPython : process.platform === "win32" ? "py" : "python3";
 
-const env = { ...process.env };
+const env = loadBackendEnv({ ...process.env }, backend);
 delete env.FRONTEND_DIST;
 // Default 8010: Windows often forbids 8000 (WinError 10013) when it sits in an excluded port range.
 const apiPort = env.API_PORT || "8010";

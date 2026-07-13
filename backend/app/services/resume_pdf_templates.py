@@ -33,6 +33,7 @@ from app.services.pdf_resume import (
     MODERN_MARGIN_BOTTOM,
     MODERN_MARGIN_LR,
     MODERN_MARGIN_TOP,
+    build_scott_ats_professional_pdf,
     build_tailored_resume_pdf,
     format_contact_details_markup,
     format_contact_header_markup,
@@ -321,6 +322,25 @@ def _section_block(title: str, content: str, heading: ParagraphStyle, body: Para
         Paragraph(_section_content_markup(title, c), body),
         Spacer(1, 6),
     ]
+
+
+def build_scott_ats_professional(
+    *,
+    contact: str,
+    professional_summary: str,
+    professional_experience: str,
+    skills: str,
+    education: str,
+    other: str,
+) -> bytes:
+    return build_scott_ats_professional_pdf(
+        contact=contact,
+        professional_summary=professional_summary,
+        professional_experience=professional_experience,
+        skills=skills,
+        education=education,
+        other=other,
+    )
 
 
 def build_clean_classic(
@@ -1686,6 +1706,64 @@ def build_template_pdf(
         education=education,
         other=other,
     )
+
+
+# Fresh PDF export: Scott-like ATS single-column layouts only (no sidebars, bands, or cards).
+_SCOTT_LIKE_FRESH_KEYS = (
+    "scott-ats-professional",
+    "clean-classic",
+    "dense-modern",
+    "smart-line-minimal",
+)
+
+_SCOTT_LIKE_FRESH_BUILDERS: dict[str, tuple[str, _Builder]] = {
+    "scott-ats-professional": (
+        "ATS professional (pipe header)",
+        build_scott_ats_professional,
+    ),
+}
+
+
+def pick_random_blank_template() -> tuple[str, str, _Builder]:
+    """Random ATS-style template similar to Scott resume (single column, pipe headers)."""
+    from app.services.template_catalog import _CATALOG
+
+    by_key = {entry[0]: entry for entry in _CATALOG}
+    pool: list[tuple[str, str, _Builder]] = []
+    for key in _SCOTT_LIKE_FRESH_KEYS:
+        if key in _SCOTT_LIKE_FRESH_BUILDERS:
+            label, fn = _SCOTT_LIKE_FRESH_BUILDERS[key]
+            pool.append((key, label, fn))
+        elif key in by_key:
+            entry = by_key[key]
+            pool.append((entry[0], entry[1], entry[3]))
+    if not pool:
+        entry = _CATALOG[0]
+        pool.append((entry[0], entry[1], entry[3]))
+    i = randbelow(len(pool))
+    return pool[i]
+
+
+def build_random_blank_template_pdf(
+    *,
+    contact: str,
+    professional_summary: str,
+    professional_experience: str,
+    skills: str,
+    education: str,
+    other: str,
+) -> tuple[bytes, str, str]:
+    """Returns (pdf_bytes, template_key, template_label) using a random blank single-column layout."""
+    key, label, fn = pick_random_blank_template()
+    pdf = fn(
+        contact=contact,
+        professional_summary=professional_summary,
+        professional_experience=professional_experience,
+        skills=skills,
+        education=education,
+        other=other,
+    )
+    return pdf, key, label
 
 
 def pick_random_template() -> tuple[str, str, _Builder]:
