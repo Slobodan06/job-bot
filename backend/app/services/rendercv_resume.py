@@ -7,6 +7,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from urllib.parse import urlparse
 from pathlib import Path
 from secrets import choice
 from types import SimpleNamespace
@@ -182,7 +183,17 @@ def _contact_cv_fields(contact_block: str) -> dict[str, Any]:
             social_networks.append({"network": "LinkedIn", "username": username})
 
     if websites:
-        unique = list(dict.fromkeys(websites))
+        email_domain = str(cv.get("email", "")).rsplit("@", 1)[-1].lower()
+        webmail_domains = {"outlook.com", "hotmail.com", "gmail.com", "yahoo.com", "icloud.com"}
+        unique: list[str] = []
+        for website in dict.fromkeys(websites):
+            parsed_url = urlparse(_normalize_url(website))
+            host = parsed_url.netloc.lower().removeprefix("www.")
+            is_root_homepage = parsed_url.path in {"", "/"} and not parsed_url.query
+            if is_root_homepage and (host in webmail_domains or host == email_domain):
+                continue
+            unique.append(website)
+    if websites and unique:
         cv["website"] = unique[0] if len(unique) == 1 else unique[:4]
     if social_networks:
         deduped: list[dict[str, str]] = []
@@ -266,7 +277,7 @@ def _looks_like_location_text(line: str) -> bool:
         return True
     return bool(
         len(stripped) <= 64
-        and re.match(r"^[A-Za-zÀ-ÿ .'-]+,\s*[A-Za-zÀ-ÿ .'-]+$", stripped)
+        and re.match(r"^[A-Za-zÀ-ÿ .'-]+(?:,\s*[A-Za-zÀ-ÿ .'-]+){1,3}$", stripped)
         and not re.search(r"\b(university|institute|college|school|academy|degree|bachelor|master)\b", stripped, re.I)
     )
 
@@ -414,8 +425,20 @@ def _experience_entries(roles: list[Any], bullets_by_role: list[list[str]]) -> l
         if i < len(bullets_by_role):
             highlights = [sanitize_for_pdf(b).strip().lstrip("-*• ").strip() for b in bullets_by_role[i]]
         highlights = [h for h in highlights if h]
-        company = sanitize_for_pdf(getattr(role, "company", "") or getattr(role, "header", "") or "Professional Experience")
-        position = sanitize_for_pdf(getattr(role, "title", "") or getattr(role, "header", "") or "Professional")
+        raw_company = sanitize_for_pdf(getattr(role, "company", "") or "").strip()
+        raw_position = sanitize_for_pdf(getattr(role, "title", "") or "").strip()
+        fallback_header = sanitize_for_pdf(getattr(role, "header", "") or "").strip()
+        # If the source omitted an employer, render the known title once. Falling
+        # back to the composite header here repeats the title, location, and date.
+        if raw_company:
+            company = raw_company
+            position = "" if raw_company.casefold() == raw_position.casefold() else raw_position
+        elif raw_position:
+            company = raw_position
+            position = ""
+        else:
+            company = fallback_header or "Professional Experience"
+            position = ""
         entry: dict[str, Any] = {
             "company": company,
             "position": position,

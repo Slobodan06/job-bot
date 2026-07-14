@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 import html
 import zipfile
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from io import BytesIO
 
@@ -58,6 +59,15 @@ _ROLE_TITLE_RE = re.compile(
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 _PHONE_RE = re.compile(r"(?:\+?\d[\d\s().-]{7,}\d)")
 _URL_RE = re.compile(r"https?://\S+", re.I)
+_EXPERIENCE_DATE_RANGE_RE = re.compile(
+    r"\b(?:(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+    r"jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+|"
+    r"\d{1,2}/\s*)?(?:19|20)\d{2}\s*[\u2013\u2014-]\s*"
+    r"(?:(?:(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+    r"jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+|"
+    r"\d{1,2}/\s*)?(?:19|20)\d{2}|present|current)\b",
+    re.I,
+)
 
 
 @dataclass(frozen=True)
@@ -175,6 +185,91 @@ def _parse_role_header(header_line: str) -> tuple[str, str, str, str]:
         location = parts[2] if len(parts) > 2 else ""
 
     return company, title, location, period
+
+
+def _looks_like_role_location(value: str) -> bool:
+    clean = re.sub(r"\s+", " ", (value or "").strip(" |,-"))
+    if not clean or len(clean) > 80 or _ROLE_TITLE_RE.search(clean):
+        return False
+    if re.fullmatch(r"remote(?:,\s*united states|,\s*usa)?", clean, re.I):
+        return True
+    parts = [part.strip() for part in clean.split(",") if part.strip()]
+    return 2 <= len(parts) <= 4 and all(len(part.split()) <= 5 for part in parts)
+
+
+def _role_parts(value: str) -> list[str]:
+    clean = _EXPERIENCE_DATE_RANGE_RE.sub(" ", value or "")
+    return [
+        re.sub(r"\s+", " ", part).strip(" |,-")
+        for part in re.split(r"[|\t\r\n]+", clean)
+        if re.sub(r"\s+", " ", part).strip(" |,-")
+    ]
+
+
+def normalize_work_experience_role(role: WorkExperienceRole) -> WorkExperienceRole:
+    """Remove repeated title/date/location metadata without changing resume facts."""
+    period = ""
+    for value in (role.period, role.header, role.company, role.title, role.location):
+        match = _EXPERIENCE_DATE_RANGE_RE.search(value or "")
+        if match:
+            period = re.sub(r"\s+", " ", match.group(0)).strip()
+            break
+
+    parts: list[str] = []
+    for value in (role.company, role.title, role.location, role.header):
+        for part in _role_parts(value):
+            if part.casefold() not in {item.casefold() for item in parts}:
+                parts.append(part)
+
+    title = next((part for part in _role_parts(role.title) if _ROLE_TITLE_RE.search(part)), "")
+    if not title:
+        title = next((part for part in parts if _ROLE_TITLE_RE.search(part)), "")
+
+    def without_repeated_title(value: str) -> str:
+        clean = value
+        if title:
+            clean = re.sub(rf"(?:\s*[,|]\s*)?{re.escape(title)}\s*$", "", clean, flags=re.I)
+        return clean.strip(" |,-")
+
+    normalized_parts = [without_repeated_title(part) for part in parts]
+    normalized_parts = [part for part in normalized_parts if part]
+    location = next(
+        (
+            without_repeated_title(part)
+            for part in _role_parts(role.location)
+            if _looks_like_role_location(without_repeated_title(part))
+        ),
+        "",
+    )
+    if not location:
+        location = next((part for part in normalized_parts if _looks_like_role_location(part)), "")
+
+    company = ""
+    company_candidates: list[str] = []
+    for source in (role.company, role.header):
+        company_candidates.extend(_role_parts(source))
+    for candidate in company_candidates:
+        candidate = without_repeated_title(candidate)
+        if not candidate:
+            continue
+        if title and candidate.casefold() == title.casefold():
+            continue
+        if location and candidate.casefold() == location.casefold():
+            continue
+        if _looks_like_role_location(candidate) or _ROLE_TITLE_RE.search(candidate):
+            continue
+        company = candidate
+        break
+
+    header_parts = [part for part in (company, title, location, period) if part]
+    return WorkExperienceRole(
+        header=" | ".join(header_parts) or role.header,
+        company=company,
+        title=title,
+        location=location,
+        period=period,
+        bullets=role.bullets,
+    )
 
 
 def _role_from_block(header: str, bullets: list[str]) -> WorkExperienceRole:
@@ -314,6 +409,7 @@ def _format_contact_block(lines: list[str]) -> str:
 def recover_contact_block_from_docx(docx_bytes: bytes, existing_contact: str = "") -> str:
     """Recover contact facts split across Word runs, tables, headers, or text boxes."""
     fragments: list[str] = []
+    relationship_urls: list[str] = []
     try:
         with zipfile.ZipFile(BytesIO(docx_bytes)) as archive:
             names = [
@@ -330,6 +426,18 @@ def recover_contact_block_from_docx(docx_bytes: bytes, existing_contact: str = "
                     text = re.sub(r"\s+", " ", text).strip()
                     if text:
                         fragments.append(text)
+            for name in archive.namelist():
+                if not re.match(r"word/(?:_rels/|.+/_rels/).+\.rels$", name, re.I):
+                    continue
+                try:
+                    root = ET.fromstring(archive.read(name))
+                except ET.ParseError:
+                    continue
+                for relationship in root:
+                    target = (relationship.attrib.get("Target") or "").strip()
+                    target_mode = (relationship.attrib.get("TargetMode") or "").lower()
+                    if target_mode == "external" and re.match(r"https?://", target, re.I):
+                        relationship_urls.append(target.rstrip(".,;)"))
     except (OSError, zipfile.BadZipFile):
         return existing_contact
 
@@ -344,10 +452,14 @@ def recover_contact_block_from_docx(docx_bytes: bytes, existing_contact: str = "
         if 10 <= len(digits) <= 15 and not re.fullmatch(r"(?:19|20)\d{2}(?:19|20)\d{2}", digits):
             phones.append(clean)
     phones = list(dict.fromkeys(phones))
-    urls = list(dict.fromkeys(
-        match.rstrip(".,;)")
-        for match in re.findall(r"(?:https?://|www\.)[^\s<>{}\[\]]+", corpus, re.I)
-    ))
+    urls = list(dict.fromkeys([
+        *relationship_urls,
+        *(
+            match.rstrip(".,;)")
+            for match in re.findall(r"(?:https?://|www\.)[^\s<>{}\[\]]+", corpus, re.I)
+        ),
+    ]))
+    urls.sort(key=lambda value: 0 if re.search(r"linkedin\.com|github\.com", value, re.I) else 1)
     locations: list[str] = []
     location_re = re.compile(
         r"\b([A-Za-z][A-Za-z .'-]{1,40},\s*(?:[A-Z]{2}|United States|USA|Canada))\b"
@@ -624,12 +736,16 @@ def resolve_docx_sections(
                 education = s_education
 
     dropped_education_roles = tuple(role for role in roles if _role_is_education(role))
-    clean_roles = tuple(role for role in roles if not _role_is_education(role))
+    clean_roles = tuple(
+        normalize_work_experience_role(role)
+        for role in roles
+        if not _role_is_education(role)
+    )
     if len(clean_roles) != len(roles):
-        roles = clean_roles
         if not education:
             edu_lines = [role.header for role in dropped_education_roles]
             education = "\n".join(edu_lines).strip()
+    roles = clean_roles
 
     contact = recover_contact_block_from_docx(docx_bytes, contact)
     return ResolvedDocxSections(
@@ -703,6 +819,7 @@ def _analysis_from_parsed(
         if (value or "").strip():
             detected.append(key)
 
+    normalized_roles = tuple(normalize_work_experience_role(role) for role in roles)
     return ResumeSectionAnalysis(
         contact=parsed.contact,
         professional_summary=parsed.professional_summary,
@@ -710,8 +827,8 @@ def _analysis_from_parsed(
         skills=parsed.skills,
         education=parsed.education,
         other=parsed.other,
-        work_experience_roles=roles,
-        role_count=role_count or len(roles),
+        work_experience_roles=normalized_roles,
+        role_count=role_count or len(normalized_roles),
         experience_layout=layout,
         sections_detected=tuple(detected),
         source_format=source_format,

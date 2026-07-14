@@ -17,6 +17,7 @@ from app.services.resume_sections import (
     WorkExperienceRole,
     resolve_docx_sections,
 )
+from app.services.resume_analysis_ai import repair_resume_metadata_with_ai
 from app.services.resume_evidence import (
     SourceFact,
     analyze_job_description,
@@ -1024,9 +1025,15 @@ async def build_fresh_tailored_resume(
     docx_doc = parse_resume_from_docx(source_docx_bytes)
     resolved = resolve_docx_sections(source_docx_bytes, doc=docx_doc)
 
+    repaired_contact, repaired_roles = await repair_resume_metadata_with_ai(
+        contact=resolved.contact,
+        roles=resolved.work_experience_roles,
+        source_text=docx_doc.plain_text,
+    )
+
     roles = [
         role
-        for role in resolved.work_experience_roles
+        for role in repaired_roles
         if not is_experience_section_placeholder(role)
     ]
     if not roles:
@@ -1034,7 +1041,7 @@ async def build_fresh_tailored_resume(
     roles = sort_roles_by_start_date(roles)
 
     smart_contact_block, source_summary = merge_contact_profile_into_summary(
-        resolved.contact,
+        repaired_contact,
         resolved.professional_summary,
     )
     contact = contact_fields_from_block(smart_contact_block)

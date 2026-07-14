@@ -770,10 +770,10 @@ def _looks_like_education_location(line: str) -> bool:
         or len(stripped) > 48
     ):
         return False
-    if not _LOCATION_LINE_RE.match(stripped):
+    if not re.fullmatch(r"[^,]+(?:,\s*[^,]+){1,3}", stripped):
         return False
-    city, _, country = stripped.partition(",")
-    return len(city.split()) <= 4 and len(country.split()) <= 4
+    parts = [part.strip() for part in stripped.split(",") if part.strip()]
+    return 2 <= len(parts) <= 4 and all(len(part.split()) <= 4 for part in parts)
 
 
 def _split_education_entries(text: str) -> list[list[str]]:

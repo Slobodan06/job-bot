@@ -1,11 +1,82 @@
 import unittest
+import zipfile
+from io import BytesIO
 from types import SimpleNamespace
 
-from app.services.rendercv_resume import _contact_cv_fields, _education_entries, build_rendercv_payload
+from app.services.rendercv_resume import (
+    _contact_cv_fields,
+    _education_entries,
+    _experience_entries,
+    build_rendercv_payload,
+)
+from app.services.resume_sections import (
+    WorkExperienceRole,
+    normalize_work_experience_role,
+    recover_contact_block_from_docx,
+)
 from app.services.resume_evidence import SourceFact, select_nonduplicative_bullets
 
 
 class ResumeOutputRegressionTests(unittest.TestCase):
+    def test_docx_hyperlink_target_is_recovered_from_relationships(self) -> None:
+        buffer = BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr(
+                "word/document.xml",
+                '<w:document xmlns:w="urn:w"><w:p><w:r><w:t>outlook.com</w:t>'
+                "</w:r></w:p></w:document>",
+            )
+            archive.writestr(
+                "word/_rels/document.xml.rels",
+                '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                '<Relationship Id="rId1" Type="hyperlink" '
+                'Target="https://www.linkedin.com/in/het-patel" TargetMode="External"/>'
+                "</Relationships>",
+            )
+        contact = recover_contact_block_from_docx(buffer.getvalue(), "Het Patel")
+        self.assertIn("https://www.linkedin.com/in/het-patel", contact)
+
+    def test_email_provider_domain_is_not_rendered_as_website(self) -> None:
+        fields = _contact_cv_fields(
+            "Het Patel\nhet-patel12@outlook.com\nIllinois, United States\n"
+            "+19176282276\noutlook.com\nhttps://www.linkedin.com/in/het-patel"
+        )
+        self.assertNotIn("website", fields)
+        self.assertEqual(
+            [{"network": "LinkedIn", "username": "het-patel"}],
+            fields["social_networks"],
+        )
+
+    def test_composite_role_metadata_is_normalized_and_rendered_once(self) -> None:
+        role = normalize_work_experience_role(WorkExperienceRole(
+            header="AI Automation Engineer",
+            company=(
+                "AI Automation Engineer | 05/2023 - 05/2026 | "
+                "Chicago, IL, USA, AI Automation Engineer"
+            ),
+            title="AI Automation Engineer",
+            location="",
+            period="05/2023 - 05/2026",
+            bullets=(),
+        ))
+        self.assertEqual("", role.company)
+        self.assertEqual("Chicago, IL, USA", role.location)
+        self.assertEqual("05/2023 - 05/2026", role.period)
+        entry = _experience_entries([role], [[]])[0]
+        self.assertEqual("AI Automation Engineer", entry["company"])
+        self.assertEqual("", entry["position"])
+        self.assertEqual("Chicago, IL, USA", entry["location"])
+        self.assertEqual("05/2023 - 05/2026", entry["date"])
+
+    def test_three_part_education_location_is_not_a_highlight(self) -> None:
+        entries = _education_entries(
+            "Illinois Institute of Technology | Bachelor's in degree in computer science | "
+            "04/2014 - 03/2018\nChicago, IL, USA\n"
+            "Specialized in Software Engineering"
+        )
+        self.assertEqual("Chicago, IL, USA", entries[0]["location"])
+        self.assertNotIn("Chicago, IL, USA", entries[0].get("highlights", []))
+
     def test_address_is_not_misclassified_as_phone(self) -> None:
         fields = _contact_cv_fields(
             "Daniel Wiseman\n"
