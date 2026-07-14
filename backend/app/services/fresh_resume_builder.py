@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from openai import AsyncOpenAI
 
 from app.schemas import TailorResponse
-from app.services.docx_resume import parse_resume_from_docx
+from app.services.docx_resume import output_docx_filename, parse_resume_from_docx
 from app.services.docx_convert import pdf_download_filename
 from app.services.pdf_resume import parse_contact, sanitize_for_pdf
 from app.services.resume_sections import (
@@ -48,6 +48,7 @@ from app.services.rendercv_resume import (
     rendercv_template_label,
     rendercv_theme_from_template_key,
 )
+from app.services.render_docx_resume import build_docx_resume
 from app.services.template_catalog import build_template_pdf, get_template_meta
 from app.services.sectionize import ParsedResume
 from app.services.tailor import (
@@ -1410,6 +1411,19 @@ async def build_fresh_tailored_resume(
     pdf_name = pdf_download_filename(original_filename.replace(".docx", "-tailored.pdf"))
     if not pdf_name.endswith(".pdf"):
         pdf_name = "resume-tailored.pdf"
+    docx_bytes = build_docx_resume(
+        contact=contact_block,
+        professional_summary=summary,
+        roles=display_roles,
+        bullets_by_role=[
+            [bullet_text(bullet) for bullet in role_bullets]
+            for role_bullets in display_bullets_by_role
+        ],
+        skills=skills,
+        education=education,
+        other=other,
+    )
+    docx_name = output_docx_filename(original_filename)
 
     tailored = TailoredSections(
         contact=contact_block,
@@ -1456,7 +1470,7 @@ async def build_fresh_tailored_resume(
     }
 
     tips = [
-        f"Fresh PDF built with your smart CV template: {template_label} ({template_key}).",
+        f"Fresh PDF and Word files built with your smart CV template: {template_label} ({template_key}).",
         "Contact, summary, skills, experience, and education were mapped to the correct template sections.",
         f"Detected {len(roles)} work roles; display is newest first, while bullet depth is assigned from career start to latest role using JD relevance ({' → '.join(str(n) for n in bullets_per_role[:6])}{'…' if len(bullets_per_role) > 6 else ''}).",
     ]
@@ -1489,8 +1503,8 @@ async def build_fresh_tailored_resume(
         tailored_skills=skills,
         tailored_education=education,
         tailored_other=other,
-        docx_base64="",
-        download_filename="",
+        docx_base64=base64.b64encode(docx_bytes).decode("ascii"),
+        download_filename=docx_name,
         pdf_base64=base64.b64encode(pdf_bytes).decode("ascii"),
         pdf_download_filename=pdf_name,
         keywords_highlighted=[],

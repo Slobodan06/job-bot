@@ -9,6 +9,7 @@ from app.services.rendercv_resume import (
     _experience_entries,
     build_rendercv_payload,
 )
+from app.services.render_docx_resume import build_docx_resume
 from app.services.resume_sections import (
     WorkExperienceRole,
     normalize_work_experience_role,
@@ -18,6 +19,32 @@ from app.services.resume_evidence import SourceFact, select_nonduplicative_bulle
 
 
 class ResumeOutputRegressionTests(unittest.TestCase):
+    def test_fresh_resume_docx_contains_same_structured_sections(self) -> None:
+        data = build_docx_resume(
+            contact=(
+                "Het Patel\nAI Automation Engineer\nhet@example.com | Chicago, IL, USA\n"
+                "https://www.linkedin.com/in/het-patel"
+            ),
+            professional_summary="Built reliable production automation systems.",
+            roles=[SimpleNamespace(
+                company="Experis",
+                title="AI Automation Engineer",
+                location="Chicago, IL, USA",
+                period="05/2023 - 05/2026",
+            )],
+            bullets_by_role=[["Designed and deployed production automation workflows."]],
+            skills="Programming: Python, SQL\nAI & LLM: OpenAI API, Claude API",
+            education="Illinois Institute of Technology | Bachelor's in Computer Science | 03/2018",
+            other="",
+        )
+        self.assertTrue(data.startswith(b"PK"))
+        document = __import__("docx").Document(BytesIO(data))
+        text = "\n".join(paragraph.text for paragraph in document.paragraphs)
+        self.assertIn("PROFESSIONAL SUMMARY", text)
+        self.assertIn("Experis | AI Automation Engineer", text)
+        self.assertIn("Illinois Institute of Technology", text)
+        self.assertTrue(any(p.style.name == "Resume Bullet" for p in document.paragraphs))
+
     def test_docx_hyperlink_target_is_recovered_from_relationships(self) -> None:
         buffer = BytesIO()
         with zipfile.ZipFile(buffer, "w") as archive:

@@ -270,30 +270,47 @@ export default function HomePage() {
   }, [result?.tailored_skills]);
 
   const docxExportPanel =
-    result && result.export_mode === "fresh_pdf" && tailoredPdfUrl ? (
+    result && result.export_mode === "fresh_pdf" && (tailoredPdfUrl || tailoredDocxUrl) ? (
       <Paper withBorder radius="md" p="md" bg="dark.7">
         <Stack gap="sm">
           <Stack gap={4}>
             <Text fw={600} size="sm">
-              Your tailored resume (fresh PDF)
+              Your tailored resume
             </Text>
             <Text size="xs" c="dimmed" maw={520}>
               Built with your selected smart CV template
               {result.template_label ? `: ${result.template_label}` : ""}. Sections are mapped to the correct
-              layout fields (contact, summary, skills, experience, education).
+              layout fields (contact, summary, skills, experience, education). Download it as PDF or an editable Word file.
             </Text>
           </Stack>
-          <Button
-            component="a"
-            href={tailoredPdfUrl}
-            download={result.pdf_download_filename || "resume-tailored.pdf"}
-            leftSection={<IconDownload size={18} />}
-            variant="filled"
-            color="teal"
-            size="sm"
-          >
-            Download PDF
-          </Button>
+          <Group gap="sm">
+            {tailoredPdfUrl ? (
+              <Button
+                component="a"
+                href={tailoredPdfUrl}
+                download={result.pdf_download_filename || "resume-tailored.pdf"}
+                leftSection={<IconDownload size={18} />}
+                variant="filled"
+                color="teal"
+                size="sm"
+              >
+                Download PDF
+              </Button>
+            ) : null}
+            {tailoredDocxUrl ? (
+              <Button
+                component="a"
+                href={tailoredDocxUrl}
+                download={result.download_filename || "resume-tailored.docx"}
+                leftSection={<IconDownload size={18} />}
+                variant="light"
+                color="teal"
+                size="sm"
+              >
+                Download Word (.docx)
+              </Button>
+            ) : null}
+          </Group>
         </Stack>
       </Paper>
     ) : result && tailoredDocxUrl ? (
