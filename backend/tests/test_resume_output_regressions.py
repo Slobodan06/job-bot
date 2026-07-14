@@ -77,6 +77,21 @@ class ResumeOutputRegressionTests(unittest.TestCase):
         self.assertEqual("Chicago, IL, USA", entries[0]["location"])
         self.assertNotIn("Chicago, IL, USA", entries[0].get("highlights", []))
 
+    def test_rendercv_education_does_not_reserve_empty_degree_column(self) -> None:
+        payload = build_rendercv_payload(
+            theme="engineeringresumes",
+            contact="Het Patel\nhet@example.com",
+            professional_summary="Summary",
+            roles=[],
+            bullets_by_role=[],
+            skills="Programming: Python",
+            education="Illinois Institute of Technology | Bachelor's in Computer Science",
+            other="",
+        )
+        template = payload["design"]["templates"]["education_entry"]
+        self.assertIsNone(template["degree_column"])
+        self.assertIn("DEGREE_WITH_AREA", template["main_column"])
+
     def test_address_is_not_misclassified_as_phone(self) -> None:
         fields = _contact_cv_fields(
             "Daniel Wiseman\n"

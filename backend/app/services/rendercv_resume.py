@@ -543,6 +543,11 @@ def build_rendercv_payload(
             },
             "templates": {
                 "footer": "",
+                "education_entry": {
+                    "main_column": "**INSTITUTION**, DEGREE_WITH_AREA\nSUMMARY\nHIGHLIGHTS",
+                    "degree_column": None,
+                    "date_and_location_column": "LOCATION\nDATE",
+                },
             },
         },
     }
