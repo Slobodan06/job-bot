@@ -10,6 +10,7 @@ from typing import Sequence
 from openai import AsyncOpenAI
 
 from app.services.openai_compat import chat_completion_controls
+from app.services.pdf_resume import ContactIdentity, format_contact_identity_block, parse_contact_identity
 from app.services.resume_sections import WorkExperienceRole
 
 logger = logging.getLogger(__name__)
@@ -43,10 +44,15 @@ def _is_source_backed(value: str, evidence: str, source: str) -> bool:
     return bool(candidate and quoted and candidate in quoted and quoted in corpus)
 
 
-def _is_allowed_link(url: str, source: str) -> bool:
+def _is_allowed_link(url: str, source: str, required_domain: str = "") -> bool:
     candidate = (url or "").strip().lower().rstrip("/")
     corpus = (source or "").lower().replace("\\/", "/")
-    return bool(candidate and "linkedin.com/" in candidate and candidate in corpus.rstrip("/"))
+    return bool(
+        candidate
+        and candidate.startswith(("http://", "https://"))
+        and (not required_domain or required_domain in candidate)
+        and candidate in corpus.rstrip("/")
+    )
 
 
 async def repair_resume_metadata_with_ai(
@@ -61,11 +67,34 @@ async def repair_resume_metadata_with_ai(
         return contact, tuple(roles)
 
     needs_company = any(not (role.company or "").strip() for role in roles)
+    identity = parse_contact_identity(contact)
     suspicious_contact = bool(
         re.search(r"(?:^|\n)\s*(?:outlook|gmail|hotmail|yahoo|icloud)\.com\s*(?:$|\n)", contact, re.I)
     )
-    source_has_linkedin = "linkedin.com/" in (contact + "\n" + source_text).lower()
-    if not needs_company and not suspicious_contact and not source_has_linkedin:
+    contact_source = contact + "\n" + source_text
+    header_source = "\n".join((source_text or "").splitlines()[:25])
+    known_profile_urls = {
+        url.lower().rstrip("/")
+        for url in (
+            identity.linkedin_url,
+            identity.portfolio_url,
+            identity.github_url,
+            *(url for _label, url in identity.other_links),
+        )
+        if url
+    }
+    header_urls = {
+        match.group(0).lower().rstrip("/.,;)")
+        for match in re.finditer(r"https?://[^\s<>{}\[\]]+", header_source, re.I)
+    }
+    missing_detectable_contact = any((
+        bool(re.search(r"[\w.+-]+@[\w.-]+\.\w+", contact_source)) and not identity.email,
+        bool(re.search(r"\+?\d[\d\s().-]{7,}\d", contact_source)) and not identity.phone,
+        "linkedin.com" in contact_source.lower() and not identity.linkedin_url,
+        "github.com" in contact_source.lower() and not identity.github_url,
+        bool(header_urls - known_profile_urls),
+    ))
+    if not needs_company and not suspicious_contact and not missing_detectable_contact:
         return contact, tuple(roles)
 
     roles_payload = [
@@ -89,7 +118,21 @@ CURRENT PARSED ROLES:
 
 Return JSON only:
 {{
-  "linkedin_url": "exact URL copied from SOURCE RESUME TEXT or empty",
+  "contact": {{
+    "name": "exact candidate name or empty",
+    "name_evidence": "exact source line",
+    "headline": "exact professional role/headline or empty",
+    "headline_evidence": "exact source line",
+    "email": "exact email or empty",
+    "email_evidence": "exact source line",
+    "phone": "exact phone or empty",
+    "phone_evidence": "exact source line",
+    "location": "exact candidate location or empty",
+    "location_evidence": "exact source line",
+    "linkedin_url": "exact LinkedIn URL or empty",
+    "portfolio_url": "exact personal portfolio URL or empty",
+    "github_url": "exact GitHub profile URL or empty"
+  }},
   "roles": [
     {{
       "index": 0,
@@ -108,6 +151,8 @@ Return JSON only:
 Rules:
 - This is extraction, not resume writing. Never infer or invent an employer, title, date, location, or URL.
 - Use surrounding order, dates, titles, bullets, and layout artifacts to associate each employer with the correct role.
+- Contact fields must come only from the resume header/contact area. Keep email, phone, location, LinkedIn, portfolio, and GitHub separate.
+- A portfolio must be the candidate's personal website, not an employer, school, email provider, or unrelated product URL.
 - Preserve role indexes and return one object per parsed role.
 - company_evidence and other evidence fields must be verbatim source text; leave a value empty when no exact evidence exists.
 - A mail provider domain such as outlook.com is never a LinkedIn or portfolio URL.
@@ -141,10 +186,36 @@ Rules:
         return contact, tuple(roles)
 
     repaired_contact = contact
-    linkedin_url = str(payload.get("linkedin_url") or "").strip()
-    if linkedin_url and _is_allowed_link(linkedin_url, evidence_source):
-        if linkedin_url.lower().rstrip("/") not in repaired_contact.lower().rstrip("/"):
-            repaired_contact = "\n".join(filter(None, [repaired_contact.strip(), linkedin_url]))
+    raw_contact = payload.get("contact")
+    if not isinstance(raw_contact, dict):
+        # Backward compatibility with the original metadata-repair response shape.
+        raw_contact = {"linkedin_url": payload.get("linkedin_url", "")}
+
+    def supported_contact(field: str) -> str:
+        value = str(raw_contact.get(field) or "").strip()
+        if field.endswith("_url"):
+            required_domain = (
+                "linkedin.com" if field == "linkedin_url"
+                else "github.com" if field == "github_url"
+                else ""
+            )
+            return value if _is_allowed_link(value, evidence_source, required_domain) else ""
+        evidence = str(raw_contact.get(f"{field}_evidence") or "").strip()
+        return value if _is_source_backed(value, evidence, evidence_source) else ""
+
+    updated_identity = ContactIdentity(
+        name=identity.name or supported_contact("name"),
+        headline=identity.headline or supported_contact("headline"),
+        email=identity.email or supported_contact("email"),
+        phone=identity.phone or supported_contact("phone"),
+        location=identity.location or supported_contact("location"),
+        linkedin_url=identity.linkedin_url or supported_contact("linkedin_url"),
+        portfolio_url=identity.portfolio_url or supported_contact("portfolio_url"),
+        github_url=identity.github_url or supported_contact("github_url"),
+        other_links=identity.other_links,
+    )
+    if updated_identity != identity:
+        repaired_contact = format_contact_identity_block(updated_identity)
 
     repaired_roles = list(roles)
     raw_roles = payload.get("roles")

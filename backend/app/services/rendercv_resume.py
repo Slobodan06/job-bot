@@ -7,7 +7,6 @@ import re
 import subprocess
 import sys
 import tempfile
-from urllib.parse import urlparse
 from pathlib import Path
 from secrets import choice
 from types import SimpleNamespace
@@ -19,7 +18,7 @@ from app.services.pdf_resume import (
     _looks_like_education_location,
     _looks_like_institution_line,
     _split_education_entries,
-    parse_contact,
+    parse_contact_identity,
     primary_role_header_from_block,
     sanitize_for_pdf,
     split_experience_line_blocks,
@@ -38,10 +37,6 @@ RENDERCV_THEMES: tuple[str, ...] = (
 )
 
 DEFAULT_RENDERCV_THEME = "engineeringresumes"
-
-_EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
-_URL_RE = re.compile(r"https?://[^\s<>\"']+|(?:www\.)?[a-z0-9][a-z0-9.-]*\.[a-z]{2,}[^\s<>\"']*", re.I)
-
 
 def pick_random_rendercv_theme() -> str:
     return choice(RENDERCV_THEMES)
@@ -89,13 +84,6 @@ def _normalize_url(raw: str) -> str:
     return url
 
 
-def _url_from_text(text: str) -> str | None:
-    match = _URL_RE.search(text or "")
-    if not match:
-        return None
-    return _normalize_url(match.group(0))
-
-
 def _format_phone_with_plus(phone: str) -> str:
     raw = sanitize_for_pdf(phone or "").strip()
     if not raw:
@@ -122,88 +110,46 @@ def _safe_contact_headline(headline: str | None) -> str:
 
 
 def _contact_cv_fields(contact_block: str) -> dict[str, Any]:
-    parsed = parse_contact(contact_block or "")
+    identity = parse_contact_identity(contact_block or "")
     cv: dict[str, Any] = {}
-    if parsed.name:
-        cv["name"] = sanitize_for_pdf(parsed.name)
-    headline = _safe_contact_headline(parsed.headline)
+    if identity.name:
+        cv["name"] = identity.name
+    headline = _safe_contact_headline(identity.headline)
     if headline:
         cv["headline"] = headline
+    if identity.email:
+        cv["email"] = identity.email
+    if identity.phone:
+        cv["phone"] = _format_phone_with_plus(identity.phone)
+    if identity.location:
+        cv["location"] = identity.location
+    if identity.portfolio_url:
+        cv["website"] = _normalize_url(identity.portfolio_url)
 
-    websites: list[str] = []
-    social_networks: list[dict[str, str]] = []
-    phone_display = ""
-    for detail in parsed.details:
-        clean = sanitize_for_pdf(detail)
-        if not clean:
-            continue
-        if _EMAIL_RE.match(clean):
-            cv.setdefault("email", clean)
-            continue
-        url = _url_from_text(clean)
-        if url:
-            websites.append(url)
-            continue
-        digits = re.sub(r"\D", "", clean)
-        is_phone = (
-            10 <= len(digits) <= 15
-            and not re.search(r"[A-Za-z]", clean)
-            and "#" not in clean
-        )
-        if is_phone and "phone" not in cv:
-            phone_display = phone_display or _format_phone_with_plus(clean)
-            continue
-        if "location" not in cv and len(clean) < 80:
-            cv["location"] = clean
+    custom_connections: list[dict[str, str]] = []
 
-    if phone_display:
-        if "location" in cv and phone_display not in cv["location"]:
-            cv["location"] = f"{cv['location']} | {phone_display}"
-        else:
-            cv["location"] = phone_display
+    def add_labeled_profile(label: str, url: str, icon: str) -> None:
+        # RenderCV's built-in social-network connection displays only the profile
+        # username in several themes. A labeled custom connection remains clickable
+        # and visibly identifies LinkedIn/GitHub in every supported template.
+        custom_connections.append({
+            "placeholder": label,
+            "url": _normalize_url(url),
+            "fontawesome_icon": icon,
+        })
 
-    for label, url in parsed.links:
-        normalized = _normalize_url(url)
-        lower = normalized.lower()
-        if "linkedin.com" in lower:
-            username = lower.rstrip("/").split("/")[-1]
-            if username:
-                social_networks.append({"network": "LinkedIn", "username": username})
-            continue
-        if "github.com" in lower:
-            username = lower.rstrip("/").split("/")[-1]
-            if username:
-                social_networks.append({"network": "GitHub", "username": username})
-            continue
-        websites.append(normalized)
-
-    if parsed.linkedin_url and not any(item.get("network") == "LinkedIn" for item in social_networks):
-        username = parsed.linkedin_url.rstrip("/").split("/")[-1]
-        if username:
-            social_networks.append({"network": "LinkedIn", "username": username})
-
-    if websites:
-        email_domain = str(cv.get("email", "")).rsplit("@", 1)[-1].lower()
-        webmail_domains = {"outlook.com", "hotmail.com", "gmail.com", "yahoo.com", "icloud.com"}
-        unique: list[str] = []
-        for website in dict.fromkeys(websites):
-            parsed_url = urlparse(_normalize_url(website))
-            host = parsed_url.netloc.lower().removeprefix("www.")
-            is_root_homepage = parsed_url.path in {"", "/"} and not parsed_url.query
-            if is_root_homepage and (host in webmail_domains or host == email_domain):
-                continue
-            unique.append(website)
-    if websites and unique:
-        cv["website"] = unique[0] if len(unique) == 1 else unique[:4]
-    if social_networks:
-        deduped: list[dict[str, str]] = []
-        seen: set[tuple[str, str]] = set()
-        for item in social_networks:
-            key = (item["network"], item["username"].lower())
-            if key not in seen:
-                seen.add(key)
-                deduped.append(item)
-        cv["social_networks"] = deduped[:4]
+    if identity.linkedin_url:
+        add_labeled_profile(identity.name or "LinkedIn", identity.linkedin_url, "linkedin")
+    if identity.github_url:
+        add_labeled_profile("GitHub", identity.github_url, "github")
+    for label, url in identity.other_links:
+        custom_connections.append({
+            "placeholder": label or "Website",
+            "url": _normalize_url(url),
+            "fontawesome_icon": "link",
+        })
+    if custom_connections:
+        cv["custom_connections"] = custom_connections
     return cv
 
 
@@ -531,6 +477,13 @@ def build_rendercv_payload(
         "cv": cv,
         "design": {
             "theme": theme,
+            "header": {
+                "connections": {
+                    # Keep the country calling code visible instead of RenderCV's
+                    # national-format default (for example, +381 rather than 0).
+                    "phone_number_format": "international",
+                },
+            },
             "typography": {
                 "font_family": "Arial",
             },

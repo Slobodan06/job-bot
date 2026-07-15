@@ -141,6 +141,21 @@ class ParsedContact:
     details: list[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class ContactIdentity:
+    """Canonical typed header fields shared by PDF and DOCX renderers."""
+
+    name: str = ""
+    headline: str = ""
+    email: str = ""
+    phone: str = ""
+    location: str = ""
+    linkedin_url: str = ""
+    portfolio_url: str = ""
+    github_url: str = ""
+    other_links: tuple[tuple[str, str], ...] = ()
+
+
 _CONTACT_DETAIL_RE = re.compile(
     r"@|\+?\d[\d\s().-]{7,}|https?://|linkedin\.com|github\.com",
     re.I,
@@ -328,6 +343,102 @@ def parse_contact(contact: str) -> ParsedContact:
     return parsed
 
 
+def _is_root_email_provider_url(url: str, email: str = "") -> bool:
+    normalized = _normalize_url(url)
+    match = re.match(r"https?://(?:www\.)?([^/?#]+)([^?#]*)", normalized, re.I)
+    if not match:
+        return False
+    host = match.group(1).lower()
+    path = (match.group(2) or "").strip("/")
+    email_domain = email.rsplit("@", 1)[-1].lower() if "@" in email else ""
+    providers = {"outlook.com", "hotmail.com", "gmail.com", "yahoo.com", "icloud.com"}
+    return not path and (host in providers or bool(email_domain and host == email_domain))
+
+
+def parse_contact_identity(contact: str) -> ContactIdentity:
+    """Classify every common resume-header field without conflating phone/location/links."""
+    raw = sanitize_for_pdf(contact or "")
+    parsed = parse_contact(raw)
+    email_match = _EMAIL_IN_TEXT_RE.search(raw)
+    email = email_match.group(0) if email_match else ""
+
+    phone = ""
+    location = ""
+    for detail in parsed.details:
+        clean = re.sub(r"^(?:email|e-mail|phone|mobile|location|address)\s*:\s*", "", detail.strip(), flags=re.I)
+        if not clean:
+            continue
+        if not email:
+            match = _EMAIL_IN_TEXT_RE.search(clean)
+            if match:
+                email = match.group(0)
+                continue
+        digits = re.sub(r"\D", "", clean)
+        if not phone and 8 <= len(digits) <= 15 and not re.search(r"[A-Za-z]", clean):
+            phone = clean
+            continue
+        if not location and "@" not in clean and not _extract_url(clean):
+            location = clean
+
+    # Recover labeled values that an unusual separator prevented parse_contact from ingesting.
+    if not phone:
+        for match in re.finditer(r"(?<!\d)(\+?\d[\d\s().-]{6,}\d)(?!\d)", raw):
+            candidate = match.group(1).strip()
+            digits = re.sub(r"\D", "", candidate)
+            if 8 <= len(digits) <= 15:
+                phone = candidate
+                break
+
+    linkedin = ""
+    github = ""
+    portfolio = ""
+    other_links: list[tuple[str, str]] = []
+    for label, raw_url in parsed.links:
+        url = _normalize_url(raw_url)
+        lower = url.lower()
+        if "linkedin.com" in lower:
+            linkedin = linkedin or url
+        elif "github.com" in lower:
+            github = github or url
+        elif _is_root_email_provider_url(url, email):
+            continue
+        elif not portfolio:
+            portfolio = url
+        else:
+            other_links.append((label or "Website", url))
+
+    return ContactIdentity(
+        name=sanitize_for_pdf(parsed.name or "").strip(),
+        headline=sanitize_for_pdf(parsed.headline or "").strip(),
+        email=email.strip(),
+        phone=phone.strip(),
+        location=location.strip(),
+        linkedin_url=linkedin,
+        portfolio_url=portfolio,
+        github_url=github,
+        other_links=tuple(other_links),
+    )
+
+
+def format_contact_identity_block(identity: ContactIdentity) -> str:
+    """Serialize typed contact data into the canonical block consumed by all exports."""
+    return "\n".join(
+        value
+        for value in (
+            identity.name,
+            identity.headline,
+            identity.email,
+            identity.phone,
+            identity.location,
+            identity.linkedin_url,
+            identity.portfolio_url,
+            identity.github_url,
+            *(url for _label, url in identity.other_links),
+        )
+        if value
+    )
+
+
 def parse_contact_header(contact: str) -> tuple[str, str | None, list[str]]:
     """Backward-compatible tuple API."""
     parsed = parse_contact(contact)
@@ -366,7 +477,7 @@ def format_contact_details_markup(
     for item in parsed.details:
         parts.append(f'<font color="{detail_color}">{escape(item)}</font>')
     if parsed.linkedin_url:
-        parts.append(_href_markup("LinkedIn", parsed.linkedin_url, link_color))
+        parts.append(_href_markup(parsed.name or "LinkedIn", parsed.linkedin_url, link_color))
     for label, url in parsed.links:
         if parsed.linkedin_url and url == parsed.linkedin_url:
             continue
@@ -385,7 +496,7 @@ def format_contact_details_pipe_markup(
     for item in parsed.details:
         parts.append(f'<font color="{detail_color}">{escape(item)}</font>')
     if parsed.linkedin_url:
-        parts.append(_href_markup("LinkedIn", parsed.linkedin_url, link_color))
+        parts.append(_href_markup(parsed.name or "LinkedIn", parsed.linkedin_url, link_color))
     for label, url in parsed.links:
         if parsed.linkedin_url and url == parsed.linkedin_url:
             continue

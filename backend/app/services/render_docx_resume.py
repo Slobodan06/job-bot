@@ -14,7 +14,7 @@ from docx.oxml.ns import qn
 from docx.opc.constants import RELATIONSHIP_TYPE
 from docx.shared import Inches, Pt, RGBColor
 
-from app.services.pdf_resume import parse_contact, sanitize_for_pdf
+from app.services.pdf_resume import parse_contact_identity, sanitize_for_pdf
 from app.services.rendercv_resume import _education_entries, _skill_entries
 
 ACCENT = "0B5E75"
@@ -181,25 +181,37 @@ def build_docx_resume(
     bullet_style.paragraph_format.left_indent = Inches(0.22)
     bullet_style.paragraph_format.first_line_indent = Inches(-0.16)
 
-    parsed = parse_contact(contact or "")
+    identity = parse_contact_identity(contact or "")
     name = doc.add_paragraph()
     name.alignment = WD_ALIGN_PARAGRAPH.CENTER
     name.paragraph_format.space_after = Pt(1)
-    name_run = name.add_run(parsed.name or "Candidate")
+    name_run = name.add_run(identity.name or "Candidate")
     _set_font(name_run, size=20, bold=True, color=ACCENT)
-    if parsed.headline:
+    if identity.headline:
         headline = doc.add_paragraph()
         headline.alignment = WD_ALIGN_PARAGRAPH.CENTER
         headline.paragraph_format.space_after = Pt(2.5)
-        headline_run = headline.add_run(parsed.headline)
+        headline_run = headline.add_run(identity.headline)
         _set_font(headline_run, size=10.5, bold=True, color=ACCENT)
 
     contact_line = doc.add_paragraph()
     contact_line.alignment = WD_ALIGN_PARAGRAPH.CENTER
     contact_line.paragraph_format.space_after = Pt(4)
-    items: list[tuple[str, str | None]] = [(detail, None) for detail in parsed.details]
-    for label, url in parsed.links:
-        items.append((label or url, url))
+    items: list[tuple[str, str | None]] = []
+    if identity.email:
+        items.append((identity.email, f"mailto:{identity.email}"))
+    if identity.phone:
+        phone_href = re.sub(r"[^+\d]", "", identity.phone)
+        items.append((identity.phone, f"tel:{phone_href}"))
+    if identity.location:
+        items.append((identity.location, None))
+    if identity.linkedin_url:
+        items.append((identity.name or "LinkedIn", identity.linkedin_url))
+    if identity.portfolio_url:
+        items.append(("Portfolio", identity.portfolio_url))
+    if identity.github_url:
+        items.append(("GitHub", identity.github_url))
+    items.extend((label or "Website", url) for label, url in identity.other_links)
     for index, (label, url) in enumerate(items):
         if index:
             separator = contact_line.add_run("  |  ")
@@ -249,9 +261,9 @@ def build_docx_resume(
                 _set_font(run)
 
     properties = doc.core_properties
-    properties.title = f"{parsed.name or 'Candidate'} Resume"
+    properties.title = f"{identity.name or 'Candidate'} Resume"
     properties.subject = "Tailored Resume"
-    properties.author = parsed.name or "Candidate"
+    properties.author = identity.name or "Candidate"
     output = BytesIO()
     doc.save(output)
     return output.getvalue()

@@ -19,6 +19,35 @@ from app.services.resume_evidence import SourceFact, select_nonduplicative_bulle
 
 
 class ResumeOutputRegressionTests(unittest.TestCase):
+    def test_all_header_fields_are_typed_and_rendered_separately(self) -> None:
+        contact = (
+            "David Jovanovic\nFrontend Developer | Responsive Design Specialist\n"
+            "davvrjov11@gmail.com | +381 62 8293658 | Belgrade, Serbia\n"
+            "https://www.linkedin.com/in/david-jovanovic\n"
+            "https://davidjovanovic.dev\nhttps://github.com/davidjovanovic"
+        )
+        fields = _contact_cv_fields(contact)
+        self.assertEqual("David Jovanovic", fields["name"])
+        self.assertEqual("davvrjov11@gmail.com", fields["email"])
+        self.assertEqual("+381 62 8293658", fields["phone"])
+        self.assertEqual("Belgrade, Serbia", fields["location"])
+        self.assertEqual("https://davidjovanovic.dev", fields["website"])
+        self.assertEqual(
+            [
+                {
+                    "placeholder": "David Jovanovic",
+                    "url": "https://www.linkedin.com/in/david-jovanovic",
+                    "fontawesome_icon": "linkedin",
+                },
+                {
+                    "placeholder": "GitHub",
+                    "url": "https://github.com/davidjovanovic",
+                    "fontawesome_icon": "github",
+                },
+            ],
+            fields["custom_connections"],
+        )
+
     def test_fresh_resume_docx_contains_same_structured_sections(self) -> None:
         data = build_docx_resume(
             contact=(
@@ -63,6 +92,18 @@ class ResumeOutputRegressionTests(unittest.TestCase):
         contact = recover_contact_block_from_docx(buffer.getvalue(), "Het Patel")
         self.assertIn("https://www.linkedin.com/in/het-patel", contact)
 
+    def test_docx_field_code_linkedin_target_is_recovered(self) -> None:
+        buffer = BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr(
+                "word/document.xml",
+                '<w:document xmlns:w="urn:w"><w:body><w:p><w:r>'
+                '<w:instrText> HYPERLINK "https://www.linkedin.com/in/hetp54/" \\h '
+                "</w:instrText></w:r></w:p></w:body></w:document>",
+            )
+        contact = recover_contact_block_from_docx(buffer.getvalue(), "Het Patel")
+        self.assertIn("https://www.linkedin.com/in/hetp54/", contact)
+
     def test_email_provider_domain_is_not_rendered_as_website(self) -> None:
         fields = _contact_cv_fields(
             "Het Patel\nhet-patel12@outlook.com\nIllinois, United States\n"
@@ -70,8 +111,12 @@ class ResumeOutputRegressionTests(unittest.TestCase):
         )
         self.assertNotIn("website", fields)
         self.assertEqual(
-            [{"network": "LinkedIn", "username": "het-patel"}],
-            fields["social_networks"],
+            [{
+                "placeholder": "Het Patel",
+                "url": "https://www.linkedin.com/in/het-patel",
+                "fontawesome_icon": "linkedin",
+            }],
+            fields["custom_connections"],
         )
 
     def test_composite_role_metadata_is_normalized_and_rendered_once(self) -> None:
@@ -126,8 +171,8 @@ class ResumeOutputRegressionTests(unittest.TestCase):
         )
         self.assertEqual("daniel.wiseman.ca@gmail.com", fields["email"])
         self.assertIn("1865 Bush St #303", fields["location"])
-        self.assertIn("+18188636443", fields["location"])
-        self.assertNotIn("+1865303", fields["location"])
+        self.assertEqual("+18188636443", fields["phone"])
+        self.assertNotIn("+1865303", fields["phone"])
 
     def test_month_year_and_degree_are_preserved(self) -> None:
         entries = _education_entries(

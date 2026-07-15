@@ -15,6 +15,7 @@ from app.services.docx_resume import (
     _all_document_paragraphs,
     _experience_text_from_table_row,
     _group_experience_paragraph_indices,
+    _field_hyperlink_urls_from_xml,
     _is_bullet_paragraph,
     _is_bulletish_text,
     _line_from_paragraph,
@@ -26,6 +27,7 @@ from app.services.pdf_resume import has_experience_date_range, sanitize_for_pdf
 from app.services.extract_text import extract_text_from_bytes
 from app.services.pdf_resume import (
     is_experience_role_header_line,
+    merge_profile_links_into_contact,
     primary_role_header_from_block,
     split_experience_line_blocks,
 )
@@ -417,7 +419,9 @@ def recover_contact_block_from_docx(docx_bytes: bytes, existing_contact: str = "
                 if re.match(r"word/(?:document|header\d*|footer\d*)\.xml$", name, re.I)
             ]
             for name in names:
-                xml = archive.read(name).decode("utf-8", errors="ignore")
+                xml_bytes = archive.read(name)
+                xml = xml_bytes.decode("utf-8", errors="ignore")
+                relationship_urls.extend(_field_hyperlink_urls_from_xml(xml_bytes))
                 for paragraph in re.split(r"</w:p>", xml):
                     text = "".join(
                         html.unescape(value)
@@ -855,6 +859,11 @@ def analyze_resume_sections_from_pdf(pdf_bytes: bytes) -> ResumeSectionAnalysis:
     if not text.strip():
         raise ValueError("Could not extract text from this PDF.")
     parsed = parse_resume_sections(text)
+    parsed.contact = merge_profile_links_into_contact(
+        parsed.contact,
+        text,
+        pdf_bytes=pdf_bytes,
+    )
     roles = _roles_from_experience_text(parsed.professional_experience)
     return _analysis_from_parsed(
         parsed,

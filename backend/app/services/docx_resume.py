@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import re
+import xml.etree.ElementTree as ET
 from copy import deepcopy
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
-from zipfile import ZipFile
+from zipfile import BadZipFile, ZipFile
 
 from docx import Document
 from docx.oxml.ns import qn
@@ -23,6 +24,7 @@ from app.services.pdf_resume import (
     primary_role_header_from_block,
     split_experience_line_blocks,
     _looks_like_job_title_line,
+    _link_label_for,
     _looks_like_role_header_line,
 )
 from app.services.sectionize import (
@@ -1656,29 +1658,87 @@ def _has_editable_docx_targets(
     return any(section_body_indices.get(section) for section in _EDITABLE_DOCX_SECTIONS)
 
 
+def _field_hyperlink_urls_from_xml(xml_bytes: bytes) -> list[str]:
+    """Extract URLs stored as Word HYPERLINK field codes instead of relationships."""
+    try:
+        root = ET.fromstring(xml_bytes)
+    except ET.ParseError:
+        return []
+    instructions = " ".join(
+        (element.text or "").strip()
+        for element in root.iter()
+        if element.tag.rsplit("}", 1)[-1] == "instrText" and (element.text or "").strip()
+    )
+    urls: list[str] = []
+    for match in re.finditer(r'\bHYPERLINK\s+(?:"([^"]+)"|(\S+))', instructions, re.I):
+        url = (match.group(1) or match.group(2) or "").strip()
+        if url.lower().startswith(("http://", "https://")) and url not in urls:
+            urls.append(url)
+    return urls
+
+
 def extract_http_links_from_docx(docx_bytes: bytes) -> list[tuple[str, str]]:
     if not docx_bytes:
         return []
-    doc = Document(BytesIO(docx_bytes))
     labeled: list[tuple[str, str]] = []
     seen: set[str] = set()
-    for paragraph in doc.paragraphs:
-        for hyperlink in paragraph._element.xpath(".//w:hyperlink"):
-            r_id = hyperlink.get(qn("r:id"))
-            if not r_id:
-                continue
-            try:
-                url = paragraph.part.rels[r_id].target_ref.strip()
-            except KeyError:
-                continue
-            if not url.lower().startswith(("http://", "https://")):
-                continue
-            key = url.lower().rstrip("/")
-            if key in seen:
-                continue
-            seen.add(key)
-            label = "LinkedIn" if "linkedin.com" in key else "GitHub" if "github.com" in key else "Link"
-            labeled.append((label, url))
+    try:
+        doc = Document(BytesIO(docx_bytes))
+    except (OSError, ValueError, BadZipFile):
+        doc = None
+    if doc is not None:
+        for paragraph in doc.paragraphs:
+            for hyperlink in paragraph._element.xpath(".//w:hyperlink"):
+                r_id = hyperlink.get(qn("r:id"))
+                if not r_id:
+                    continue
+                try:
+                    url = paragraph.part.rels[r_id].target_ref.strip()
+                except KeyError:
+                    continue
+                if not url.lower().startswith(("http://", "https://")):
+                    continue
+                key = url.lower().rstrip("/")
+                if key in seen:
+                    continue
+                seen.add(key)
+                label = "LinkedIn" if "linkedin.com" in key else "GitHub" if "github.com" in key else "Link"
+                labeled.append((label, url))
+    # Hyperlinks may live in header/footer parts, tables, shapes, or text boxes and
+    # therefore never appear in ``doc.paragraphs``. Read every external relationship.
+    try:
+        with ZipFile(BytesIO(docx_bytes)) as archive:
+            for name in archive.namelist():
+                if not name.startswith("word/") or not name.endswith(".rels"):
+                    continue
+                try:
+                    root = ET.fromstring(archive.read(name))
+                except ET.ParseError:
+                    continue
+                for relationship in root:
+                    url = (relationship.attrib.get("Target") or "").strip()
+                    if (relationship.attrib.get("TargetMode") or "").lower() != "external":
+                        continue
+                    if not url.lower().startswith(("http://", "https://")):
+                        continue
+                    key = url.lower().rstrip("/")
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    labeled.append((_link_label_for("", url), url))
+            # Some Word generators use field codes such as
+            # HYPERLINK "https://linkedin.com/in/name" with no .rels entry.
+            for name in archive.namelist():
+                if not name.startswith("word/") or not name.endswith(".xml"):
+                    continue
+                for url in _field_hyperlink_urls_from_xml(archive.read(name)):
+                    key = url.lower().rstrip("/")
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    labeled.append((_link_label_for("", url), url))
+    except (OSError, ValueError, BadZipFile):
+        pass
     return labeled
 
 

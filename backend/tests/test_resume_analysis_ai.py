@@ -24,6 +24,46 @@ class _FakeClient:
 
 
 class ResumeAnalysisAIRepairTests(unittest.IsolatedAsyncioTestCase):
+    async def test_missing_typed_header_fields_are_repaired_only_from_source(self) -> None:
+        role = WorkExperienceRole("Engineer | Real Company", "Real Company", "Engineer", "", "", ())
+        _FakeClient.payload = {
+            "contact": {
+                "name": "David Jovanovic",
+                "name_evidence": "David Jovanovic",
+                "headline": "Frontend Developer",
+                "headline_evidence": "Frontend Developer",
+                "email": "davvrjov11@gmail.com",
+                "email_evidence": "davvrjov11@gmail.com",
+                "phone": "+381 62 8293658",
+                "phone_evidence": "+381 62 8293658",
+                "location": "Belgrade, Serbia",
+                "location_evidence": "Belgrade, Serbia",
+                "linkedin_url": "https://www.linkedin.com/in/david-jovanovic",
+                "portfolio_url": "https://davidjovanovic.dev",
+                "github_url": "https://github.com/davidjovanovic",
+            },
+            "roles": [],
+        }
+        source = (
+            "David Jovanovic\nFrontend Developer\ndavvrjov11@gmail.com\n"
+            "+381 62 8293658\nBelgrade, Serbia\n"
+            "https://www.linkedin.com/in/david-jovanovic\n"
+            "https://davidjovanovic.dev\nhttps://github.com/davidjovanovic"
+        )
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}), patch(
+            "app.services.resume_analysis_ai.AsyncOpenAI", _FakeClient
+        ):
+            contact, _roles = await repair_resume_metadata_with_ai(
+                contact="David Jovanovic\nFrontend Developer",
+                roles=[role],
+                source_text=source,
+            )
+        self.assertIn("davvrjov11@gmail.com", contact)
+        self.assertIn("+381 62 8293658", contact)
+        self.assertIn("Belgrade, Serbia", contact)
+        self.assertIn("https://davidjovanovic.dev", contact)
+        self.assertIn("https://github.com/davidjovanovic", contact)
+
     async def test_missing_company_and_linkedin_are_recovered_from_quoted_source(self) -> None:
         role = WorkExperienceRole(
             header="AI Automation Engineer | Chicago, IL, USA | 05/2023 - 05/2026",
