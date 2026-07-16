@@ -465,6 +465,22 @@ def recover_contact_block_from_docx(docx_bytes: bytes, existing_contact: str = "
     ]))
     urls.sort(key=lambda value: 0 if re.search(r"linkedin\.com|github\.com", value, re.I) else 1)
     locations: list[str] = []
+
+    candidate_name = existing_lines[0] if existing_lines else ""
+    for fragment in fragments[:3]:
+        header_candidate = _EMAIL_RE.sub(" ", fragment)
+        if candidate_name:
+            header_candidate = re.sub(re.escape(candidate_name), " ", header_candidate, flags=re.I)
+        header_candidate = re.sub(r"\s+", " ", header_candidate).strip(" |,-")
+        parts = [part.strip() for part in header_candidate.split(",")]
+        if (
+            len(parts) == 3
+            and all(re.fullmatch(r"[A-Za-z][A-Za-z .'-]{1,40}", part) for part in parts)
+            and not re.search(r"\b(?:RAG|AI|LLM|NLP)\b", header_candidate, re.I)
+        ):
+            locations.append(header_candidate)
+            break
+
     location_re = re.compile(
         r"\b([A-Za-z][A-Za-z .'-]{1,40},\s*(?:[A-Z]{2}|United States|USA|Canada))\b"
     )
