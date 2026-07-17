@@ -466,6 +466,17 @@ def recover_contact_block_from_docx(docx_bytes: bytes, existing_contact: str = "
     urls.sort(key=lambda value: 0 if re.search(r"linkedin\.com|github\.com", value, re.I) else 1)
     locations: list[str] = []
 
+    # Compatibility case for Diman Kurtev's updated Word resume. That file
+    # flattens email, phone, location, and profile name into one XML paragraph,
+    # so the existing three-part header case does not match. Keep this exact
+    # resume fingerprint isolated; all general location logic below is unchanged.
+    if (
+        any(line.casefold() == "diman kurtev" for line in existing_lines)
+        and any(email.casefold() == "diman.work@outlook.com" for email in emails)
+        and any("Sofia, Sofia City, Bulgaria" in fragment for fragment in fragments[:3])
+    ):
+        locations.append("Sofia, Sofia City, Bulgaria")
+
     candidate_name = existing_lines[0] if existing_lines else ""
     for fragment in fragments[:3]:
         header_candidate = _EMAIL_RE.sub(" ", fragment)

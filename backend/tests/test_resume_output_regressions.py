@@ -120,6 +120,23 @@ class ResumeOutputRegressionTests(unittest.TestCase):
         self.assertIn("Sofia, Sofia City, Bulgaria", contact)
         self.assertNotIn("RAG, AI", contact)
 
+    def test_diman_updated_header_with_phone_uses_literal_location(self) -> None:
+        buffer = BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr(
+                "word/document.xml",
+                '<w:document xmlns:w="urn:w"><w:body>'
+                '<w:p><w:r><w:t>Diman Kurtev</w:t></w:r></w:p>'
+                '<w:p><w:r><w:t>diman.work@outlook.com +35924372792 '
+                'Sofia, Sofia City, Bulgaria Diman Kurtev</w:t></w:r></w:p>'
+                '<w:p><w:r><w:t>Summary</w:t></w:r></w:p>'
+                '<w:p><w:r><w:t>Generative AI: OpenAI, RAG, AI</w:t></w:r></w:p>'
+                "</w:body></w:document>",
+            )
+        contact = recover_contact_block_from_docx(buffer.getvalue(), "Diman Kurtev")
+        self.assertIn("Sofia, Sofia City, Bulgaria", contact)
+        self.assertNotIn("RAG, AI", contact)
+
     def test_email_provider_domain_is_not_rendered_as_website(self) -> None:
         fields = _contact_cv_fields(
             "Het Patel\nhet-patel12@outlook.com\nIllinois, United States\n"
