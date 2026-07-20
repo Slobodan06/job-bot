@@ -137,6 +137,50 @@ class ResumeOutputRegressionTests(unittest.TestCase):
         self.assertIn("Sofia, Sofia City, Bulgaria", contact)
         self.assertNotIn("RAG, AI", contact)
 
+    def test_hampus_resume_uses_literal_header_location(self) -> None:
+        buffer = BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr(
+                "word/document.xml",
+                '<w:document xmlns:w="urn:w"><w:body>'
+                '<w:p><w:r><w:t>Hampus Hallman</w:t></w:r></w:p>'
+                '<w:p><w:r><w:t>hampus-hallman@outlook.com +46 765005563 '
+                'Gothenburg, Sweden Hampus Hallman</w:t></w:r></w:p>'
+                '<w:p><w:r><w:t>Summary</w:t></w:r></w:p>'
+                '<w:p><w:r><w:t>Generative AI: OpenAI, RAG, AI</w:t></w:r></w:p>'
+                "</w:body></w:document>",
+            )
+        contact = recover_contact_block_from_docx(buffer.getvalue(), "Hampus Hallman")
+        self.assertIn("Gothenburg, Sweden", contact)
+        self.assertNotIn("RAG, AI", contact)
+
+    def test_hampus_certifications_render_as_their_own_section(self) -> None:
+        payload = build_rendercv_payload(
+            theme="classic",
+            contact=(
+                "Hampus Hallman\nData Scientist\nhampus-hallman@outlook.com\n"
+                "+46 765005563\nGothenburg, Sweden"
+            ),
+            professional_summary="Senior Data Scientist.",
+            roles=[],
+            bullets_by_role=[],
+            skills="Python, SQL",
+            education="",
+            other=(
+                "CERTIFICATIONS\n- AWS Certified Machine Learning - Specialty\n"
+                "- Microsoft Azure AI Engineer Associate"
+            ),
+        )
+        sections = payload["cv"]["sections"]
+        self.assertEqual(
+            [
+                {"bullet": "AWS Certified Machine Learning - Specialty"},
+                {"bullet": "Microsoft Azure AI Engineer Associate"},
+            ],
+            sections["Certifications"],
+        )
+        self.assertNotIn("Additional", sections)
+
     def test_email_provider_domain_is_not_rendered_as_website(self) -> None:
         fields = _contact_cv_fields(
             "Het Patel\nhet-patel12@outlook.com\nIllinois, United States\n"

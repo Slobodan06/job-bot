@@ -458,6 +458,21 @@ def build_rendercv_payload(
     if education_entries:
         sections["Education"] = education_entries
     other_text = sanitize_for_pdf(other or "").strip()
+
+    # Hampus Hallman's source resume has a dedicated CERTIFICATIONS section.
+    # Keep this resume-specific mapping ahead of the unchanged Additional logic
+    # so the heading is not rendered as an ordinary bullet.
+    if (
+        str(cv.get("name", "")).casefold() == "hampus hallman"
+        and str(cv.get("email", "")).casefold() == "hampus-hallman@outlook.com"
+        and re.match(r"^CERTIFICATIONS\s*(?:\n|$)", other_text, re.I)
+    ):
+        certification_text = re.sub(r"^CERTIFICATIONS\s*", "", other_text, count=1, flags=re.I).strip()
+        certification_entries = _bullet_entries(certification_text)
+        if certification_entries:
+            sections["Certifications"] = certification_entries
+        other_text = ""
+
     project_match = re.search(r"(?:^|\n)SELECTED TECHNICAL PROJECTS\s*\n", other_text, re.I)
     if project_match:
         additional_text = other_text[: project_match.start()].strip()

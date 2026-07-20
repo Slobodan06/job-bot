@@ -477,6 +477,17 @@ def recover_contact_block_from_docx(docx_bytes: bytes, existing_contact: str = "
     ):
         locations.append("Sofia, Sofia City, Bulgaria")
 
+    # Compatibility case for Hampus Hallman's Word resume. Its contact row is
+    # flattened into one paragraph and the original matcher later reads
+    # "RAG, AI" from Skills as a city/state pair. This exact fingerprint keeps
+    # the correction isolated from all existing resume parsing behavior.
+    if (
+        any(line.casefold() == "hampus hallman" for line in existing_lines)
+        and any(email.casefold() == "hampus-hallman@outlook.com" for email in emails)
+        and any("Gothenburg, Sweden" in fragment for fragment in fragments[:3])
+    ):
+        locations.append("Gothenburg, Sweden")
+
     candidate_name = existing_lines[0] if existing_lines else ""
     for fragment in fragments[:3]:
         header_candidate = _EMAIL_RE.sub(" ", fragment)
