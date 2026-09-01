@@ -154,6 +154,25 @@ class ResumeOutputRegressionTests(unittest.TestCase):
         self.assertIn("Gothenburg, Sweden", contact)
         self.assertNotIn("RAG, AI", contact)
 
+    def test_darren_updated_resume_uses_single_word_header_location(self) -> None:
+        buffer = BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr(
+                "word/document.xml",
+                '<w:document xmlns:w="urn:w"><w:body>'
+                '<w:p><w:r><w:t>Darren Byrne</w:t></w:r></w:p>'
+                '<w:p><w:r><w:t>darrenbyrne.work@hotmail.com +353 87 123 4567 '
+                'Dublin Darren Byrne</w:t></w:r></w:p>'
+                '<w:p><w:r><w:t>SUMMARY</w:t></w:r></w:p>'
+                '<w:p><w:r><w:t>Used Azure DevOps while collaborating closely with '
+                'development, QA, support, and business teams.</w:t></w:r></w:p>'
+                "</w:body></w:document>",
+            )
+        contact = recover_contact_block_from_docx(buffer.getvalue(), "Darren Byrne")
+        self.assertIn("Dublin", contact.splitlines())
+        self.assertNotIn("collaborating closely with development, QA", contact)
+        self.assertEqual("Dublin", _contact_cv_fields(contact)["location"])
+
     def test_hampus_certifications_render_as_their_own_section(self) -> None:
         payload = build_rendercv_payload(
             theme="classic",

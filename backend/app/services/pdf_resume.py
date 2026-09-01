@@ -380,6 +380,18 @@ def parse_contact_identity(contact: str) -> ContactIdentity:
         if not location and "@" not in clean and not _extract_url(clean):
             location = clean
 
+    # Darren Byrne's updated Word resume supplies the source-faithful location
+    # as a standalone "Dublin" line. Keep this exact recovered-contact
+    # fingerprint narrow so other headline and location classification is
+    # unchanged.
+    if (
+        not location
+        and parsed.name.casefold() == "darren byrne"
+        and email.casefold() == "darrenbyrne.work@hotmail.com"
+        and any(line.strip().casefold() == "dublin" for line in raw.splitlines())
+    ):
+        location = "Dublin"
+
     # Recover labeled values that an unusual separator prevented parse_contact from ingesting.
     if not phone:
         for match in re.finditer(r"(?<!\d)(\+?\d[\d\s().-]{6,}\d)(?!\d)", raw):

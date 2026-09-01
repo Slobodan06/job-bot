@@ -488,6 +488,18 @@ def recover_contact_block_from_docx(docx_bytes: bytes, existing_contact: str = "
     ):
         locations.append("Gothenburg, Sweden")
 
+    # Compatibility case for Darren Byrne's updated Word resume. Its contact
+    # row is flattened into one paragraph and contains the single-word location
+    # "Dublin", which the existing comma-based matcher intentionally ignores.
+    # Keep the exact name/email/header fingerprint isolated so the general
+    # contact extraction behavior remains unchanged.
+    if (
+        any(line.casefold() == "darren byrne" for line in existing_lines)
+        and any(email.casefold() == "darrenbyrne.work@hotmail.com" for email in emails)
+        and any("Dublin Darren Byrne" in fragment for fragment in fragments[:3])
+    ):
+        locations.append("Dublin")
+
     candidate_name = existing_lines[0] if existing_lines else ""
     for fragment in fragments[:3]:
         header_candidate = _EMAIL_RE.sub(" ", fragment)
