@@ -1,7 +1,6 @@
 import logging
 import os
 from contextlib import asynccontextmanager
-from dataclasses import replace
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -30,11 +29,25 @@ from app.schemas import (
 from app.services.cover_letter import generate_cover_letter
 from app.services.extract_text import extract_text_from_bytes
 from app.services.email import log_email_config
-from app.services.resume_sections import analyze_resume_file
-from app.services.resume_analysis_ai import repair_resume_metadata_with_ai
+from app.services.resume_ingest import ingest_resume
 from app.services.fresh_resume_builder import build_fresh_tailored_resume
 from app.services.qualification_questions import analyze_resume_qualification_gaps
 from app.services.tailor import tailor_resume
+
+_RESUME_EXTS = (".docx", ".doc", ".pdf")
+
+
+async def _read_resume_upload(resume: UploadFile) -> tuple[bytes, str]:
+    raw = await resume.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Resume file is empty.")
+    name = resume.filename or "resume.docx"
+    if not name.lower().endswith(_RESUME_EXTS):
+        raise HTTPException(
+            status_code=400,
+            detail="Upload a Word resume (.docx) or PDF (.pdf).",
+        )
+    return raw, name
 
 
 @asynccontextmanager
@@ -97,43 +110,35 @@ async def parse_sections(
     resume: UploadFile = File(...),
     _user: dict = Depends(get_builder_user),
 ) -> ParseSectionsResponse:
-    """Detect sections and repair ambiguous fixed metadata with source-validated AI extraction."""
-    raw = await resume.read()
-    if not raw:
-        raise HTTPException(status_code=400, detail="Resume file is empty.")
-    name = resume.filename or "resume.docx"
-    lower = name.lower()
-    if not (lower.endswith(".docx") or lower.endswith(".doc") or lower.endswith(".pdf")):
-        raise HTTPException(
-            status_code=400,
-            detail="Upload a Word resume (.docx) or PDF (.pdf).",
-        )
+    """Convert the upload into the normalized canonical resume model."""
+    raw, name = await _read_resume_upload(resume)
     try:
-        analysis = analyze_resume_file(raw, filename=name)
-        source_text = extract_text_from_bytes(name, raw)
-        repaired_contact, repaired_roles = await repair_resume_metadata_with_ai(
-            contact=analysis.contact,
-            roles=analysis.work_experience_roles,
-            source_text=source_text,
-        )
-        analysis = replace(
-            analysis,
-            contact=repaired_contact,
-            work_experience_roles=repaired_roles,
-            role_count=len(repaired_roles) or analysis.role_count,
-        )
+        model = await ingest_resume(raw, filename=name)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
-    total_bullets = sum(len(role.bullets) for role in analysis.work_experience_roles)
+    roles = model.work_experience_roles()
+    total_bullets = sum(len(role.bullets) for role in roles)
+    sections_detected = [
+        key
+        for key, present in (
+            ("contact", bool(model.name or model.contact.email)),
+            ("professional_summary", bool(model.professional_summary.strip())),
+            ("professional_experience", bool(roles)),
+            ("skills", bool(model.technical_skills)),
+            ("education", bool(model.education)),
+            ("other", bool(model.extra_sections())),
+        )
+        if present
+    ]
 
     return ParseSectionsResponse(
-        contact=analysis.contact,
-        professional_summary=analysis.professional_summary,
-        professional_experience=analysis.professional_experience,
-        skills=analysis.skills,
-        education=analysis.education,
-        other=analysis.other,
+        contact=model.contact_block(),
+        professional_summary=model.professional_summary,
+        professional_experience=model.experience_text(),
+        skills=model.skills_text(),
+        education=model.education_text(),
+        other=model.extras_text(),
         work_experience_roles=[
             WorkExperienceRoleResponse(
                 header=role.header,
@@ -144,13 +149,14 @@ async def parse_sections(
                 bullets=list(role.bullets),
                 bullet_count=len(role.bullets),
             )
-            for role in analysis.work_experience_roles
+            for role in roles
         ],
-        role_count=analysis.role_count,
-        experience_layout=analysis.experience_layout,
-        sections_detected=list(analysis.sections_detected),
-        source_format=analysis.source_format,
+        role_count=len(roles),
+        experience_layout="structured",
+        sections_detected=sections_detected,
+        source_format=model.meta.source_format,
         total_experience_bullets=total_bullets,
+        resume_model=model.model_dump(),
     )
 
 
@@ -167,21 +173,17 @@ async def tailor(
 ) -> TailorResponse:
     if not job_description or not job_description.strip():
         raise HTTPException(status_code=400, detail="Job description is required.")
-    raw = await resume.read()
-    if not raw:
-        raise HTTPException(status_code=400, detail="Resume file is empty.")
-    name = resume.filename or "resume.docx"
+    raw, name = await _read_resume_upload(resume)
     lower_name = name.lower()
-    if not lower_name.endswith(".docx"):
-        raise HTTPException(
-            status_code=400,
-            detail="Upload a Word resume (.docx).",
-        )
     mode = (export_mode or "fresh_pdf").strip().lower()
+    # In-place Word editing needs the original .docx; anything else uses fresh export.
+    if mode != "fresh_pdf" and not lower_name.endswith(".docx"):
+        mode = "fresh_pdf"
     if mode == "fresh_pdf":
         try:
+            model = await ingest_resume(raw, filename=name)
             return await build_fresh_tailored_resume(
-                source_docx_bytes=raw,
+                resume_model=model,
                 original_filename=name,
                 job_description=job_description,
                 target_job_role=target_job_role.strip(),
@@ -220,15 +222,11 @@ async def qualification_analysis(
     """Compare the JD with source evidence before any resume is generated."""
     if not job_description or not job_description.strip():
         raise HTTPException(status_code=400, detail="Job description is required.")
-    raw = await resume.read()
-    if not raw:
-        raise HTTPException(status_code=400, detail="Resume file is empty.")
-    name = resume.filename or "resume.docx"
-    if not name.lower().endswith(".docx"):
-        raise HTTPException(status_code=400, detail="Upload a Word resume (.docx).")
+    raw, name = await _read_resume_upload(resume)
     try:
+        model = await ingest_resume(raw, filename=name)
         result = analyze_resume_qualification_gaps(
-            source_docx_bytes=raw,
+            resume_model=model,
             job_description=job_description,
         )
     except ValueError as exc:
@@ -246,31 +244,18 @@ async def cover_letter(
 ) -> CoverLetterResponse:
     if not job_description or not job_description.strip():
         raise HTTPException(status_code=400, detail="Job description is required.")
-    raw = await resume.read()
-    if not raw:
-        raise HTTPException(status_code=400, detail="Resume file is empty.")
-    name = resume.filename or "resume.docx"
-    if not name.lower().endswith(".docx"):
-        raise HTTPException(
-            status_code=400,
-            detail="Upload a Word resume (.docx) to generate a cover letter.",
-        )
+    raw, name = await _read_resume_upload(resume)
     try:
-        resume_text = extract_text_from_bytes(name, raw)
+        model = await ingest_resume(raw, filename=name)
+        result = await generate_cover_letter(
+            resume_model=model,
+            job_description=job_description,
+            original_filename=name,
+            target_job_role=target_job_role.strip(),
+            company_name=company_name.strip(),
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    if not resume_text.strip():
-        raise HTTPException(
-            status_code=400,
-            detail="Could not extract text from the resume.",
-        )
-    result = await generate_cover_letter(
-        raw,
-        job_description,
-        original_filename=name,
-        target_job_role=target_job_role.strip(),
-        company_name=company_name.strip(),
-    )
     return CoverLetterResponse(**result)
 
 

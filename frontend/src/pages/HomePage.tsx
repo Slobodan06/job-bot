@@ -56,7 +56,14 @@ import {
   splitSkillsParts,
 } from "../formatResumeSections";
 
-const ACCEPT = ["application/vnd.openxmlformats-officedocument.wordprocessingml.document"];
+const ACCEPT = [
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/msword",
+  "application/pdf",
+  ".docx",
+  ".doc",
+  ".pdf",
+];
 
 export default function HomePage() {
   const [activeTab, setActiveTab] = useState<string | null>("resume");
@@ -147,7 +154,7 @@ export default function HomePage() {
   const onRejectFiles = useCallback(() => {
     notifications.show({
       title: "Unsupported file",
-      message: "Use a Word resume (.docx, max 15 MB).",
+      message: "Use a Word (.docx) or PDF (.pdf) resume, max 15 MB.",
       color: "red",
       icon: <IconX size={18} />,
     });
@@ -430,7 +437,7 @@ export default function HomePage() {
                 Drop your resume here
               </Text>
               <Text size="xs" c="dimmed" ta={{ base: "center", xs: "left" }} lineClamp={3}>
-                Word resume (.docx) — used for tailoring and cover letter context
+                Word (.docx) or PDF (.pdf) resume — used for tailoring and cover letter context
               </Text>
             </Stack>
           </Group>
@@ -762,7 +769,7 @@ export default function HomePage() {
         */}
         {!canSubmit && !loading ? (
           <Text size="xs" c="dimmed" ta="center">
-            Add a .docx resume and a job description (20+ characters).
+            Add a .docx or .pdf resume and a job description (20+ characters).
           </Text>
         ) : null}
         {error ? (
@@ -802,7 +809,7 @@ export default function HomePage() {
         </Button>
         {!canSubmit && !coverLetterLoading ? (
           <Text size="xs" c="dimmed" ta="center">
-            Add a .docx resume and a job description (20+ characters).
+            Add a .docx or .pdf resume and a job description (20+ characters).
           </Text>
         ) : null}
         {coverLetterError ? (
@@ -1382,7 +1389,7 @@ export default function HomePage() {
           <IconFileCv size={32} stroke={1.25} />
         </ThemeIcon>
         <Text ta="center" maw={380} c="dimmed" size="sm">
-          Upload a Word resume (.docx), paste a job description, and get a complete resume tailored for that role.
+          Upload a Word (.docx) or PDF (.pdf) resume, paste a job description, and get a complete resume tailored for that role.
         </Text>
       </Stack>
     </Paper>

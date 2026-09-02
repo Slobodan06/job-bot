@@ -326,24 +326,18 @@ def build_qualification_questions(
 
 
 def analyze_resume_qualification_gaps(
-    *, source_docx_bytes: bytes, job_description: str
+    *, resume_model: Any, job_description: str
 ) -> dict[str, Any]:
-    # Keep document-parser imports lazy so the deterministic question builder can
-    # be tested without loading native PDF/OCR dependencies.
-    from app.services.docx_resume import parse_resume_from_docx
-    from app.services.resume_sections import resolve_docx_sections
-
-    doc = parse_resume_from_docx(source_docx_bytes)
-    resolved = resolve_docx_sections(source_docx_bytes, doc=doc)
-    if not resolved.work_experience_roles:
+    roles = resume_model.work_experience_roles()
+    if not roles:
         raise ValueError("No work experience roles detected in the uploaded resume.")
     facts = build_verified_candidate_facts(
-        contact=resolved.contact,
-        summary=resolved.professional_summary,
-        skills=resolved.skills,
-        roles=list(resolved.work_experience_roles),
-        education=resolved.education,
-        other=resolved.other,
+        contact=resume_model.contact_block(),
+        summary=resume_model.summary_text(),
+        skills=resume_model.skills_text(),
+        roles=roles,
+        education=resume_model.education_text(),
+        other=resume_model.extras_text(),
     )
     job_analysis = analyze_job_description(job_description)
     evidence_map = create_evidence_map(job_analysis, facts)

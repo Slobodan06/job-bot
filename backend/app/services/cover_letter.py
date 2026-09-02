@@ -16,12 +16,11 @@ from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import inch
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
 
-from app.services.docx_resume import parse_resume_from_docx
 from app.services.pdf_fonts import register_reportlab_fira_fonts
 from app.services.pdf_resume import extract_jd_target_role_title, sanitize_target_job_role
 from app.services.pdf_text_util import sanitize_for_pdf
 from app.services.sectionize import ParsedResume
-from app.services.tailor import extract_keywords, merge_profile_links_into_contact
+from app.services.tailor import extract_keywords
 
 _MARGIN_LR = 0.75 * inch
 _MARGIN_TOP = 0.65 * inch
@@ -207,27 +206,20 @@ def cover_letter_download_filename(original_filename: str) -> str:
 
 
 async def generate_cover_letter(
-    source_docx_bytes: bytes,
-    job_description: str,
     *,
+    resume_model: object,
+    job_description: str,
     original_filename: str = "resume.docx",
     target_job_role: str,
     company_name: str = "",
 ) -> dict:
-    docx_doc = parse_resume_from_docx(source_docx_bytes)
-    parsed = docx_doc.parsed
-    enriched_contact = merge_profile_links_into_contact(
-        parsed.contact,
-        docx_doc.plain_text,
-        docx_bytes=source_docx_bytes,
-    )
     parsed = ParsedResume(
-        contact=enriched_contact,
-        professional_summary=parsed.professional_summary,
-        professional_experience=parsed.professional_experience,
-        skills=parsed.skills,
-        education=parsed.education,
-        other=parsed.other,
+        contact=resume_model.contact_block(),
+        professional_summary=resume_model.summary_text(),
+        professional_experience=resume_model.experience_text(),
+        skills=resume_model.skills_text(),
+        education=resume_model.education_text(),
+        other=resume_model.extras_text(),
     )
     role = sanitize_target_job_role(target_job_role) or extract_jd_target_role_title(job_description) or "this role"
     candidate_name = _extract_candidate_name(parsed.contact)

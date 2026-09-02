@@ -151,3 +151,7 @@ class ParseSectionsResponse(BaseModel):
         0,
         description="Total accomplishment bullets detected across all work-experience roles.",
     )
+    resume_model: dict = Field(
+        default_factory=dict,
+        description="Normalized canonical resume model (contact, summary, skills, experience, education, extras, meta).",
+    )

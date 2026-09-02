@@ -139,7 +139,7 @@ def _contact_cv_fields(contact_block: str) -> dict[str, Any]:
         })
 
     if identity.linkedin_url:
-        add_labeled_profile(identity.name or "LinkedIn", identity.linkedin_url, "linkedin")
+        add_labeled_profile("LinkedIn", identity.linkedin_url, "linkedin")
     if identity.github_url:
         add_labeled_profile("GitHub", identity.github_url, "github")
     for label, url in identity.other_links:
@@ -431,6 +431,167 @@ def _roles_from_text(experience: str) -> tuple[list[Any], list[list[str]]]:
     return roles, bullets_by_role
 
 
+def _contact_cv_fields_from_model(model: Any) -> dict[str, Any]:
+    """Build the RenderCV ``cv`` header block directly from a typed ``ResumeModel``."""
+    cv: dict[str, Any] = {}
+    name = sanitize_for_pdf(getattr(model, "name", "") or "").strip()
+    if name:
+        cv["name"] = name
+    headline = _safe_contact_headline(getattr(model, "title", "") or "")
+    if headline:
+        cv["headline"] = headline
+    contact = getattr(model, "contact", None)
+    if getattr(contact, "email", ""):
+        cv["email"] = contact.email.strip()
+    if getattr(contact, "phone", ""):
+        cv["phone"] = _format_phone_with_plus(contact.phone)
+    location = sanitize_for_pdf(getattr(model, "location", "") or "").strip()
+    if location:
+        cv["location"] = location
+
+    website = _normalize_url(getattr(contact, "website", "") or "")
+    if website:
+        cv["website"] = website
+
+    # Labeled custom connections: RenderCV's built-in social-network connection
+    # renders only the bare username in several themes, and this build's Typst
+    # Font Awesome shim draws icons as blank boxes. A plain "LinkedIn" / "GitHub"
+    # text label stays clickable and legible in every supported theme, instead
+    # of repeating the candidate's name in the header.
+    custom_connections: list[dict[str, str]] = []
+    for label, icon, url in (
+        ("LinkedIn", "linkedin", getattr(contact, "linkedin", "") or ""),
+        ("GitHub", "github", getattr(contact, "github", "") or ""),
+    ):
+        normalized = _normalize_url(url)
+        if normalized:
+            custom_connections.append(
+                {"placeholder": label, "url": normalized, "fontawesome_icon": icon}
+            )
+    if custom_connections:
+        cv["custom_connections"] = custom_connections
+    return cv
+
+
+def _skill_entries_from_model(skills: dict[str, list[str]]) -> list[dict[str, str]]:
+    entries: list[dict[str, str]] = []
+    for category, items in (skills or {}).items():
+        clean = [sanitize_for_pdf(i).strip() for i in items or [] if sanitize_for_pdf(i).strip()]
+        if not clean:
+            continue
+        label = sanitize_for_pdf(category or "").strip() or "Skills"
+        entries.append({"label": label, "details": ", ".join(clean)})
+    return entries
+
+
+def _experience_entries_from_model(roles: list[Any]) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    for role in roles or []:
+        company = sanitize_for_pdf(getattr(role, "company", "") or "").strip()
+        position = sanitize_for_pdf(getattr(role, "title", "") or "").strip()
+        if company and position and company.casefold() == position.casefold():
+            company = ""
+        # Row 1 (bold) must never be empty: fall back title -> company -> label.
+        if not position:
+            position, company = (company or "Experience"), ""
+        entry: dict[str, Any] = {"company": company, "position": position}
+        location = sanitize_for_pdf(getattr(role, "location", "") or "").strip()
+        period_text = sanitize_for_pdf(getattr(role, "dates", "") or "").strip()
+        if location:
+            entry["location"] = location
+        if period_text:
+            entry["date"] = period_text
+        highlights = [
+            sanitize_for_pdf(b).strip().lstrip("-*• ").strip()
+            for b in getattr(role, "responsibilities", []) or []
+        ]
+        highlights = [h for h in highlights if h]
+        if highlights:
+            entry["highlights"] = highlights
+        entries.append(entry)
+    return entries
+
+
+def _education_entries_from_model(entries: list[Any]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for edu in entries or []:
+        degree = sanitize_for_pdf(getattr(edu, "degree", "") or "").strip()
+        area = sanitize_for_pdf(getattr(edu, "field", "") or "").strip()
+        entry: dict[str, Any] = {
+            "institution": sanitize_for_pdf(getattr(edu, "school", "") or "").strip() or "Education",
+            "area": area or degree or "Education",
+        }
+        if degree and area:
+            entry["degree"] = degree
+        location = sanitize_for_pdf(getattr(edu, "location", "") or "").strip()
+        date = sanitize_for_pdf(getattr(edu, "duration", "") or "").strip()
+        if location:
+            entry["location"] = location
+        if date:
+            entry["date"] = date
+        out.append(entry)
+    return out
+
+
+def _rendercv_design(theme: str) -> dict[str, Any]:
+    # ATS-friendly, consistent entry layout across every theme:
+    #   Row 1:  **Job Title / Degree**            <right> Dates
+    #   Row 2:  Company / Institution, Location
+    #   then:   bullet highlights
+    # Leading with the role and keeping company, location and dates in a fixed
+    # order is what applicant-tracking parsers extract most reliably.
+    return {
+        "theme": theme,
+        "header": {"connections": {"phone_number_format": "international"}},
+        "typography": {"font_family": "Arial"},
+        "entries": {"allow_page_break": True, "short_second_row": False},
+        "page": {"show_footer": False, "show_top_note": False},
+        "templates": {
+            "footer": "",
+            "experience_entry": {
+                "main_column": "**POSITION**\nCOMPANY, LOCATION\nSUMMARY\nHIGHLIGHTS",
+                "date_and_location_column": "DATE",
+            },
+            "education_entry": {
+                "main_column": "**INSTITUTION**\nDEGREE_WITH_AREA, LOCATION\nSUMMARY\nHIGHLIGHTS",
+                "degree_column": None,
+                "date_and_location_column": "DATE",
+            },
+        },
+    }
+
+
+def build_rendercv_payload_from_model(model: Any, *, theme: str) -> dict[str, Any]:
+    """Build a RenderCV payload directly from a typed ``ResumeModel`` (no string re-parsing)."""
+    cv = _contact_cv_fields_from_model(model)
+    cv.setdefault("name", "Candidate")
+    sections: dict[str, Any] = {}
+
+    summary_entries = _text_entries(model.professional_summary)
+    if summary_entries:
+        sections["Professional Summary"] = summary_entries
+    skill_entries = _skill_entries_from_model(model.technical_skills)
+    if skill_entries:
+        sections["Skills"] = skill_entries
+    experience_entries = _experience_entries_from_model(model.professional_experience)
+    if experience_entries:
+        sections["Professional Experience"] = experience_entries
+    education_entries = _education_entries_from_model(model.education)
+    if education_entries:
+        sections["Education"] = education_entries
+    for heading, raw_entries in model.extra_sections():
+        entries = [
+            {"bullet": sanitize_for_pdf(e).strip().lstrip("-*• ").strip()}
+            for e in raw_entries
+            if sanitize_for_pdf(e).strip()
+        ]
+        if entries:
+            sections[heading] = entries
+
+    cv["sections"] = sections
+    return {"cv": cv, "design": _rendercv_design(theme)}
+
+
 def build_rendercv_payload(
     *,
     theme: str,
@@ -591,6 +752,10 @@ def render_rendercv_pdf(payload: dict[str, Any]) -> bytes:
         if not pdfs:
             raise RuntimeError("RenderCV completed without producing a PDF.")
         return pdfs[0].read_bytes()
+
+
+def build_rendercv_resume_pdf_from_model(model: Any, *, theme: str) -> bytes:
+    return render_rendercv_pdf(build_rendercv_payload_from_model(model, theme=theme))
 
 
 def build_rendercv_resume_pdf(

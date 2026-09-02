@@ -35,7 +35,7 @@ class ResumeOutputRegressionTests(unittest.TestCase):
         self.assertEqual(
             [
                 {
-                    "placeholder": "David Jovanovic",
+                    "placeholder": "LinkedIn",
                     "url": "https://www.linkedin.com/in/david-jovanovic",
                     "fontawesome_icon": "linkedin",
                 },
@@ -73,6 +73,66 @@ class ResumeOutputRegressionTests(unittest.TestCase):
         self.assertIn("Experis | AI Automation Engineer", text)
         self.assertIn("Illinois Institute of Technology", text)
         self.assertTrue(any(p.style.name == "Resume Bullet" for p in document.paragraphs))
+
+    def test_typed_model_renders_sections_without_string_reparsing(self) -> None:
+        from app.services.rendercv_resume import (
+            _contact_cv_fields_from_model,
+            build_rendercv_payload_from_model,
+        )
+        from app.services.resume_model import (
+            ResumeContact,
+            ResumeEducationEntry,
+            ResumeExperienceEntry,
+            ResumeModel,
+        )
+
+        model = ResumeModel(
+            name="David Jovanovic",
+            title="Frontend Developer",
+            location="Belgrade, Serbia",
+            contact=ResumeContact(
+                email="davvrjov11@gmail.com",
+                phone="+381 62 8293658",
+                linkedin="https://www.linkedin.com/in/david-jovanovic",
+                github="https://github.com/davidjovanovic",
+                website="https://davidjovanovic.dev",
+            ),
+            professional_summary="Frontend engineer.",
+            technical_skills={"Frontend": ["React", "TypeScript"]},
+            professional_experience=[
+                ResumeExperienceEntry(
+                    company="Acme", title="Engineer", location="Remote",
+                    dates="01/2020 - Present", responsibilities=["Shipped the dashboard."],
+                )
+            ],
+            education=[ResumeEducationEntry(school="ETF", field="CS", degree="BS", duration="2016")],
+            certifications=["AWS SA"],
+        )
+        fields = _contact_cv_fields_from_model(model)
+        self.assertEqual("davvrjov11@gmail.com", fields["email"])
+        self.assertEqual("+381 62 8293658", fields["phone"])
+        self.assertEqual("Belgrade, Serbia", fields["location"])
+        self.assertEqual("https://davidjovanovic.dev", fields["website"])
+        # LinkedIn/GitHub connections show a clean text label, not the person's name.
+        self.assertEqual(
+            [("LinkedIn", "linkedin"), ("GitHub", "github")],
+            [(c["placeholder"], c["fontawesome_icon"]) for c in fields["custom_connections"]],
+        )
+
+        payload = build_rendercv_payload_from_model(model, theme="engineeringresumes")
+        sections = payload["cv"]["sections"]
+        self.assertEqual([{"label": "Frontend", "details": "React, TypeScript"}], sections["Skills"])
+        exp = sections["Professional Experience"][0]
+        self.assertEqual("Acme", exp["company"])
+        self.assertEqual("Engineer", exp["position"])
+        self.assertEqual("Shipped the dashboard.", exp["highlights"][0])
+        self.assertIn("Certifications", sections)
+
+        # ATS-friendly entry layout: role/institution bold and first, date on the right.
+        templates = payload["design"]["templates"]
+        self.assertTrue(templates["experience_entry"]["main_column"].startswith("**POSITION**"))
+        self.assertEqual("DATE", templates["experience_entry"]["date_and_location_column"])
+        self.assertTrue(templates["education_entry"]["main_column"].startswith("**INSTITUTION**"))
 
     def test_docx_hyperlink_target_is_recovered_from_relationships(self) -> None:
         buffer = BytesIO()
@@ -208,7 +268,7 @@ class ResumeOutputRegressionTests(unittest.TestCase):
         self.assertNotIn("website", fields)
         self.assertEqual(
             [{
-                "placeholder": "Het Patel",
+                "placeholder": "LinkedIn",
                 "url": "https://www.linkedin.com/in/het-patel",
                 "fontawesome_icon": "linkedin",
             }],

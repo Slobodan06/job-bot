@@ -10,14 +10,15 @@ from dataclasses import dataclass
 from openai import AsyncOpenAI
 
 from app.schemas import TailorResponse
-from app.services.docx_resume import output_docx_filename, parse_resume_from_docx
+from app.services.docx_resume import output_docx_filename
 from app.services.docx_convert import pdf_download_filename
 from app.services.pdf_resume import parse_contact, sanitize_for_pdf
-from app.services.resume_sections import (
-    WorkExperienceRole,
-    resolve_docx_sections,
+from app.services.resume_model import (
+    ResumeExperienceEntry,
+    ResumeModel,
+    skills_dict_from_text,
 )
-from app.services.resume_analysis_ai import repair_resume_metadata_with_ai
+from app.services.resume_sections import WorkExperienceRole
 from app.services.resume_evidence import (
     SourceFact,
     analyze_job_description,
@@ -42,13 +43,13 @@ from app.services.resume_evidence import (
     validate_tailored_resume,
 )
 from app.services.rendercv_resume import (
-    build_rendercv_resume_pdf,
+    build_rendercv_resume_pdf_from_model,
     pick_random_rendercv_theme,
     rendercv_template_key,
     rendercv_template_label,
     rendercv_theme_from_template_key,
 )
-from app.services.render_docx_resume import build_docx_resume
+from app.services.render_docx_resume import build_docx_resume_from_model
 from app.services.template_catalog import build_template_pdf, get_template_meta
 from app.services.sectionize import ParsedResume
 from app.services.tailor import (
@@ -1012,9 +1013,47 @@ def _has_practical_ai_evidence(facts: list[SourceFact]) -> bool:
     return False
 
 
+def _build_tailored_model(
+    source_model: ResumeModel,
+    *,
+    contact_block: str,
+    summary: str,
+    skills: str,
+    display_roles: list[WorkExperienceRole],
+    display_bullets_by_role: list[list[object]],
+) -> ResumeModel:
+    """Assemble the final typed model the renderers consume (no string re-parsing)."""
+    experience: list[ResumeExperienceEntry] = []
+    for i, role in enumerate(display_roles):
+        bullets = display_bullets_by_role[i] if i < len(display_bullets_by_role) else []
+        experience.append(
+            ResumeExperienceEntry(
+                company=role.company,
+                title=role.title,
+                location=role.location,
+                dates=role.period,
+                responsibilities=[t for t in (bullet_text(b) for b in bullets) if t],
+            )
+        )
+    return ResumeModel(
+        name=source_model.name,
+        title=source_model.title,
+        location=source_model.location,
+        contact=source_model.contact,
+        professional_summary=summary,
+        professional_experience=experience,
+        education=list(source_model.education),
+        technical_skills=skills_dict_from_text(skills),
+        certifications=list(source_model.certifications),
+        languages=list(source_model.languages),
+        additional_info=list(source_model.additional_info),
+        meta=source_model.meta,
+    )
+
+
 async def build_fresh_tailored_resume(
     *,
-    source_docx_bytes: bytes,
+    resume_model: ResumeModel,
     original_filename: str,
     job_description: str,
     target_job_role: str = "",
@@ -1022,19 +1061,10 @@ async def build_fresh_tailored_resume(
     candidate_answers: str = "",
     sample_mode: bool = True,
 ) -> TailorResponse:
-    """Extract structured data → AI tailor → user's smart CV template PDF."""
-    docx_doc = parse_resume_from_docx(source_docx_bytes)
-    resolved = resolve_docx_sections(source_docx_bytes, doc=docx_doc)
-
-    repaired_contact, repaired_roles = await repair_resume_metadata_with_ai(
-        contact=resolved.contact,
-        roles=resolved.work_experience_roles,
-        source_text=docx_doc.plain_text,
-    )
-
+    """Normalized resume model → AI tailor → user's smart CV template PDF."""
     roles = [
         role
-        for role in repaired_roles
+        for role in resume_model.work_experience_roles()
         if not is_experience_section_placeholder(role)
     ]
     if not roles:
@@ -1042,14 +1072,14 @@ async def build_fresh_tailored_resume(
     roles = sort_roles_by_start_date(roles)
 
     smart_contact_block, source_summary = merge_contact_profile_into_summary(
-        repaired_contact,
-        resolved.professional_summary,
+        resume_model.contact_block(),
+        resume_model.professional_summary,
     )
     contact = contact_fields_from_block(smart_contact_block)
-    education = resolved.education
-    other = resolved.other
-    source_skills = resolved.skills
-    source_experience = resolved.professional_experience
+    education = resume_model.education_text()
+    other = resume_model.extras_text()
+    source_skills = resume_model.skills_text()
+    source_experience = resume_model.experience_text()
 
     target_role = (target_job_role or extract_jd_target_role_title(job_description) or "").strip()
     candidate_knowledge_base = build_candidate_knowledge_base(
@@ -1365,17 +1395,18 @@ async def build_fresh_tailored_resume(
     )
     template_key = rendercv_template_key(theme)
     template_label = rendercv_template_label(theme)
+
+    tailored_model = _build_tailored_model(
+        resume_model,
+        contact_block=contact_block,
+        summary=summary,
+        skills=skills,
+        display_roles=display_roles,
+        display_bullets_by_role=display_bullets_by_role,
+    )
+
     try:
-        pdf_bytes = build_rendercv_resume_pdf(
-            theme=theme,
-            contact=contact_block,
-            professional_summary=summary,
-            roles=display_roles,
-            bullets_by_role=[[bullet_text(bullet) for bullet in role_bullets] for role_bullets in display_bullets_by_role],
-            skills=skills,
-            education=education,
-            other=other,
-        )
+        pdf_bytes = build_rendercv_resume_pdf_from_model(tailored_model, theme=theme)
         used_rendercv = True
     except Exception as exc:
         logger.exception("RenderCV PDF generation failed")
@@ -1411,18 +1442,7 @@ async def build_fresh_tailored_resume(
     pdf_name = pdf_download_filename(original_filename.replace(".docx", "-tailored.pdf"))
     if not pdf_name.endswith(".pdf"):
         pdf_name = "resume-tailored.pdf"
-    docx_bytes = build_docx_resume(
-        contact=contact_block,
-        professional_summary=summary,
-        roles=display_roles,
-        bullets_by_role=[
-            [bullet_text(bullet) for bullet in role_bullets]
-            for role_bullets in display_bullets_by_role
-        ],
-        skills=skills,
-        education=education,
-        other=other,
-    )
+    docx_bytes = build_docx_resume_from_model(tailored_model)
     docx_name = output_docx_filename(original_filename)
 
     tailored = TailoredSections(

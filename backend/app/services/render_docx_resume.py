@@ -121,7 +121,11 @@ def _add_role_header(doc: Document, role: Any) -> None:
 
 
 def _add_education(doc: Document, education: str) -> None:
-    for entry in _education_entries(education):
+    _add_education_entries(doc, _education_entries(education))
+
+
+def _add_education_entries(doc: Document, entries: list[dict[str, Any]]) -> None:
+    for entry in entries:
         paragraph = doc.add_paragraph()
         paragraph.paragraph_format.space_before = Pt(3)
         paragraph.paragraph_format.space_after = Pt(1.5)
@@ -156,8 +160,15 @@ def build_docx_resume(
     skills: str,
     education: str,
     other: str,
+    skill_entries: list[dict[str, str]] | None = None,
+    education_entries: list[dict[str, Any]] | None = None,
+    extra_sections: list[tuple[str, list[str]]] | None = None,
 ) -> bytes:
-    """Return a polished single-column DOCX containing the final generated resume."""
+    """Return a polished single-column DOCX containing the final generated resume.
+
+    ``skill_entries`` / ``education_entries`` / ``extra_sections``, when supplied,
+    bypass the string re-parsing and render the typed data straight through.
+    """
     doc = Document()
     section = doc.sections[0]
     section.start_type = WD_SECTION.NEW_PAGE
@@ -206,7 +217,7 @@ def build_docx_resume(
     if identity.location:
         items.append((identity.location, None))
     if identity.linkedin_url:
-        items.append((identity.name or "LinkedIn", identity.linkedin_url))
+        items.append(("LinkedIn", identity.linkedin_url))
     if identity.portfolio_url:
         items.append(("Portfolio", identity.portfolio_url))
     if identity.github_url:
@@ -232,10 +243,10 @@ def build_docx_resume(
             run = paragraph.add_run(block.strip())
             _set_font(run)
 
-    skill_entries = _skill_entries(skills)
-    if skill_entries:
+    resolved_skill_entries = skill_entries if skill_entries is not None else _skill_entries(skills)
+    if resolved_skill_entries:
         _add_section_heading(doc, "Skills")
-        for item in skill_entries:
+        for item in resolved_skill_entries:
             _add_labeled_line(doc, item["label"], item["details"])
 
     if roles:
@@ -245,20 +256,33 @@ def build_docx_resume(
             for bullet in bullets_by_role[index] if index < len(bullets_by_role) else []:
                 _add_bullet(doc, bullet)
 
-    if education.strip():
+    if education_entries is not None:
+        if education_entries:
+            _add_section_heading(doc, "Education")
+            _add_education_entries(doc, education_entries)
+    elif education.strip():
         _add_section_heading(doc, "Education")
         _add_education(doc, education)
 
-    other_lines = [line.strip() for line in sanitize_for_pdf(other or "").splitlines() if line.strip()]
-    if other_lines:
-        _add_section_heading(doc, "Additional")
-        for line in other_lines:
-            if re.match(r"^[\-*\u2022]\s+", line):
+    if extra_sections is not None:
+        for heading, entries in extra_sections:
+            clean = [e.strip() for e in entries if e and e.strip()]
+            if not clean:
+                continue
+            _add_section_heading(doc, heading or "Additional")
+            for line in clean:
                 _add_bullet(doc, line)
-            else:
-                paragraph = doc.add_paragraph()
-                run = paragraph.add_run(line)
-                _set_font(run)
+    else:
+        other_lines = [line.strip() for line in sanitize_for_pdf(other or "").splitlines() if line.strip()]
+        if other_lines:
+            _add_section_heading(doc, "Additional")
+            for line in other_lines:
+                if re.match(r"^[\-*\u2022]\s+", line):
+                    _add_bullet(doc, line)
+                else:
+                    paragraph = doc.add_paragraph()
+                    run = paragraph.add_run(line)
+                    _set_font(run)
 
     properties = doc.core_properties
     properties.title = f"{identity.name or 'Candidate'} Resume"
@@ -267,3 +291,24 @@ def build_docx_resume(
     output = BytesIO()
     doc.save(output)
     return output.getvalue()
+
+
+def build_docx_resume_from_model(model: Any) -> bytes:
+    """Typed twin of :func:`build_docx_resume` — renders a ``ResumeModel`` directly."""
+    from app.services.rendercv_resume import (
+        _education_entries_from_model,
+        _skill_entries_from_model,
+    )
+
+    return build_docx_resume(
+        contact=model.contact_block(),
+        professional_summary=model.professional_summary,
+        roles=model.work_experience_roles(),
+        bullets_by_role=[list(role.responsibilities) for role in model.professional_experience],
+        skills="",
+        education="",
+        other="",
+        skill_entries=_skill_entries_from_model(model.technical_skills),
+        education_entries=_education_entries_from_model(model.education),
+        extra_sections=[(heading, list(entries)) for heading, entries in model.extra_sections()],
+    )
