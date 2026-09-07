@@ -13,7 +13,14 @@ import {
   Title,
   UnstyledButton,
 } from "@mantine/core";
-import { IconChevronDown, IconFileCv, IconLogout, IconUser, IconUsers } from "@tabler/icons-react";
+import {
+  IconBriefcase,
+  IconChevronDown,
+  IconFileCv,
+  IconLogout,
+  IconUser,
+  IconUsers,
+} from "@tabler/icons-react";
 import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
 
 import { useAuth } from "../auth/AuthContext";
@@ -27,6 +34,7 @@ function userInitials(name: string, email: string): string {
 
 function pageTitle(pathname: string): string {
   if (pathname.startsWith("/builder")) return "Resume builder";
+  if (pathname.startsWith("/applications")) return "Applications";
   if (pathname.startsWith("/templates")) return "CV templates";
   if (pathname.startsWith("/profile")) return "Your profile";
   if (pathname.startsWith("/admin/members")) return "Member management";
@@ -129,6 +137,9 @@ export function AppLayout() {
                       <>
                         <Menu.Item leftSection={<IconFileCv size={16} />} component={Link} to="/builder">
                           Resume builder
+                        </Menu.Item>
+                        <Menu.Item leftSection={<IconBriefcase size={16} />} component={Link} to="/applications">
+                          Applications
                         </Menu.Item>
                       </>
                     ) : null}

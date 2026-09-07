@@ -14,6 +14,7 @@ import re
 
 from app.services.extract_text import extract_text_from_bytes
 from app.services.pdf_resume import (
+    extract_labeled_pdf_links,
     has_experience_date_range,
     is_experience_role_header_line,
     parse_contact_identity,
@@ -281,6 +282,67 @@ def build_heuristic_model(data: bytes, *, filename: str, source_format: str, raw
     )
 
 
+_MD_LINK_RE = re.compile(r"\[[^\]]+\]\(https?://[^)]+\)")
+
+
+def _cert_match_key(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", (value or "").casefold()).strip()
+
+
+def _cert_labels_match(cert_key: str, link_key: str) -> bool:
+    if not cert_key or not link_key:
+        return False
+    if cert_key == link_key or cert_key in link_key or link_key in cert_key:
+        return True
+    cert_tokens = {t for t in cert_key.split() if len(t) > 2}
+    link_tokens = {t for t in link_key.split() if len(t) > 2}
+    if not cert_tokens or not link_tokens:
+        return False
+    smaller, larger = sorted((cert_tokens, link_tokens), key=len)
+    return len(smaller & larger) / len(smaller) >= 0.8
+
+
+def attach_certification_links(certifications: list[str], pdf_bytes: bytes) -> list[str]:
+    """Fold each PDF certificate hyperlink into its matching certification entry.
+
+    A generated resume that keeps the source PDF's certificate links loses them
+    on plain-text extraction; PyMuPDF still exposes them as link annotations.
+    Match each non-social link to a certification by its visible label and rewrite
+    the entry as a ``[name](url)`` markdown link the renderers turn into a
+    clickable credential. Unmatched entries are left untouched.
+    """
+    if not certifications or not pdf_bytes:
+        return certifications
+    links = [
+        (text, url)
+        for text, url in extract_labeled_pdf_links(pdf_bytes)
+        if "linkedin.com" not in url.lower() and "github.com" not in url.lower()
+    ]
+    if not links:
+        return certifications
+
+    out: list[str] = []
+    used: set[str] = set()
+    for cert in certifications:
+        if _MD_LINK_RE.search(cert):
+            out.append(cert)
+            continue
+        cert_key = _cert_match_key(cert)
+        matched = ""
+        for text, url in links:
+            if url in used:
+                continue
+            if _cert_labels_match(cert_key, _cert_match_key(text)):
+                matched = url
+                break
+        if matched:
+            used.add(matched)
+            out.append(f"[{cert.strip()}]({matched})")
+        else:
+            out.append(cert)
+    return out
+
+
 async def ingest_resume(data: bytes, *, filename: str) -> ResumeModel:
     if not data:
         raise ValueError("Resume file is empty.")
@@ -304,6 +366,8 @@ async def ingest_resume(data: bytes, *, filename: str) -> ResumeModel:
 
     if not model.location.strip():
         model.location = guess_candidate_location(raw_text)
+    if source_format == "pdf":
+        model.certifications = attach_certification_links(model.certifications, data)
     model.meta.source_format = source_format
     model.meta.source_filename = filename or ""
     return model

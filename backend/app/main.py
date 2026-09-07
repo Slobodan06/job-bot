@@ -17,7 +17,10 @@ load_dotenv()
 from app.auth.admin import router as admin_router
 from app.auth.routes import router as auth_router
 from app.auth.dependencies import get_builder_user
+from app.applications.routes import router as applications_router
 from app.cv_templates.routes import router as cv_templates_router
+from app.extension.routes import router as extension_router
+from app.resume.routes import router as resume_router
 from app.database import close_db, connect_db, ensure_indexes
 from app.schemas import (
     CoverLetterResponse,
@@ -30,6 +33,7 @@ from app.services.cover_letter import generate_cover_letter
 from app.services.extract_text import extract_text_from_bytes
 from app.services.email import log_email_config
 from app.services.resume_ingest import ingest_resume
+from app.resume.store import get_base_resume_model
 from app.services.fresh_resume_builder import build_fresh_tailored_resume
 from app.services.qualification_questions import analyze_resume_qualification_gaps
 from app.services.tailor import tailor_resume
@@ -87,6 +91,9 @@ app = FastAPI(title="Resume Tailor API", version="1.0.0", lifespan=lifespan)
 app.include_router(auth_router)
 app.include_router(admin_router)
 app.include_router(cv_templates_router)
+app.include_router(resume_router)
+app.include_router(applications_router)
+app.include_router(extension_router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -162,20 +169,42 @@ async def parse_sections(
 
 @app.post("/api/tailor", response_model=TailorResponse)
 async def tailor(
-    resume: UploadFile = File(...),
+    resume: UploadFile | None = File(None),
     job_description: str = Form(...),
     target_job_role: str = Form(""),
     candidate_answers: str = Form(""),
     sample_mode: str = Form("true"),
     enable_bold: str = Form("true"),
     export_mode: str = Form("fresh_pdf"),
-    _user: dict = Depends(get_builder_user),
+    user: dict = Depends(get_builder_user),
 ) -> TailorResponse:
     if not job_description or not job_description.strip():
         raise HTTPException(status_code=400, detail="Job description is required.")
+    mode = (export_mode or "fresh_pdf").strip().lower()
+
+    if resume is None or not (resume.filename or "").strip():
+        # No file: tailor from the user's saved base resume (used by the extension).
+        base_model = get_base_resume_model(user)
+        if base_model is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Attach a resume or save a base resume first.",
+            )
+        try:
+            return await build_fresh_tailored_resume(
+                resume_model=base_model,
+                original_filename=f"{(user.get('name') or 'resume').split(' ')[0]}-resume.docx",
+                job_description=job_description,
+                target_job_role=target_job_role.strip(),
+                cv_template_key=None,
+                candidate_answers=candidate_answers,
+                sample_mode=sample_mode.strip().lower() in ("1", "true", "yes", "on"),
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
     raw, name = await _read_resume_upload(resume)
     lower_name = name.lower()
-    mode = (export_mode or "fresh_pdf").strip().lower()
     # In-place Word editing needs the original .docx; anything else uses fresh export.
     if mode != "fresh_pdf" and not lower_name.endswith(".docx"):
         mode = "fresh_pdf"

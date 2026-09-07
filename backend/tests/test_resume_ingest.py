@@ -5,8 +5,13 @@ import unittest
 
 from docx import Document
 
+from app.services.pdf_resume import (
+    extract_labeled_pdf_links,
+    merge_profile_links_into_contact,
+)
 from app.services.resume_ingest import (
     _looks_like_bare_location,
+    attach_certification_links,
     detect_source_format,
     guess_candidate_location,
     ingest_resume,
@@ -47,6 +52,76 @@ def _sample_docx() -> bytes:
     buf = io.BytesIO()
     doc.save(buf)
     return buf.getvalue()
+
+
+def _certs_pdf(*, include_profiles: bool = True) -> bytes:
+    import fitz
+
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    if include_profiles:
+        page.insert_text((72, 60), "LinkedIn   GitHub", fontsize=11)
+        page.insert_link(
+            {"kind": fitz.LINK_URI, "from": fitz.Rect(72, 52, 120, 64),
+             "uri": "https://www.linkedin.com/in/muhammad"}
+        )
+        page.insert_link(
+            {"kind": fitz.LINK_URI, "from": fitz.Rect(126, 52, 170, 64),
+             "uri": "https://github.com/muhammad"}
+        )
+    # Two-column certifications, each label followed by a link-icon glyph.
+    page.insert_text((72, 300), "Google Data Science Certificate   *", fontsize=11)
+    page.insert_link(
+        {"kind": fitz.LINK_URI, "from": fitz.Rect(258, 291, 270, 303),
+         "uri": "https://coursera.org/verify/GDS123"}
+    )
+    page.insert_text((330, 300), "IBM Cybersecurity Tools and Cyber Attacks   *", fontsize=11)
+    page.insert_link(
+        {"kind": fitz.LINK_URI, "from": fitz.Rect(560, 291, 572, 303),
+         "uri": "https://credly.com/badges/cyber"}
+    )
+    return doc.tobytes()
+
+
+class CertificationLinkTests(unittest.TestCase):
+    def test_labeled_links_keep_their_visible_text(self) -> None:
+        links = dict(
+            (text, url) for text, url in extract_labeled_pdf_links(_certs_pdf())
+        )
+        self.assertEqual(
+            "https://coursera.org/verify/GDS123",
+            next(u for t, u in links.items() if "Google Data Science" in t),
+        )
+
+    def test_links_fold_into_matching_certifications(self) -> None:
+        out = attach_certification_links(
+            [
+                "Google Data Science Certificate",
+                "IBM Cybersecurity Tools & Cyber Attacks",
+                "Unlinked Certificate",
+            ],
+            _certs_pdf(),
+        )
+        self.assertEqual(
+            "[Google Data Science Certificate](https://coursera.org/verify/GDS123)", out[0]
+        )
+        self.assertEqual(
+            "[IBM Cybersecurity Tools & Cyber Attacks](https://credly.com/badges/cyber)", out[1]
+        )
+        self.assertEqual("Unlinked Certificate", out[2])
+
+    def test_already_linked_entry_is_left_alone(self) -> None:
+        entry = "[Google Data Science Certificate](https://example.com/x)"
+        self.assertEqual([entry], attach_certification_links([entry], _certs_pdf()))
+
+    def test_certificate_links_never_reach_the_header(self) -> None:
+        contact = merge_profile_links_into_contact(
+            "Muhammad Saeed\nx@y.com", "Muhammad Saeed", pdf_bytes=_certs_pdf()
+        )
+        self.assertIn("linkedin.com/in/muhammad", contact)
+        self.assertIn("github.com/muhammad", contact)
+        self.assertNotIn("coursera.org", contact)
+        self.assertNotIn("credly.com", contact)
 
 
 class DetectSourceFormatTests(unittest.TestCase):

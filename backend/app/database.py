@@ -60,6 +60,12 @@ async def ensure_indexes() -> None:
     await db.users.create_index("verification_token", sparse=True)
     await db.users.create_index("cv_template_key", unique=True, sparse=True)
 
+    await db.applications.create_index([("user_id", 1), ("created_at", -1)])
+    await db.applications.create_index([("user_id", 1), ("job_hash", 1)], unique=True)
+    await db["resume_variants.files"].create_index(
+        [("metadata.user_id", 1), ("metadata.job_hash", 1)]
+    )
+
     owner_email = get_owner_email()
     if owner_email:
         await db.users.update_one(

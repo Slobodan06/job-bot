@@ -5,6 +5,8 @@
     "dev": "concurrently -k -n API,WEB -c cyan,magenta \"node scripts/run-backend.mjs\" \"npm --prefix frontend run dev\"",
     "build": "npm --prefix frontend run build",
     "start": "node scripts/run-production.mjs",
+    "ext:dev": "npm --prefix extension run dev",
+    "ext:build": "npm --prefix extension run build",
     "docker:build": "docker build -t job-bot .",
     "docker:up": "docker compose up --build"
   },

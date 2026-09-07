@@ -62,6 +62,23 @@ def _add_hyperlink(paragraph, text: str, url: str) -> None:
     paragraph._p.append(hyperlink)
 
 
+_MD_LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^)]+)\)")
+
+
+def _add_text_with_links(paragraph, text: str, *, size: float = 9.5) -> None:
+    """Render ``text`` into ``paragraph``, turning ``[label](url)`` into hyperlinks."""
+    pos = 0
+    for match in _MD_LINK_RE.finditer(text):
+        if match.start() > pos:
+            run = paragraph.add_run(text[pos:match.start()])
+            _set_font(run, size=size)
+        _add_hyperlink(paragraph, match.group(1), match.group(2))
+        pos = match.end()
+    if pos < len(text):
+        run = paragraph.add_run(text[pos:])
+        _set_font(run, size=size)
+
+
 def _add_section_heading(doc: Document, text: str) -> None:
     paragraph = doc.add_paragraph()
     paragraph.paragraph_format.space_before = Pt(7)
@@ -87,8 +104,11 @@ def _add_bullet(doc: Document, text: str) -> None:
         return
     paragraph = doc.add_paragraph(style="Resume Bullet")
     paragraph.paragraph_format.space_after = Pt(1.2)
-    run = paragraph.add_run(clean)
-    _set_font(run)
+    if _MD_LINK_RE.search(clean):
+        _add_text_with_links(paragraph, clean)
+    else:
+        run = paragraph.add_run(clean)
+        _set_font(run)
 
 
 def _add_labeled_line(doc: Document, label: str, details: str) -> None:

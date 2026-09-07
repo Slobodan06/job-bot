@@ -133,6 +133,88 @@ export const authApi = {
   },
 };
 
+export type JobApplication = {
+  id: string;
+  job_url: string;
+  ats: string;
+  company: string;
+  job_title: string;
+  location: string;
+  status: string;
+  resume_variant_id: string | null;
+  notes: string;
+  scores: Record<string, number>;
+  created_at: string | null;
+  updated_at: string | null;
+  submitted_at: string | null;
+};
+
+export const APPLICATION_STATUSES = [
+  "detected",
+  "drafting",
+  "ready",
+  "submitted",
+  "interviewing",
+  "offer",
+  "rejected",
+  "withdrawn",
+] as const;
+
+export const applicationsApi = {
+  list(params: { status?: string; q?: string; cursor?: string; limit?: number } = {}) {
+    const qs = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => v != null && v !== "" && qs.set(k, String(v)));
+    return apiFetch<{ items: JobApplication[]; next_cursor: string | null }>(
+      `/api/applications${qs.toString() ? `?${qs}` : ""}`,
+    );
+  },
+  stats() {
+    return apiFetch<{ total: number; by_status: Record<string, number> }>("/api/applications/stats");
+  },
+  update(id: string, patch: { status?: string; notes?: string }) {
+    return apiFetch<JobApplication>(`/api/applications/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    });
+  },
+  remove(id: string) {
+    return apiFetch<void>(`/api/applications/${id}`, { method: "DELETE" });
+  },
+};
+
+export type ExtensionProfile = {
+  name: string;
+  email: string;
+  has_base_resume: boolean;
+  autofill_profile: Record<string, unknown>;
+};
+
+export const extensionApi = {
+  getProfile() {
+    return apiFetch<ExtensionProfile>("/api/extension/profile");
+  },
+  saveProfile(profile: Record<string, unknown>) {
+    return apiFetch<ExtensionProfile>("/api/extension/profile", {
+      method: "PUT",
+      body: JSON.stringify(profile),
+    });
+  },
+};
+
+export const resumeApi = {
+  get() {
+    return apiFetch<Record<string, unknown>>("/api/resume");
+  },
+  saveFromFile(file: File) {
+    const body = new FormData();
+    body.append("resume", file);
+    return apiFetch<Record<string, unknown>>("/api/resume", { method: "POST", body });
+  },
+  remove() {
+    return apiFetch<void>("/api/resume", { method: "DELETE" });
+  },
+};
+
 export const adminApi = {
   listMembers() {
     return apiFetch<User[]>("/api/admin/members");

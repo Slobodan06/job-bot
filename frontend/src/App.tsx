@@ -14,6 +14,7 @@ import {
 } from "./components/ProtectedRoute";
 
 const HomePage = lazy(() => import("./pages/HomePage"));
+const ApplicationsPage = lazy(() => import("./pages/ApplicationsPage"));
 const AuthPage = lazy(() => import("./pages/AuthPage"));
 const CheckEmailPage = lazy(() => import("./pages/CheckEmailPage"));
 const VerifyEmailPage = lazy(() => import("./pages/VerifyEmailPage"));
@@ -69,6 +70,14 @@ export default function App() {
                 element={
                   <BuilderRoute>
                     <HomePage />
+                  </BuilderRoute>
+                }
+              />
+              <Route
+                path="applications"
+                element={
+                  <BuilderRoute>
+                    <ApplicationsPage />
                   </BuilderRoute>
                 }
               />

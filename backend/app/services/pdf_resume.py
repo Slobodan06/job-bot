@@ -552,8 +552,13 @@ def format_contact_header_markup(
     return "".join(parts)
 
 
-def _extract_http_links_from_pdf(pdf_bytes: bytes) -> list[tuple[str, str]]:
-    """Read clickable http(s) URIs embedded in a PDF (not visible in plain-text extraction)."""
+def _extract_http_links_from_pdf(pdf_bytes: bytes) -> list[tuple[str, str, bool]]:
+    """Read clickable http(s) URIs embedded in a PDF (not visible in plain-text extraction).
+
+    The third tuple element is ``True`` when the link sits in the header band of
+    the first page (where profile links live) and ``False`` further down the
+    document (certificate credentials, publication links, project pages).
+    """
     if not pdf_bytes:
         return []
     try:
@@ -561,11 +566,12 @@ def _extract_http_links_from_pdf(pdf_bytes: bytes) -> list[tuple[str, str]]:
     except ImportError:
         return []
 
-    labeled: list[tuple[str, str]] = []
+    labeled: list[tuple[str, str, bool]] = []
     seen: set[str] = set()
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     try:
-        for page in doc:
+        for page_index, page in enumerate(doc):
+            header_cutoff = page.rect.y0 + page.rect.height * 0.22
             for link in page.get_links():
                 uri = (link.get("uri") or "").strip()
                 if not uri.lower().startswith(("http://", "https://")):
@@ -575,10 +581,77 @@ def _extract_http_links_from_pdf(pdf_bytes: bytes) -> list[tuple[str, str]]:
                 if key in seen:
                     continue
                 seen.add(key)
-                labeled.append((_link_label_for("", url), url))
+                in_header = page_index == 0 and fitz.Rect(link["from"]).y0 <= header_cutoff
+                labeled.append((_link_label_for("", url), url, in_header))
     finally:
         doc.close()
     return labeled
+
+
+def _norm_link_text(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", (value or "").casefold()).strip()
+
+
+def _link_line_words(words: list, rect) -> list:
+    """Words that sit on the same text line as ``rect`` and in the same column.
+
+    Resume link annotations hang off a small icon glyph at the end of their
+    label. Grab the run of words immediately to the left of the icon, stopping
+    at a wide horizontal gap so a two-column layout does not bleed the other
+    column's text into the label.
+    """
+    mid_y = (rect.y0 + rect.y1) / 2
+    same_line = [
+        w for w in words
+        if w[1] - 1 <= mid_y <= w[3] + 1 and w[0] < rect.x1 + 2
+    ]
+    if not same_line:
+        return []
+    same_line.sort(key=lambda w: w[0])
+    run = [same_line[-1]]
+    for word in reversed(same_line[:-1]):
+        if run[0][0] - word[2] > 36:  # column break
+            break
+        run.insert(0, word)
+    return run
+
+
+def extract_labeled_pdf_links(pdf_bytes: bytes) -> list[tuple[str, str]]:
+    """Return ``(anchored line text, url)`` for every clickable http(s) link.
+
+    Unlike :func:`_extract_http_links_from_pdf` this keeps the visible label the
+    link is attached to, so callers can slot a credential URL next to the matching
+    certification instead of dumping it in the header.
+    """
+    if not pdf_bytes:
+        return []
+    try:
+        import fitz
+    except ImportError:
+        return []
+
+    out: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    try:
+        for page in doc:
+            words = page.get_text("words")
+            for link in page.get_links():
+                uri = (link.get("uri") or "").strip()
+                if not uri.lower().startswith(("http://", "https://")):
+                    continue
+                rect = fitz.Rect(link["from"])
+                label_words = _link_line_words(words, rect)
+                text = " ".join(w[4] for w in label_words).strip()
+                url = _normalize_url(uri)
+                key = (text.casefold(), url.lower().rstrip("/"))
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append((text, url))
+    finally:
+        doc.close()
+    return out
 
 
 def merge_profile_links_into_contact(
@@ -632,9 +705,16 @@ def merge_profile_links_into_contact(
                 extras.append(f"{label}\n{url}")
 
     if pdf_bytes:
-        for label, url in _extract_http_links_from_pdf(pdf_bytes):
+        for label, url, in_header in _extract_http_links_from_pdf(pdf_bytes):
             key = url.lower().rstrip("/")
             if key in known:
+                continue
+            is_social = "linkedin.com" in key or "github.com" in key
+            # Social profiles always belong in the header; any other embedded link
+            # is merged only when it actually sits in the first-page header band.
+            # Certificate credentials, publication DOIs and project links further
+            # down the document are attached to their own section entries instead.
+            if not is_social and not in_header:
                 continue
             if label == "LinkedIn" and "linkedin.com" not in key:
                 continue

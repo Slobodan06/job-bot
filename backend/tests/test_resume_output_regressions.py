@@ -260,6 +260,31 @@ class ResumeOutputRegressionTests(unittest.TestCase):
         )
         self.assertNotIn("Additional", sections)
 
+    def test_certification_markdown_link_renders_as_docx_hyperlink(self) -> None:
+        docx_bytes = build_docx_resume(
+            contact="Muhammad Saeed\nSenior Software Engineer\nx@y.com\nBamberg, Germany",
+            professional_summary="Senior engineer.",
+            roles=[],
+            bullets_by_role=[],
+            skills="",
+            education="",
+            other="",
+            extra_sections=[(
+                "Certifications",
+                [
+                    "[Google Data Science Certificate](https://coursera.org/verify/GDS123)",
+                    "IBM Cybersecurity Tools & Cyber Attacks",
+                ],
+            )],
+        )
+        archive = zipfile.ZipFile(BytesIO(docx_bytes))
+        rels = archive.read("word/_rels/document.xml.rels").decode()
+        document = archive.read("word/document.xml").decode()
+        self.assertIn("https://coursera.org/verify/GDS123", rels)
+        self.assertIn("Google Data Science Certificate", document)
+        self.assertNotIn("](https://", document)  # markdown syntax must not leak as text
+        self.assertIn("IBM Cybersecurity Tools &amp; Cyber Attacks", document)
+
     def test_email_provider_domain_is_not_rendered_as_website(self) -> None:
         fields = _contact_cv_fields(
             "Het Patel\nhet-patel12@outlook.com\nIllinois, United States\n"
