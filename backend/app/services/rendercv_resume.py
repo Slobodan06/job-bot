@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from app.services.pdf_resume import (
+    _is_bare_social_url,
     _is_education_date_line,
     _looks_like_degree_line,
     _looks_like_education_location,
@@ -464,7 +465,7 @@ def _contact_cv_fields_from_model(model: Any) -> dict[str, Any]:
         ("GitHub", "github", getattr(contact, "github", "") or ""),
     ):
         normalized = _normalize_url(url)
-        if normalized:
+        if normalized and not _is_bare_social_url(normalized):
             custom_connections.append(
                 {"placeholder": label, "url": normalized, "fontawesome_icon": icon}
             )

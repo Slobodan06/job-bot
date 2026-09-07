@@ -285,6 +285,17 @@ class ResumeOutputRegressionTests(unittest.TestCase):
         self.assertNotIn("](https://", document)  # markdown syntax must not leak as text
         self.assertIn("IBM Cybersecurity Tools &amp; Cyber Attacks", document)
 
+    def test_bare_github_home_page_link_is_dropped_from_header(self) -> None:
+        fields = _contact_cv_fields(
+            "Muhammad Saeed\nSenior Software Engineer\nx@y.com\nBamberg, Germany\n"
+            "LinkedIn\nhttps://www.linkedin.com/in/muhammad-saeed\n"
+            "GitHub\nhttps://github.com/"
+        )
+        self.assertEqual(
+            [("LinkedIn", "https://www.linkedin.com/in/muhammad-saeed")],
+            [(c["placeholder"], c["url"]) for c in fields["custom_connections"]],
+        )
+
     def test_email_provider_domain_is_not_rendered_as_website(self) -> None:
         fields = _contact_cv_fields(
             "Het Patel\nhet-patel12@outlook.com\nIllinois, United States\n"

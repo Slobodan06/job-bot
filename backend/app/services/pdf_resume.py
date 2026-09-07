@@ -355,6 +355,25 @@ def _is_root_email_provider_url(url: str, email: str = "") -> bool:
     return not path and (host in providers or bool(email_domain and host == email_domain))
 
 
+def _is_bare_social_url(url: str) -> bool:
+    """True for a profile link with no actual profile on it (``github.com/`` etc.).
+
+    A resume header link to a network's home page is a dead link — it names no
+    account — so it is dropped rather than rendered as a clickable but useless
+    'GitHub' / 'LinkedIn'.
+    """
+    match = re.match(r"https?://(?:www\.)?([^/?#]+)([^?#]*)", _normalize_url(url), re.I)
+    if not match:
+        return False
+    host = match.group(1).lower()
+    path = (match.group(2) or "").strip("/")
+    socials = {"github.com", "linkedin.com", "gitlab.com", "bitbucket.org"}
+    if host not in socials:
+        return False
+    # linkedin.com/in  (no handle after it) is just as empty as a bare domain.
+    return path.lower() in {"", "in", "pub", "profile", "company"}
+
+
 def parse_contact_identity(contact: str) -> ContactIdentity:
     """Classify every common resume-header field without conflating phone/location/links."""
     raw = sanitize_for_pdf(contact or "")
@@ -409,9 +428,11 @@ def parse_contact_identity(contact: str) -> ContactIdentity:
         url = _normalize_url(raw_url)
         lower = url.lower()
         if "linkedin.com" in lower:
-            linkedin = linkedin or url
+            if not _is_bare_social_url(url):
+                linkedin = linkedin or url
         elif "github.com" in lower:
-            github = github or url
+            if not _is_bare_social_url(url):
+                github = github or url
         elif _is_root_email_provider_url(url, email):
             continue
         elif not portfolio:
@@ -718,6 +739,8 @@ def merge_profile_links_into_contact(
                 continue
             if label == "LinkedIn" and "linkedin.com" not in key:
                 continue
+            if is_social and _is_bare_social_url(url):
+                continue  # a link to the network home page names no account
             known.add(key)
             extras.append(f"{label}\n{url}")
 
