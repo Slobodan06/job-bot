@@ -460,12 +460,17 @@ def _contact_cv_fields_from_model(model: Any) -> dict[str, Any]:
     # text label stays clickable and legible in every supported theme, instead
     # of repeating the candidate's name in the header.
     custom_connections: list[dict[str, str]] = []
-    for label, icon, url in (
-        ("LinkedIn", "linkedin", getattr(contact, "linkedin", "") or ""),
-        ("GitHub", "github", getattr(contact, "github", "") or ""),
+    for label, icon, required_domain, url in (
+        ("LinkedIn", "linkedin", "linkedin.com", getattr(contact, "linkedin", "") or ""),
+        ("GitHub", "github", "github.com", getattr(contact, "github", "") or ""),
     ):
         normalized = _normalize_url(url)
-        if normalized and not _is_bare_social_url(normalized):
+        if not normalized or required_domain not in normalized.lower():
+            # A typed-model field that isn't actually a github.com/linkedin.com
+            # URL (e.g. an AI-normalization slip that echoed the "GitHub" label)
+            # must never render as a clickable link to the wrong place.
+            continue
+        if not _is_bare_social_url(normalized):
             custom_connections.append(
                 {"placeholder": label, "url": normalized, "fontawesome_icon": icon}
             )

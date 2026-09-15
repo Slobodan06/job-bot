@@ -123,6 +123,9 @@ def _looks_like_location(text: str, location: str) -> bool:
     return bool(re.fullmatch(r"[A-Z][\w.'-]*(?:\s+[A-Z][\w.'-]*)*(?:,\s*[\w.'-]+(?:\s+[\w.'-]+)*){1,3}", text))
 
 
+_LINK_REQUIRED_DOMAINS = {"linkedin": "linkedin.com", "github": "github.com"}
+
+
 def _validated_contact(raw: dict, draft: ResumeContact, source_norm: str, source_raw: str) -> ResumeContact:
     email = str(raw.get("email") or "").strip()
     if email.casefold() not in source_norm:
@@ -134,6 +137,11 @@ def _validated_contact(raw: dict, draft: ResumeContact, source_norm: str, source
     def link(name: str, fallback: str) -> str:
         url = str(raw.get(name) or "").strip()
         bare = url.lower().replace("https://", "").replace("http://", "").rstrip("/")
+        required_domain = _LINK_REQUIRED_DOMAINS.get(name)
+        if required_domain and required_domain not in bare:
+            # Rejects the model echoing a bare label ("GitHub") or an unrelated
+            # word instead of leaving the field empty or returning a real URL.
+            return fallback
         haystack = source_raw.lower().replace("https://", "").replace("http://", "")
         return url if bare and bare in haystack else fallback
 
