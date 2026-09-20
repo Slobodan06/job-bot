@@ -20,6 +20,7 @@ from app.auth.dependencies import get_builder_user
 from app.applications.routes import router as applications_router
 from app.cv_templates.routes import router as cv_templates_router
 from app.extension.routes import router as extension_router
+from app.jobs.routes import router as jobs_router
 from app.resume.routes import router as resume_router
 from app.database import close_db, connect_db, ensure_indexes
 from app.schemas import (
@@ -94,6 +95,7 @@ app.include_router(cv_templates_router)
 app.include_router(resume_router)
 app.include_router(applications_router)
 app.include_router(extension_router)
+app.include_router(jobs_router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -109,6 +111,7 @@ async def health() -> dict[str, str | bool]:
     return {
         "status": "ok",
         "openai_configured": bool(os.getenv("OPENAI_API_KEY", "").strip()),
+        "job_search_configured": bool(os.getenv("RAPIDAPI_KEY", "").strip()),
     }
 
 

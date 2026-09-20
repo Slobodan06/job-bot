@@ -201,6 +201,36 @@ export const extensionApi = {
   },
 };
 
+export type JobListing = {
+  title: string;
+  company: string;
+  location: string;
+  url: string;
+  source: string;
+  remote: boolean;
+  employment_type: string;
+  posted_at: string | null;
+  description_snippet: string;
+};
+
+export const jobSearchApi = {
+  search(params: {
+    keyword: string;
+    country?: string;
+    remote?: boolean;
+    posted_within_days?: number;
+    page?: number;
+  }) {
+    const qs = new URLSearchParams();
+    qs.set("keyword", params.keyword);
+    qs.set("country", params.country || "us");
+    qs.set("remote", String(params.remote ?? true));
+    qs.set("posted_within_days", String(params.posted_within_days ?? 1));
+    qs.set("page", String(params.page ?? 1));
+    return apiFetch<{ items: JobListing[]; count: number }>(`/api/jobs/search?${qs.toString()}`);
+  },
+};
+
 export const resumeApi = {
   get() {
     return apiFetch<Record<string, unknown>>("/api/resume");

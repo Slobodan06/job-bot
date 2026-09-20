@@ -15,6 +15,7 @@ import {
 
 const HomePage = lazy(() => import("./pages/HomePage"));
 const ApplicationsPage = lazy(() => import("./pages/ApplicationsPage"));
+const JobSearchPage = lazy(() => import("./pages/JobSearchPage"));
 const AuthPage = lazy(() => import("./pages/AuthPage"));
 const CheckEmailPage = lazy(() => import("./pages/CheckEmailPage"));
 const VerifyEmailPage = lazy(() => import("./pages/VerifyEmailPage"));
@@ -78,6 +79,14 @@ export default function App() {
                 element={
                   <BuilderRoute>
                     <ApplicationsPage />
+                  </BuilderRoute>
+                }
+              />
+              <Route
+                path="jobs"
+                element={
+                  <BuilderRoute>
+                    <JobSearchPage />
                   </BuilderRoute>
                 }
               />

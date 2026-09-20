@@ -18,6 +18,7 @@ import {
   IconChevronDown,
   IconFileCv,
   IconLogout,
+  IconSearch,
   IconUser,
   IconUsers,
 } from "@tabler/icons-react";
@@ -35,6 +36,7 @@ function userInitials(name: string, email: string): string {
 function pageTitle(pathname: string): string {
   if (pathname.startsWith("/builder")) return "Resume builder";
   if (pathname.startsWith("/applications")) return "Applications";
+  if (pathname.startsWith("/jobs")) return "Job search";
   if (pathname.startsWith("/templates")) return "CV templates";
   if (pathname.startsWith("/profile")) return "Your profile";
   if (pathname.startsWith("/admin/members")) return "Member management";
@@ -140,6 +142,9 @@ export function AppLayout() {
                         </Menu.Item>
                         <Menu.Item leftSection={<IconBriefcase size={16} />} component={Link} to="/applications">
                           Applications
+                        </Menu.Item>
+                        <Menu.Item leftSection={<IconSearch size={16} />} component={Link} to="/jobs">
+                          Job search
                         </Menu.Item>
                       </>
                     ) : null}
