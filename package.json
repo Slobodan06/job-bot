@@ -7,6 +7,7 @@
     "start": "node scripts/run-production.mjs",
     "ext:dev": "npm --prefix extension run dev",
     "ext:build": "npm --prefix extension run build",
+    "ext:build:local": "npm --prefix extension run build:local",
     "docker:build": "docker build -t job-bot .",
     "docker:up": "docker compose up --build"
   },

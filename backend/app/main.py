@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -6,7 +7,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 _root = Path(__file__).resolve().parent.parent.parent
@@ -20,6 +21,7 @@ from app.auth.dependencies import get_builder_user
 from app.applications.routes import router as applications_router
 from app.cv_templates.routes import router as cv_templates_router
 from app.extension.routes import router as extension_router
+from app.job_boards.routes import router as job_boards_router
 from app.jobs.routes import router as jobs_router
 from app.resume.routes import router as resume_router
 from app.database import close_db, connect_db, ensure_indexes
@@ -29,6 +31,12 @@ from app.schemas import (
     QualificationAnalysisResponse,
     TailorResponse,
     WorkExperienceRoleResponse,
+)
+from app.services.application_answers import (
+    build_messages,
+    open_answer_stream,
+    openai_configured,
+    resume_text_from_model,
 )
 from app.services.cover_letter import generate_cover_letter
 from app.services.extract_text import extract_text_from_bytes
@@ -67,13 +75,18 @@ async def lifespan(app: FastAPI):
 def _cors_allow_origins() -> list[str]:
     raw = os.getenv("CORS_ALLOW_ORIGINS", "").strip()
     if raw:
-        return [o.strip() for o in raw.split(",") if o.strip()]
-    return [
-        "http://localhost:5173",
+        return [o.strip().rstrip("/") for o in raw.split(",") if o.strip()]
+    origins = [
+        "http://127.0.0.1:8080",
         "http://127.0.0.1:5173",
         "http://localhost:3000",
         "http://127.0.0.1:3000",
     ]
+    # The deployed site (APP_URL) always talks to its own API.
+    app_url = os.getenv("APP_URL", "").strip().rstrip("/")
+    if app_url and app_url not in origins:
+        origins.append(app_url)
+    return origins
 
 
 def _frontend_dist() -> Path | None:
@@ -96,6 +109,7 @@ app.include_router(resume_router)
 app.include_router(applications_router)
 app.include_router(extension_router)
 app.include_router(jobs_router)
+app.include_router(job_boards_router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -289,6 +303,70 @@ async def cover_letter(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     return CoverLetterResponse(**result)
+
+
+@app.post("/api/application-answer")
+async def application_answer(
+    question: str = Form(..., max_length=4000),
+    job_description: str = Form(""),
+    company_name: str = Form(""),
+    target_job_role: str = Form(""),
+    length: str = Form("standard"),
+    history: str = Form("[]", description='Prior turns as JSON: [{"role": "user"|"assistant", "content": "..."}]'),
+    resume: UploadFile | None = File(None),
+    user: dict = Depends(get_builder_user),
+) -> StreamingResponse:
+    """Stream a resume-grounded answer to a job-application question (plain text)."""
+    if not question.strip():
+        raise HTTPException(status_code=400, detail="Type the application question first.")
+    if not openai_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="OpenAI is not configured on the server (OPENAI_API_KEY) — answers need it.",
+        )
+
+    if resume is not None and (resume.filename or "").strip():
+        raw, name = await _read_resume_upload(resume)
+        try:
+            # Raw text is all the model needs here — skips the (slow) AI normalization
+            # that full resume ingestion does, so every question stays fast.
+            resume_text = extract_text_from_bytes(name, raw)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+    else:
+        base_model = get_base_resume_model(user)
+        if base_model is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Attach a resume (or save a base resume on the Applications page) first.",
+            )
+        resume_text = resume_text_from_model(base_model)
+    if not resume_text.strip():
+        raise HTTPException(status_code=400, detail="Could not read any text from the resume.")
+
+    try:
+        turns = json.loads(history or "[]")
+    except ValueError:
+        turns = []
+    messages = build_messages(
+        resume_text=resume_text,
+        job_description=job_description,
+        question=question,
+        history=turns if isinstance(turns, list) else [],
+        company_name=company_name,
+        target_role=target_job_role,
+        length=length,
+    )
+    try:
+        chunks = await open_answer_stream(messages)
+    except Exception as e:
+        logging.getLogger("uvicorn.error").exception("Application answer request failed")
+        raise HTTPException(status_code=502, detail=f"OpenAI request failed: {e}") from e
+    return StreamingResponse(
+        chunks,
+        media_type="text/plain; charset=utf-8",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 _dist = _frontend_dist()

@@ -96,3 +96,61 @@ async def read_resume_variant(
     data = await stream.read()
     meta = doc.get("metadata", {})
     return data, doc.get("filename") or "resume.pdf", meta.get("content_type") or "application/pdf"
+
+
+# ---------------------------------------------------------------------------
+# Applied resumes: the exact file that went out with a submitted application.
+# Kept in their own bucket so re-tailoring (which replaces variants per job)
+# and autofill's "latest variant" lookup never touch them.
+# ---------------------------------------------------------------------------
+_APPLIED_BUCKET = "applied_resumes"
+
+
+def _applied_bucket() -> AsyncIOMotorGridFSBucket:
+    return AsyncIOMotorGridFSBucket(get_db(), bucket_name=_APPLIED_BUCKET)
+
+
+async def store_applied_resume(
+    *,
+    user_id: ObjectId,
+    application_id: ObjectId,
+    filename: str,
+    content_type: str,
+    data: bytes,
+) -> str:
+    """Replace the applied resume for an application and return the new file id."""
+    await delete_applied_resumes(user_id=user_id, application_id=application_id)
+    file_id = await _applied_bucket().upload_from_stream(
+        filename,
+        data,
+        metadata={
+            "user_id": user_id,
+            "application_id": application_id,
+            "content_type": content_type,
+            "created_at": datetime.now(UTC),
+        },
+    )
+    return str(file_id)
+
+
+async def read_applied_resume(
+    *, user_id: ObjectId, file_id: str
+) -> tuple[bytes, str, str] | None:
+    if not ObjectId.is_valid(file_id):
+        return None
+    db = get_db()
+    doc = await db[f"{_APPLIED_BUCKET}.files"].find_one({"_id": ObjectId(file_id)})
+    if not doc or doc.get("metadata", {}).get("user_id") != user_id:
+        return None
+    stream = await _applied_bucket().open_download_stream(ObjectId(file_id))
+    data = await stream.read()
+    meta = doc.get("metadata", {})
+    return data, doc.get("filename") or "resume.pdf", meta.get("content_type") or "application/pdf"
+
+
+async def delete_applied_resumes(*, user_id: ObjectId, application_id: ObjectId) -> None:
+    db = get_db()
+    async for old in db[f"{_APPLIED_BUCKET}.files"].find(
+        {"metadata.user_id": user_id, "metadata.application_id": application_id}
+    ):
+        await _applied_bucket().delete(old["_id"])

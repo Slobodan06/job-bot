@@ -78,6 +78,15 @@ def is_valid_status(value: str) -> bool:
     return value in APPLICATION_STATUSES
 
 
+def advances_status(current: str, new: str) -> bool:
+    """True if ``new`` is further along the pipeline than ``current`` (never regress)."""
+    if not is_valid_status(new):
+        return False
+    if not is_valid_status(current):
+        return True
+    return APPLICATION_STATUSES.index(new) > APPLICATION_STATUSES.index(current)
+
+
 def _clip(value: Any, limit: int) -> str:
     return str(value or "").strip()[:limit]
 
@@ -93,6 +102,9 @@ def build_application_doc(
     status = str(payload.get("status") or "detected")
     if not is_valid_status(status):
         status = "detected"
+    submitted_at = payload.get("submitted_at")
+    if not isinstance(submitted_at, datetime):
+        submitted_at = now if status == "submitted" else None
     return {
         "user_id": user_id,
         "job_hash": job_hash(url),
@@ -106,10 +118,11 @@ def build_application_doc(
         "resume_variant_id": None,
         "answers": [],
         "scores": {},
-        "notes": "",
+        "notes": _clip(payload.get("notes"), 4000),
+        "applied_resume": None,
         "created_at": now,
         "updated_at": now,
-        "submitted_at": now if status == "submitted" else None,
+        "submitted_at": submitted_at,
     }
 
 
@@ -128,7 +141,59 @@ def application_doc_to_public(doc: dict[str, Any]) -> dict[str, Any]:
         "notes": doc.get("notes") or "",
         "answers": doc.get("answers") or [],
         "scores": doc.get("scores") or {},
+        "applied_resume": applied_resume_to_public(doc.get("applied_resume")),
         "created_at": doc.get("created_at"),
         "updated_at": doc.get("updated_at"),
         "submitted_at": doc.get("submitted_at"),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Applied resume (the file actually sent with an application)
+# ---------------------------------------------------------------------------
+# Kept small: resumes live in MongoDB (GridFS), e.g. on the 512 MB Atlas free tier.
+RESUME_MAX_BYTES = 5 * 1024 * 1024
+_RESUME_CONTENT_TYPES = {
+    ".pdf": "application/pdf",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".doc": "application/msword",
+    ".rtf": "application/rtf",
+    ".txt": "text/plain",
+    ".odt": "application/vnd.oasis.opendocument.text",
+}
+RESUME_SOURCES = ("attached_by_extension", "selected_on_page", "uploaded_manually")
+
+
+def resume_content_type(filename: str, fallback: str = "") -> str | None:
+    """MIME type for an allowed resume file, or None if the extension isn't a resume format."""
+    name = (filename or "").lower()
+    for ext, ctype in _RESUME_CONTENT_TYPES.items():
+        if name.endswith(ext):
+            return ctype
+    return None if fallback not in _RESUME_CONTENT_TYPES.values() else fallback
+
+
+def build_applied_resume(
+    *, file_id: str, filename: str, content_type: str, size: int, source: str, now: datetime
+) -> dict[str, Any]:
+    return {
+        "file_id": file_id,
+        "filename": filename,
+        "content_type": content_type,
+        "size": size,
+        "source": source if source in RESUME_SOURCES else "uploaded_manually",
+        "stored_at": now,
+    }
+
+
+def applied_resume_to_public(sub: Any) -> dict[str, Any] | None:
+    if not isinstance(sub, dict) or not sub.get("file_id"):
+        return None
+    return {
+        "file_id": str(sub["file_id"]),
+        "filename": sub.get("filename") or "resume",
+        "content_type": sub.get("content_type") or "application/octet-stream",
+        "size": int(sub.get("size") or 0),
+        "source": sub.get("source") or "uploaded_manually",
+        "stored_at": sub.get("stored_at"),
     }

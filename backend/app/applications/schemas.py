@@ -12,11 +12,27 @@ class ApplicationUpsertRequest(BaseModel):
     location: str = Field(default="", max_length=200)
     jd_text: str = Field(default="", max_length=40000)
     status: str = Field(default="detected", max_length=32)
+    notes: str = Field(default="", max_length=4000)
+    submitted_at: datetime | None = None
 
 
 class ApplicationUpdateRequest(BaseModel):
+    job_url: str | None = Field(default=None, min_length=1, max_length=2000)
+    company: str | None = Field(default=None, max_length=200)
+    job_title: str | None = Field(default=None, max_length=300)
+    location: str | None = Field(default=None, max_length=200)
     status: str | None = Field(default=None, max_length=32)
     notes: str | None = Field(default=None, max_length=4000)
+    submitted_at: datetime | None = None
+
+
+class AppliedResumePublic(BaseModel):
+    file_id: str
+    filename: str
+    content_type: str
+    size: int = 0
+    source: str
+    stored_at: datetime | None = None
 
 
 class ApplicationPublic(BaseModel):
@@ -31,6 +47,7 @@ class ApplicationPublic(BaseModel):
     notes: str = ""
     answers: list[dict[str, Any]] = Field(default_factory=list)
     scores: dict[str, Any] = Field(default_factory=dict)
+    applied_resume: AppliedResumePublic | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
     submitted_at: datetime | None = None

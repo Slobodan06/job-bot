@@ -62,6 +62,14 @@ export type ExtensionProfile = {
   autofill_profile: Record<string, unknown>;
 };
 
+export type AppliedResume = {
+  file_id: string;
+  filename: string;
+  content_type: string;
+  size: number;
+  source: string;
+};
+
 export type Application = {
   id: string;
   job_url: string;
@@ -70,6 +78,7 @@ export type Application = {
   job_title: string;
   location: string;
   status: string;
+  applied_resume: AppliedResume | null;
   created_at: string | null;
   updated_at: string | null;
   submitted_at: string | null;

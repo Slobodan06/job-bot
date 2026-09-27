@@ -1,7 +1,5 @@
 import {
   ActionIcon,
-  Alert,
-  Anchor,
   Badge,
   Button,
   Container,
@@ -10,9 +8,7 @@ import {
   Paper,
   PasswordInput,
   Select,
-  SimpleGrid,
   Stack,
-  Table,
   Tabs,
   Text,
   TextInput,
@@ -30,146 +26,10 @@ import {
   IconTrash,
   IconUpload,
 } from "@tabler/icons-react";
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 
-import {
-  APPLICATION_STATUSES,
-  applicationsApi,
-  extensionApi,
-  resumeApi,
-  type JobApplication,
-} from "../auth/api";
-
-const STATUS_COLOR: Record<string, string> = {
-  detected: "gray",
-  drafting: "yellow",
-  ready: "cyan",
-  submitted: "teal",
-  interviewing: "grape",
-  offer: "green",
-  rejected: "red",
-  withdrawn: "dark",
-};
-
-function TrackerTab() {
-  const [items, setItems] = useState<JobApplication[]>([]);
-  const [stats, setStats] = useState<Record<string, number>>({});
-  const [statusFilter, setStatusFilter] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const [list, s] = await Promise.all([
-        applicationsApi.list({ status: statusFilter || undefined, limit: 100 }),
-        applicationsApi.stats(),
-      ]);
-      setItems(list.items);
-      setStats(s.by_status);
-    } finally {
-      setLoading(false);
-    }
-  }, [statusFilter]);
-
-  useEffect(() => {
-    load();
-  }, [load]);
-
-  const setStatus = async (id: string, status: string) => {
-    const updated = await applicationsApi.update(id, { status });
-    setItems((prev) => prev.map((it) => (it.id === id ? updated : it)));
-    const s = await applicationsApi.stats();
-    setStats(s.by_status);
-  };
-
-  return (
-    <Stack gap="md">
-      <SimpleGrid cols={{ base: 2, sm: 4 }} spacing="xs">
-        {APPLICATION_STATUSES.filter((s) => stats[s]).map((s) => (
-          <Paper key={s} withBorder p="xs" radius="md" bg="dark.7">
-            <Text size="xs" c="dimmed" tt="capitalize">
-              {s}
-            </Text>
-            <Text fw={700} size="lg">
-              {stats[s]}
-            </Text>
-          </Paper>
-        ))}
-      </SimpleGrid>
-
-      <Group>
-        <Select
-          placeholder="All statuses"
-          clearable
-          data={APPLICATION_STATUSES.map((s) => ({ value: s, label: s }))}
-          value={statusFilter}
-          onChange={setStatusFilter}
-          w={200}
-        />
-        <Button variant="light" onClick={load} loading={loading}>
-          Refresh
-        </Button>
-      </Group>
-
-      {items.length === 0 ? (
-        <Alert color="gray" variant="light">
-          No applications tracked yet. Install the JobBot Copilot extension, then open a job posting on
-          Greenhouse, Lever, or Workday.
-        </Alert>
-      ) : (
-        <Table.ScrollContainer minWidth={720}>
-          <Table striped highlightOnHover verticalSpacing="sm">
-            <Table.Thead>
-              <Table.Tr>
-                <Table.Th>Role</Table.Th>
-                <Table.Th>Company</Table.Th>
-                <Table.Th>Source</Table.Th>
-                <Table.Th>Status</Table.Th>
-                <Table.Th>Added</Table.Th>
-                <Table.Th />
-              </Table.Tr>
-            </Table.Thead>
-            <Table.Tbody>
-              {items.map((it) => (
-                <Table.Tr key={it.id}>
-                  <Table.Td>
-                    <Anchor href={it.job_url} target="_blank" size="sm" lineClamp={1}>
-                      {it.job_title || it.job_url}
-                    </Anchor>
-                  </Table.Td>
-                  <Table.Td>{it.company || "—"}</Table.Td>
-                  <Table.Td>
-                    <Badge variant="light" size="sm" tt="capitalize">
-                      {it.ats}
-                    </Badge>
-                  </Table.Td>
-                  <Table.Td>
-                    <Select
-                      size="xs"
-                      w={140}
-                      data={APPLICATION_STATUSES.map((s) => ({ value: s, label: s }))}
-                      value={it.status}
-                      onChange={(v) => v && setStatus(it.id, v)}
-                      styles={{ input: { textTransform: "capitalize" } }}
-                    />
-                  </Table.Td>
-                  <Table.Td>
-                    <Text size="xs" c="dimmed">
-                      {it.created_at ? new Date(it.created_at).toLocaleDateString() : "—"}
-                    </Text>
-                  </Table.Td>
-                  <Table.Td>
-                    <Badge color={STATUS_COLOR[it.status] || "gray"} variant="dot" size="sm" />
-                  </Table.Td>
-                </Table.Tr>
-              ))}
-            </Table.Tbody>
-          </Table>
-        </Table.ScrollContainer>
-      )}
-    </Stack>
-  );
-}
+import { extensionApi, resumeApi } from "../auth/api";
+import { TrackerTab } from "./applications/TrackerTab";
 
 const BOOL_OPTS = [
   { value: "", label: "Not set" },

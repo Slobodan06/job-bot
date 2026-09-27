@@ -3,8 +3,12 @@ from datetime import UTC, datetime
 
 from app.applications.logic import (
     APPLICATION_STATUSES,
+    advances_status,
     application_doc_to_public,
+    applied_resume_to_public,
     build_application_doc,
+    build_applied_resume,
+    resume_content_type,
     detect_ats,
     is_valid_status,
     job_hash,
@@ -72,8 +76,49 @@ class ApplicationDocTests(unittest.TestCase):
         doc["_id"] = "abc123"
         pub = application_doc_to_public(doc)
         self.assertEqual({"id", "job_url", "ats", "company", "job_title", "location", "status",
-                          "resume_variant_id", "notes", "answers", "scores", "created_at",
-                          "updated_at", "submitted_at"}, set(pub))
+                          "resume_variant_id", "notes", "answers", "scores", "applied_resume",
+                          "created_at", "updated_at", "submitted_at"}, set(pub))
+        self.assertIsNone(pub["applied_resume"])
+
+    def test_manual_notes_and_explicit_submitted_at(self) -> None:
+        now = datetime.now(UTC)
+        applied = datetime(2026, 9, 1, tzinfo=UTC)
+        doc = build_application_doc(
+            user_id="u1",
+            payload={"job_url": "https://x.com/j/1", "status": "submitted",
+                     "notes": "  referral from Ana ", "submitted_at": applied},
+            now=now,
+        )
+        self.assertEqual("referral from Ana", doc["notes"])
+        self.assertEqual(applied, doc["submitted_at"])
+
+    def test_status_only_advances(self) -> None:
+        self.assertTrue(advances_status("detected", "submitted"))
+        self.assertTrue(advances_status("", "submitted"))
+        self.assertFalse(advances_status("interviewing", "submitted"))
+        self.assertFalse(advances_status("submitted", "submitted"))
+        self.assertFalse(advances_status("detected", "bogus"))
+
+
+class AppliedResumeTests(unittest.TestCase):
+    def test_content_type_by_extension(self) -> None:
+        self.assertEqual("application/pdf", resume_content_type("CV.PDF"))
+        self.assertTrue(resume_content_type("cv.docx").endswith("wordprocessingml.document"))
+        self.assertIsNone(resume_content_type("payload.exe"))
+        self.assertIsNone(resume_content_type("payload.exe", "application/x-msdownload"))
+        self.assertEqual("application/pdf", resume_content_type("blob", "application/pdf"))
+
+    def test_applied_resume_public_shape(self) -> None:
+        now = datetime.now(UTC)
+        sub = build_applied_resume(file_id="f1", filename="cv.pdf", content_type="application/pdf",
+                                   size=123, source="nonsense", now=now)
+        self.assertEqual("uploaded_manually", sub["source"])
+        pub = applied_resume_to_public(sub)
+        self.assertEqual(123, pub["size"])
+        self.assertNotIn("drive", sub)
+        self.assertEqual("f1", pub["file_id"])
+        self.assertIsNone(applied_resume_to_public(None))
+        self.assertIsNone(applied_resume_to_public({"file_id": None}))
 
 
 if __name__ == "__main__":

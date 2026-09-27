@@ -27,8 +27,8 @@ export function Overlay({ job, onDismiss }: Props) {
     bg.authGet().then((r) => setAuthed(r.ok && !!r.data.token));
   }, []);
 
-  // Applications are recorded only on a confirmed submit (see
-  // background/index.ts's "frame:submitted" handling), never just for
+  // Applications are recorded only once the site confirms the submission (see
+  // content/submission.ts + background/index.ts), never just for
   // detecting or viewing a posting — the tracker would otherwise fill up with
   // every job you glance at.
 

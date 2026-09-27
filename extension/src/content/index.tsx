@@ -6,6 +6,7 @@ import type { BgToFrame, FrameToBg } from "../lib/frames";
 import type { DetectedJob } from "../lib/types";
 import { runFillInThisFrame } from "./fill-runner";
 import { Overlay } from "./Overlay";
+import { initSubmissionTracking } from "./submission";
 
 const isTopFrame = window.top === window.self;
 
@@ -29,26 +30,10 @@ chrome.runtime.onMessage.addListener((msg: BgToFrame) => {
   }
 });
 
-// The user submitting the site's own form is detected locally, in whichever
-// frame actually contains the form — a cross-origin iframe's clicks/submits
-// never bubble up to the parent document, so this cannot be top-frame-only.
-let submittedOnce = false;
-const onSubmitSignal = () => {
-  if (submittedOnce) return;
-  submittedOnce = true;
-  report({ type: "frame:submitted" });
-};
-document.addEventListener("submit", onSubmitSignal, true);
-document.addEventListener(
-  "click",
-  (e) => {
-    const target = e.target as HTMLElement;
-    if (target.closest('button[type="submit"], input[type="submit"], [class*="submit" i]')) {
-      setTimeout(onSubmitSignal, 400);
-    }
-  },
-  true,
-);
+// Submission tracking runs in every frame: a cross-origin iframe's clicks
+// never bubble up to the parent document, and the "thanks for applying"
+// confirmation can appear in any frame (see ./submission.ts).
+initSubmissionTracking();
 
 if (isTopFrame) {
   let host: HTMLDivElement | null = null;

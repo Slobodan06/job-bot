@@ -24,6 +24,7 @@ export type BgRequest =
       resume_variant_id?: string;
     }
   | { type: "resume:fetch"; download_path: string }
+  | { type: "tracking:state" }
   | { type: "applications:list"; limit?: number }
   | { type: "applications:stats" }
   | { type: "applications:update"; id: string; status: string };

@@ -11,7 +11,7 @@ logger = logging.getLogger("uvicorn.error")
 
 
 def _app_url() -> str:
-    return os.getenv("APP_URL", "http://localhost:5173").strip().rstrip("/")
+    return os.getenv("APP_URL", "http://127.0.0.1:8080").strip().rstrip("/")
 
 
 def resend_configured() -> bool:

@@ -22,6 +22,7 @@ import {
   Tooltip,
   Tabs,
 } from "@mantine/core";
+import { ApplicationQuestionsChat } from "../components/ApplicationQuestionsChat";
 import { highlightTermsInText } from "../highlightTerms";
 import { useDisclosure, useMediaQuery } from "@mantine/hooks";
 import { notifications } from "@mantine/notifications";
@@ -34,6 +35,7 @@ import {
   IconDownload,
   IconFileCv,
   IconMail,
+  IconMessageQuestion,
   IconSparkles,
   IconUpload,
   IconUser,
@@ -821,10 +823,33 @@ export default function HomePage() {
     </Paper>
   );
 
+  const questionsControls = (
+    <Paper p={{ base: "md", sm: "lg" }} radius="lg" withBorder shadow="sm">
+      <Stack gap="sm">
+        <TextInput
+          label="Company name (optional)"
+          description="Helps answers to “Why this company?” questions."
+          placeholder="Acme Corp"
+          value={companyName}
+          onChange={(e) => setCompanyName(e.target.value)}
+          size="md"
+        />
+        <Text size="xs" c="dimmed">
+          Answers use only facts from your resume, matched to the job description above. Ask follow-ups like “make it
+          shorter” to refine an answer.
+        </Text>
+      </Stack>
+    </Paper>
+  );
+
   const inputColumn = (
     <Stack gap="md">
       {sharedInputsPaper}
-      {activeTab === "resume" ? resumeControls : coverLetterControls}
+      {activeTab === "resume"
+        ? resumeControls
+        : activeTab === "questions"
+          ? questionsControls
+          : coverLetterControls}
     </Stack>
   );
 
@@ -1512,6 +1537,9 @@ export default function HomePage() {
           <Tabs.Tab value="cover-letter" leftSection={<IconMail size={16} />}>
             Cover letter
           </Tabs.Tab>
+          <Tabs.Tab value="questions" leftSection={<IconMessageQuestion size={16} />}>
+            Application questions
+          </Tabs.Tab>
         </Tabs.List>
 
         <Tabs.Panel value="resume">
@@ -1534,6 +1562,19 @@ export default function HomePage() {
               {coverLetterResultColumn}
             </SimpleGrid>
           )}
+        </Tabs.Panel>
+
+        {/* keepMounted (Tabs default) keeps the chat history when switching tabs. */}
+        <Tabs.Panel value="questions">
+          <SimpleGrid cols={{ base: 1, lg: 2 }} spacing={{ base: "md", lg: "lg" }}>
+            {inputColumn}
+            <ApplicationQuestionsChat
+              file={file}
+              jobDescription={jobDescription}
+              companyName={companyName.trim()}
+              height={resultHeight}
+            />
+          </SimpleGrid>
         </Tabs.Panel>
       </Tabs>
     </Container>

@@ -1,13 +1,21 @@
 import os
 from typing import Any
 
-from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
+from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase, AsyncIOMotorCollection
+from pymongo.errors import OperationFailure
 
 from app.auth.roles import get_owner_email, is_owner_email
 from app.services.template_catalog import get_template_meta
 
 _client: AsyncIOMotorClient | None = None
 _db: AsyncIOMotorDatabase | None = None
+
+
+async def _drop_index_if_exists(collection: AsyncIOMotorCollection, name: str) -> None:
+    try:
+        await collection.drop_index(name)
+    except OperationFailure:
+        pass
 
 
 def get_mongodb_uri() -> str:
@@ -65,6 +73,18 @@ async def ensure_indexes() -> None:
     await db["resume_variants.files"].create_index(
         [("metadata.user_id", 1), ("metadata.job_hash", 1)]
     )
+    await db["applied_resumes.files"].create_index(
+        [("metadata.user_id", 1), ("metadata.application_id", 1)]
+    )
+
+    # Job boards/sourced jobs are shared app-wide (only an owner adds sources; the
+    # whole team sees results) — drop the earlier per-user index shape if present.
+    await _drop_index_if_exists(db.job_boards, "user_id_1_platform_1_token_1")
+    await db.job_boards.create_index([("platform", 1), ("token", 1)], unique=True)
+    await _drop_index_if_exists(db.sourced_jobs, "user_id_1_job_hash_1")
+    await _drop_index_if_exists(db.sourced_jobs, "user_id_1_posted_at_-1")
+    await db.sourced_jobs.create_index([("job_hash", 1)], unique=True)
+    await db.sourced_jobs.create_index([("posted_at", -1)])
 
     owner_email = get_owner_email()
     if owner_email:

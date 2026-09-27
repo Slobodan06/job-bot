@@ -128,6 +128,7 @@ export function Popup() {
             <div style={{ fontWeight: 600 }}>{a.job_title || a.job_url}</div>
             <div style={{ fontSize: 11, color: "#adb5bd" }}>
               {a.company || a.ats} · <span style={{ color: "#20c997" }}>{a.status}</span>
+              {a.applied_resume && <> · resume saved</>}
             </div>
           </div>
         ))}

@@ -2,6 +2,7 @@ import { applyValues, attachResume } from "../autofill/apply";
 import { discoverFields } from "../autofill/fields";
 import { bg } from "../lib/messaging";
 import type { DetectedJob } from "../lib/types";
+import { reportAttachedResume } from "./submission";
 
 /** Discover + fill whatever form fields exist in THIS frame's document, if any. */
 export async function runFillInThisFrame(
@@ -30,7 +31,10 @@ export async function runFillInThisFrame(
   let attached = false;
   if (r.data.resume) {
     const file = await bg.fetchResume(r.data.resume.download_path);
-    if (file.ok) attached = await attachResume(live, file.data.dataUrl, file.data.filename);
+    if (file.ok) {
+      attached = await attachResume(live, file.data.dataUrl, file.data.filename);
+      if (attached) reportAttachedResume(r.data.resume.variant_id, file.data.filename);
+    }
   }
   return { filled, skipped: skipped.length, attachedResume: attached };
 }
