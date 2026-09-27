@@ -45,6 +45,10 @@ class MemberPermissionsUpdate(BaseModel):
     can_manage_applications: bool
 
 
+class MemberTypeUpdate(BaseModel):
+    member_type: Literal["team_member", "bidder"]
+
+
 class MemberDeleteResponse(BaseModel):
     email: str
     applications_deleted: int = 0
@@ -68,6 +72,7 @@ class UserPublic(BaseModel):
     email_verified: bool = False
     has_access: bool = False
     can_manage_applications: bool = False
+    member_type: Literal["team_member", "bidder"] = "team_member"
     cv_template_key: str = ""
     cv_template_label: str = ""
     created_at: datetime | None = None

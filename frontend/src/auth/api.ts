@@ -12,10 +12,19 @@ export type User = {
   has_access: boolean;
   /** Owner, or a member allowed to see/edit every member's tracked applications. */
   can_manage_applications: boolean;
+  /** Bidders' applications are what delegated managers see; team members' are hidden from them. */
+  member_type: MemberType;
   cv_template_key: string;
   cv_template_label: string;
   created_at: string | null;
   updated_at: string | null;
+};
+
+export type MemberType = "team_member" | "bidder";
+
+export const MEMBER_TYPE_LABEL: Record<MemberType, string> = {
+  team_member: "Team member",
+  bidder: "Bidder",
 };
 
 export type AuthResponse = {
@@ -250,6 +259,7 @@ export type MemberRef = { id: string; name: string; email: string };
 export type MemberTrackingSummary = {
   member: MemberRef;
   role: "owner" | "member";
+  member_type: MemberType;
   has_access: boolean;
   total: number;
   by_status: Record<string, number>;
@@ -494,6 +504,12 @@ export const adminApi = {
       `/api/admin/members/${memberId}`,
       { method: "DELETE" },
     );
+  },
+  setMemberType(memberId: string, memberType: MemberType) {
+    return apiFetch<User>(`/api/admin/members/${memberId}/type`, {
+      method: "PATCH",
+      body: JSON.stringify({ member_type: memberType }),
+    });
   },
   setMemberTemplate(memberId: string, templateKey: string | null) {
     return apiFetch<User>(`/api/admin/members/${memberId}/template`, {

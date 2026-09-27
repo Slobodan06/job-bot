@@ -10,6 +10,7 @@ from app.auth.schemas import (
     MemberAccessUpdate,
     MemberPermissionsUpdate,
     MemberTemplateUpdate,
+    MemberTypeUpdate,
     UserPublic,
 )
 from app.cv_templates.assignment import assign_cv_template
@@ -83,6 +84,32 @@ async def update_member_permissions(
     await db.users.update_one(
         {"_id": doc["_id"]},
         {"$set": {"can_manage_applications": body.can_manage_applications, "updated_at": datetime.now(UTC)}},
+    )
+    updated = await db.users.find_one({"_id": doc["_id"]})
+    return UserPublic(**public_user(updated))
+
+
+@router.patch("/members/{member_id}/type", response_model=UserPublic)
+async def update_member_type(
+    member_id: str,
+    body: MemberTypeUpdate,
+    owner: dict = Depends(get_owner_user),
+) -> UserPublic:
+    """Owner marks a member as a team member or a bidder.
+
+    Members with the "Team tracker" permission only see bidders' applications.
+    """
+    if not ObjectId.is_valid(member_id):
+        raise HTTPException(status_code=400, detail="Invalid member id.")
+    db = get_db()
+    doc = await db.users.find_one({"_id": ObjectId(member_id)})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Member not found.")
+    if user_is_owner(doc):
+        raise HTTPException(status_code=400, detail="The owner account has no member type.")
+    await db.users.update_one(
+        {"_id": doc["_id"]},
+        {"$set": {"member_type": body.member_type, "updated_at": datetime.now(UTC)}},
     )
     updated = await db.users.find_one({"_id": doc["_id"]})
     return UserPublic(**public_user(updated))

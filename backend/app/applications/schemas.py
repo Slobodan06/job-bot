@@ -83,6 +83,7 @@ class MemberApplicationListResponse(BaseModel):
 class MemberTrackingSummary(BaseModel):
     member: MemberRef
     role: str = "member"
+    member_type: str = "team_member"
     has_access: bool = False
     total: int = 0
     by_status: dict[str, int] = Field(default_factory=dict)

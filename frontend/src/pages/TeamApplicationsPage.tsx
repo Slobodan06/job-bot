@@ -1,4 +1,5 @@
 import {
+  Alert,
   Badge,
   Box,
   Button,
@@ -16,7 +17,13 @@ import { IconBriefcase, IconRefresh } from "@tabler/icons-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
-import { adminApplicationsApi, adminTrackingApi, type MemberTrackingSummary } from "../auth/api";
+import { useAuth } from "../auth/AuthContext";
+import {
+  adminApplicationsApi,
+  adminTrackingApi,
+  MEMBER_TYPE_LABEL,
+  type MemberTrackingSummary,
+} from "../auth/api";
 import { TrackerTab } from "./applications/TrackerTab";
 
 // Pipeline stages worth a column in the overview (everything else is in "Total").
@@ -39,6 +46,7 @@ function formatDate(iso: string | null): string {
 
 /** Manager (owner) view of every member's application tracker. */
 export default function TeamApplicationsPage() {
+  const { isOwner } = useAuth();
   const [params, setParams] = useSearchParams();
   const memberId = params.get("member");
   const [summary, setSummary] = useState<MemberTrackingSummary[]>([]);
@@ -90,6 +98,12 @@ export default function TeamApplicationsPage() {
           </Button>
         </Group>
 
+        {!isOwner && (
+          <Alert color="blue" variant="light">
+            You're seeing <b>bidders'</b> applications only. Team members' applications aren't shown here.
+          </Alert>
+        )}
+
         <Paper withBorder radius="lg" bg="dark.7" style={{ overflow: "hidden" }}>
           <Box style={{ overflowX: "auto" }}>
             <Table highlightOnHover withTableBorder={false} verticalSpacing="sm">
@@ -126,9 +140,13 @@ export default function TeamApplicationsPage() {
                               {row.member.email}
                             </Text>
                           </div>
-                          {row.role === "owner" && (
+                          {row.role === "owner" ? (
                             <Badge color="grape" variant="light" size="xs">
                               Owner
+                            </Badge>
+                          ) : (
+                            <Badge color={row.member_type === "bidder" ? "orange" : "blue"} variant="light" size="xs">
+                              {MEMBER_TYPE_LABEL[row.member_type]}
                             </Badge>
                           )}
                           {!row.has_access && (
@@ -173,7 +191,7 @@ export default function TeamApplicationsPage() {
                   <Table.Tr>
                     <Table.Td colSpan={3 + SUMMARY_STATUSES.length + 1}>
                       <Text ta="center" c="dimmed" py="md">
-                        No members yet.
+                        {isOwner ? "No members yet." : "No bidders yet — the owner marks members as bidders on the Members page."}
                       </Text>
                     </Table.Td>
                   </Table.Tr>

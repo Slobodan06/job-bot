@@ -10,6 +10,7 @@ import {
   List,
   Modal,
   Paper,
+  SegmentedControl,
   Select,
   Stack,
   Switch,
@@ -24,7 +25,7 @@ import { IconAlertTriangle, IconRefresh, IconTrash, IconUsers } from "@tabler/ic
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { adminApi, type User } from "../auth/api";
+import { adminApi, type MemberType, type User } from "../auth/api";
 
 type TemplateOption = { key: string; label: string };
 
@@ -118,6 +119,31 @@ export default function MembersPage() {
     }
   };
 
+  const changeType = async (member: User, memberType: MemberType) => {
+    if (member.role === "owner" || member.member_type === memberType) return;
+    setUpdatingId(member.id);
+    try {
+      const updated = await adminApi.setMemberType(member.id, memberType);
+      setMembers((prev) => prev.map((m) => (m.id === updated.id ? updated : m)));
+      notifications.show({
+        title: memberType === "bidder" ? "Marked as bidder" : "Marked as team member",
+        message:
+          memberType === "bidder"
+            ? `${member.email}'s applications are now visible to members with Team tracker access.`
+            : `${member.email}'s applications are now hidden from members with Team tracker access.`,
+        color: "teal",
+      });
+    } catch (e) {
+      notifications.show({
+        title: "Update failed",
+        message: e instanceof Error ? e.message : "Try again.",
+        color: "red",
+      });
+    } finally {
+      setUpdatingId(null);
+    }
+  };
+
   const openRemove = (member: User) => {
     setConfirmText("");
     setRemoving(member);
@@ -184,7 +210,8 @@ export default function MembersPage() {
             </Group>
             <Text c="dimmed" size="sm" maw={640}>
               Review new sign-ups, grant builder access, assign CV templates (40 smart exclusive designs), and choose
-              who can manage the team's tracked applications. Remove members you no longer work with.
+              who can manage the team's tracked applications (they see bidders' applications only). Remove members you
+              no longer work with.
             </Text>
           </Stack>
           <Button variant="light" color="teal" leftSection={<IconRefresh size={16} />} onClick={load} loading={loading}>
@@ -199,6 +226,16 @@ export default function MembersPage() {
                 <Table.Tr>
                   <Table.Th>Member</Table.Th>
                   <Table.Th>Status</Table.Th>
+                  <Table.Th>
+                    <Tooltip
+                      label="Members with Team tracker access see only bidders' applications"
+                      withArrow
+                      multiline
+                      w={240}
+                    >
+                      <span>Type</span>
+                    </Tooltip>
+                  </Table.Th>
                   <Table.Th>CV template</Table.Th>
                   <Table.Th>Joined</Table.Th>
                   <Table.Th>Builder access</Table.Th>
@@ -239,6 +276,25 @@ export default function MembersPage() {
                           </Badge>
                         ) : null}
                       </Group>
+                    </Table.Td>
+                    <Table.Td>
+                      {member.role === "owner" ? (
+                        <Text size="sm" c="dimmed">
+                          —
+                        </Text>
+                      ) : (
+                        <SegmentedControl
+                          size="xs"
+                          value={member.member_type}
+                          disabled={updatingId === member.id}
+                          onChange={(v) => void changeType(member, v as MemberType)}
+                          color={member.member_type === "bidder" ? "orange" : "blue"}
+                          data={[
+                            { value: "team_member", label: "Team member" },
+                            { value: "bidder", label: "Bidder" },
+                          ]}
+                        />
+                      )}
                     </Table.Td>
                     <Table.Td miw={200}>
                       {member.role === "owner" ? (
@@ -333,7 +389,7 @@ export default function MembersPage() {
                 ))}
                 {!loading && members.length === 0 ? (
                   <Table.Tr>
-                    <Table.Td colSpan={8}>
+                    <Table.Td colSpan={9}>
                       <Text ta="center" c="dimmed" py="md">
                         No members yet.
                       </Text>

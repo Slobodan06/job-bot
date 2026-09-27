@@ -3,6 +3,10 @@
 Managers are the site owner plus any member the owner granted the
 ``can_manage_applications`` permission (Members page → "Team tracker").
 
+Visibility: the owner sees every member. A delegated manager sees ONLY members
+whose member type is "bidder" — team members' (and the owner's) applications are
+invisible to them: not listed, not counted, and a 404 if addressed by id.
+
 Same operations as a member has on their own tracker — list, create, edit,
 delete, and manage the applied resume — but across all members, plus a
 per-member summary of how their job search is going.
@@ -24,6 +28,7 @@ from app.applications.schemas import (
     MemberTrackingSummary,
 )
 from app.auth.dependencies import get_applications_manager, public_user
+from app.auth.roles import member_type, user_is_owner
 from app.database import get_db
 
 router = APIRouter(prefix="/api/admin/applications", tags=["admin"])
@@ -50,10 +55,42 @@ async def _with_member(doc: dict, member: dict | None = None) -> MemberApplicati
     )
 
 
-async def _member(member_id: str) -> dict:
+# None = no restriction (owner); otherwise the ids of the members this manager may see.
+Visible = set[ObjectId] | None
+
+
+async def visible_members(manager: dict = Depends(get_applications_manager)) -> Visible:
+    if user_is_owner(manager):
+        return None
+    cursor = get_db().users.find({"member_type": "bidder", "role": {"$ne": "owner"}}, {"_id": 1})
+    return {u["_id"] async for u in cursor}
+
+
+def _hidden(user_id: Any, visible: Visible) -> bool:
+    return visible is not None and user_id not in visible
+
+
+def _scope(member_id: str | None, visible: Visible) -> dict[str, Any]:
+    """Base Mongo filter for list/stats: one member, or everyone this manager may see."""
+    if member_id:
+        uid = service.oid(member_id, "Member")
+        if _hidden(uid, visible):
+            raise HTTPException(status_code=404, detail="Member not found.")
+        return {"user_id": uid}
+    return {} if visible is None else {"user_id": {"$in": list(visible)}}
+
+
+async def _member(member_id: str, visible: Visible) -> dict:
     doc = await get_db().users.find_one({"_id": service.oid(member_id, "Member")})
-    if not doc:
+    if not doc or _hidden(doc["_id"], visible):
         raise HTTPException(status_code=404, detail="Member not found.")
+    return doc
+
+
+async def _application(application_id: str, visible: Visible) -> dict:
+    doc = await service.find_application(application_id)
+    if _hidden(doc["user_id"], visible):
+        raise HTTPException(status_code=404, detail="Application not found.")
     return doc
 
 
@@ -63,7 +100,7 @@ async def _member(member_id: str) -> dict:
 
 
 @router.get("/summary", response_model=list[MemberTrackingSummary])
-async def tracking_summary(_manager: dict = Depends(get_applications_manager)) -> list[MemberTrackingSummary]:
+async def tracking_summary(visible: Visible = Depends(visible_members)) -> list[MemberTrackingSummary]:
     """One row per member: how many jobs they've tracked, by status, and when they last applied."""
     db = get_db()
     pipeline = [
@@ -91,12 +128,15 @@ async def tracking_summary(_manager: dict = Depends(get_applications_manager)) -
 
     rows: list[MemberTrackingSummary] = []
     async for user in db.users.find({}).sort("created_at", -1):
+        if _hidden(user["_id"], visible):
+            continue
         pub = public_user(user)
         agg = per_user.get(user["_id"], {})
         rows.append(
             MemberTrackingSummary(
                 member=_member_ref(user, user["_id"]),
                 role=pub["role"],
+                member_type=member_type(user),
                 has_access=pub["has_access"],
                 total=agg.get("total", 0),
                 by_status=agg.get("by_status", {}),
@@ -116,12 +156,9 @@ async def list_member_applications(
     q: str | None = Query(default=None, max_length=200),
     limit: int = Query(default=50, ge=1, le=200),
     cursor: str | None = Query(default=None),
-    _manager: dict = Depends(get_applications_manager),
+    visible: Visible = Depends(visible_members),
 ) -> MemberApplicationListResponse:
-    base: dict[str, Any] = {}
-    if member_id:
-        base["user_id"] = service.oid(member_id, "Member")
-    query = service.build_list_query(base, status=status, q=q, cursor=cursor)
+    query = service.build_list_query(_scope(member_id, visible), status=status, q=q, cursor=cursor)
     docs, next_cursor = await service.list_page(query, limit)
     members = await _members_by_id({d["user_id"] for d in docs})
     items = [
@@ -136,10 +173,9 @@ async def list_member_applications(
 @router.get("/stats", response_model=ApplicationStatsResponse)
 async def member_application_stats(
     member_id: str | None = Query(default=None),
-    _manager: dict = Depends(get_applications_manager),
+    visible: Visible = Depends(visible_members),
 ) -> ApplicationStatsResponse:
-    match = {"user_id": service.oid(member_id, "Member")} if member_id else {}
-    total, by_status = await service.status_counts(match)
+    total, by_status = await service.status_counts(_scope(member_id, visible))
     return ApplicationStatsResponse(total=total, by_status=by_status)
 
 
@@ -152,52 +188,52 @@ async def member_application_stats(
 async def create_member_application(
     body: ApplicationUpsertRequest,
     member_id: str = Query(..., description="Member whose tracker gets the job"),
-    _manager: dict = Depends(get_applications_manager),
+    visible: Visible = Depends(visible_members),
 ) -> MemberApplicationPublic:
-    member = await _member(member_id)
+    member = await _member(member_id, visible)
     return await _with_member(await service.create_strict(member["_id"], body), member)
 
 
 @router.get("/{application_id}", response_model=MemberApplicationPublic)
 async def get_member_application(
-    application_id: str, _manager: dict = Depends(get_applications_manager)
+    application_id: str, visible: Visible = Depends(visible_members)
 ) -> MemberApplicationPublic:
-    return await _with_member(await service.find_application(application_id))
+    return await _with_member(await _application(application_id, visible))
 
 
 @router.patch("/{application_id}", response_model=MemberApplicationPublic)
 async def update_member_application(
     application_id: str,
     body: ApplicationUpdateRequest,
-    _manager: dict = Depends(get_applications_manager),
+    visible: Visible = Depends(visible_members),
 ) -> MemberApplicationPublic:
-    doc = await service.find_application(application_id)
+    doc = await _application(application_id, visible)
     return await _with_member(await service.update(doc, body))
 
 
 @router.delete("/{application_id}", status_code=204)
-async def delete_member_application(application_id: str, _manager: dict = Depends(get_applications_manager)) -> None:
-    await service.delete(await service.find_application(application_id))
+async def delete_member_application(application_id: str, visible: Visible = Depends(visible_members)) -> None:
+    await service.delete(await _application(application_id, visible))
 
 
 @router.get("/{application_id}/resume")
-async def download_member_resume(application_id: str, _manager: dict = Depends(get_applications_manager)) -> Response:
-    return await service.resume_download(await service.find_application(application_id))
+async def download_member_resume(application_id: str, visible: Visible = Depends(visible_members)) -> Response:
+    return await service.resume_download(await _application(application_id, visible))
 
 
 @router.put("/{application_id}/resume", response_model=MemberApplicationPublic)
 async def replace_member_resume(
     application_id: str,
     resume: UploadFile = File(...),
-    _manager: dict = Depends(get_applications_manager),
+    visible: Visible = Depends(visible_members),
 ) -> MemberApplicationPublic:
-    doc = await service.find_application(application_id)
+    doc = await _application(application_id, visible)
     return await _with_member(await service.replace_resume(doc, resume))
 
 
 @router.delete("/{application_id}/resume", response_model=MemberApplicationPublic)
 async def remove_member_resume(
-    application_id: str, _manager: dict = Depends(get_applications_manager)
+    application_id: str, visible: Visible = Depends(visible_members)
 ) -> MemberApplicationPublic:
-    doc = await service.find_application(application_id)
+    doc = await _application(application_id, visible)
     return await _with_member(await service.remove_resume(doc))

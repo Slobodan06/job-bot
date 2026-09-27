@@ -43,3 +43,15 @@ def user_can_manage_applications(doc: dict) -> bool:
     if user_is_owner(doc):
         return True
     return user_can_build(doc) and bool(doc.get("can_manage_applications"))
+
+
+# What a member does on the team (separate from the owner/member access role).
+# Bidders apply to jobs for the team; delegated application managers only ever see
+# bidders' applications. Unset counts as a team member, so nobody's applications
+# become visible to delegates until the owner marks them as a bidder.
+MEMBER_TYPES = ("team_member", "bidder")
+
+
+def member_type(doc: dict) -> str:
+    value = doc.get("member_type")
+    return value if value in MEMBER_TYPES else "team_member"
