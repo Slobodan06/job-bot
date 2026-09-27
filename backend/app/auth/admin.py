@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from app.auth.dependencies import get_owner_user, public_user
 from app.auth.roles import user_is_owner
 from app.auth.schemas import (
+    MemberDeleteResponse,
     MemberAccessUpdate,
     MemberPermissionsUpdate,
     MemberTemplateUpdate,
@@ -13,6 +14,7 @@ from app.auth.schemas import (
 )
 from app.cv_templates.assignment import assign_cv_template
 from app.database import get_db
+from app.resume.store import delete_all_user_files
 from app.services.template_catalog import list_template_catalog
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -108,3 +110,31 @@ async def update_member_template(
     await assign_cv_template(db, doc["_id"], key, admin_override=True)
     updated = await db.users.find_one({"_id": doc["_id"]})
     return UserPublic(**public_user(updated))
+
+
+@router.delete("/members/{member_id}", response_model=MemberDeleteResponse)
+async def delete_member(member_id: str, owner: dict = Depends(get_owner_user)) -> MemberDeleteResponse:
+    """Permanently remove a member and everything that belongs to them.
+
+    Deletes the account (profile, saved base resume, autofill profile, CV template
+    assignment — the template becomes free for someone else), their tracked
+    applications, and all their stored resume files. Shared data (job boards,
+    sourced jobs) is untouched. Their existing sessions stop working immediately.
+    """
+    if not ObjectId.is_valid(member_id):
+        raise HTTPException(status_code=400, detail="Invalid member id.")
+    db = get_db()
+    doc = await db.users.find_one({"_id": ObjectId(member_id)})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Member not found.")
+    if user_is_owner(doc) or doc["_id"] == owner["_id"]:
+        raise HTTPException(status_code=400, detail="The owner account can't be removed.")
+
+    files_deleted = await delete_all_user_files(doc["_id"])
+    apps = await db.applications.delete_many({"user_id": doc["_id"]})
+    await db.users.delete_one({"_id": doc["_id"]})
+    return MemberDeleteResponse(
+        email=doc.get("email") or "",
+        applications_deleted=apps.deleted_count,
+        files_deleted=files_deleted,
+    )

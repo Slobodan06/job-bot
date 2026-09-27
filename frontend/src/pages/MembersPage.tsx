@@ -1,21 +1,26 @@
 import {
+  ActionIcon,
+  Alert,
   Anchor,
   Badge,
   Box,
   Button,
   Container,
   Group,
+  List,
+  Modal,
   Paper,
   Select,
   Stack,
   Switch,
   Table,
   Text,
+  TextInput,
   Title,
   Tooltip,
 } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
-import { IconRefresh, IconUsers } from "@tabler/icons-react";
+import { IconAlertTriangle, IconRefresh, IconTrash, IconUsers } from "@tabler/icons-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
@@ -37,6 +42,9 @@ export default function MembersPage() {
   const [templateOptions, setTemplateOptions] = useState<TemplateOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [updatingId, setUpdatingId] = useState<string | null>(null);
+  const [removing, setRemoving] = useState<User | null>(null);
+  const [confirmText, setConfirmText] = useState("");
+  const [removeBusy, setRemoveBusy] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -110,6 +118,36 @@ export default function MembersPage() {
     }
   };
 
+  const openRemove = (member: User) => {
+    setConfirmText("");
+    setRemoving(member);
+  };
+
+  const confirmRemove = async () => {
+    if (!removing) return;
+    setRemoveBusy(true);
+    try {
+      const r = await adminApi.removeMember(removing.id);
+      setMembers((prev) => prev.filter((m) => m.id !== removing.id));
+      notifications.show({
+        title: "Member removed",
+        message: `${r.email} was removed with ${r.applications_deleted} tracked application${
+          r.applications_deleted === 1 ? "" : "s"
+        } and ${r.files_deleted} stored file${r.files_deleted === 1 ? "" : "s"}.`,
+        color: "teal",
+      });
+      setRemoving(null);
+    } catch (e) {
+      notifications.show({
+        title: "Could not remove member",
+        message: e instanceof Error ? e.message : "Try again.",
+        color: "red",
+      });
+    } finally {
+      setRemoveBusy(false);
+    }
+  };
+
   const changeTemplate = async (member: User, templateKey: string | null) => {
     if (member.role === "owner") return;
     setUpdatingId(member.id);
@@ -146,7 +184,7 @@ export default function MembersPage() {
             </Group>
             <Text c="dimmed" size="sm" maw={640}>
               Review new sign-ups, grant builder access, assign CV templates (40 smart exclusive designs), and choose
-              who can manage the team's tracked applications.
+              who can manage the team's tracked applications. Remove members you no longer work with.
             </Text>
           </Stack>
           <Button variant="light" color="teal" leftSection={<IconRefresh size={16} />} onClick={load} loading={loading}>
@@ -166,6 +204,7 @@ export default function MembersPage() {
                   <Table.Th>Builder access</Table.Th>
                   <Table.Th>Team tracker</Table.Th>
                   <Table.Th>Applications</Table.Th>
+                  <Table.Th w={48} />
                 </Table.Tr>
               </Table.Thead>
               <Table.Tbody>
@@ -275,11 +314,26 @@ export default function MembersPage() {
                         View tracker
                       </Anchor>
                     </Table.Td>
+                    <Table.Td>
+                      {member.role === "owner" ? null : (
+                        <Tooltip label="Remove member" withArrow>
+                          <ActionIcon
+                            variant="subtle"
+                            color="red"
+                            aria-label={`Remove ${member.email}`}
+                            disabled={updatingId === member.id}
+                            onClick={() => openRemove(member)}
+                          >
+                            <IconTrash size={16} />
+                          </ActionIcon>
+                        </Tooltip>
+                      )}
+                    </Table.Td>
                   </Table.Tr>
                 ))}
                 {!loading && members.length === 0 ? (
                   <Table.Tr>
-                    <Table.Td colSpan={7}>
+                    <Table.Td colSpan={8}>
                       <Text ta="center" c="dimmed" py="md">
                         No members yet.
                       </Text>
@@ -291,6 +345,53 @@ export default function MembersPage() {
           </Box>
         </Paper>
       </Stack>
+
+      <Modal
+        opened={removing != null}
+        onClose={() => !removeBusy && setRemoving(null)}
+        title="Remove member?"
+        size="md"
+      >
+        <Stack gap="md">
+          <Alert color="red" variant="light" icon={<IconAlertTriangle size={18} />}>
+            This permanently deletes <b>{removing?.name || removing?.email}</b> and cannot be undone.
+          </Alert>
+          <List size="sm" spacing={4}>
+            <List.Item>Their account, profile, saved base resume and autofill profile</List.Item>
+            <List.Item>All their tracked job applications and applied resumes</List.Item>
+            <List.Item>Their generated tailored resumes</List.Item>
+            <List.Item>Their CV template assignment (the template becomes free again)</List.Item>
+          </List>
+          <Text size="sm" c="dimmed">
+            They're signed out everywhere immediately. They could sign up again later as a new member.
+          </Text>
+          <TextInput
+            label={
+              <>
+                Type <b>{removing?.email}</b> to confirm
+              </>
+            }
+            value={confirmText}
+            onChange={(e) => setConfirmText(e.currentTarget.value)}
+            autoComplete="off"
+            data-autofocus
+          />
+          <Group justify="flex-end">
+            <Button variant="default" onClick={() => setRemoving(null)} disabled={removeBusy}>
+              Cancel
+            </Button>
+            <Button
+              color="red"
+              leftSection={<IconTrash size={16} />}
+              loading={removeBusy}
+              disabled={confirmText.trim().toLowerCase() !== (removing?.email || "").toLowerCase()}
+              onClick={confirmRemove}
+            >
+              Remove member
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
     </Container>
   );
 }

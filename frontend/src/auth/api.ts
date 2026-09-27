@@ -488,6 +488,13 @@ export const adminApi = {
       body: JSON.stringify({ can_manage_applications: canManageApplications }),
     });
   },
+  /** Permanently deletes the member, their tracked applications and stored resume files. */
+  removeMember(memberId: string) {
+    return apiFetch<{ email: string; applications_deleted: number; files_deleted: number }>(
+      `/api/admin/members/${memberId}`,
+      { method: "DELETE" },
+    );
+  },
   setMemberTemplate(memberId: string, templateKey: string | null) {
     return apiFetch<User>(`/api/admin/members/${memberId}/template`, {
       method: "PATCH",

@@ -45,6 +45,12 @@ class MemberPermissionsUpdate(BaseModel):
     can_manage_applications: bool
 
 
+class MemberDeleteResponse(BaseModel):
+    email: str
+    applications_deleted: int = 0
+    files_deleted: int = 0
+
+
 class MemberTemplateUpdate(BaseModel):
     template_key: str | None = Field(default=None, max_length=64)
 

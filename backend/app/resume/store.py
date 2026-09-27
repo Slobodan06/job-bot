@@ -154,3 +154,15 @@ async def delete_applied_resumes(*, user_id: ObjectId, application_id: ObjectId)
         {"metadata.user_id": user_id, "metadata.application_id": application_id}
     ):
         await _applied_bucket().delete(old["_id"])
+
+
+async def delete_all_user_files(user_id: ObjectId) -> int:
+    """Remove every stored file (tailored variants + applied resumes) of one user."""
+    db = get_db()
+    deleted = 0
+    for bucket_name in (_VARIANT_BUCKET, _APPLIED_BUCKET):
+        bucket = AsyncIOMotorGridFSBucket(db, bucket_name=bucket_name)
+        async for doc in db[f"{bucket_name}.files"].find({"metadata.user_id": user_id}, {"_id": 1}):
+            await bucket.delete(doc["_id"])
+            deleted += 1
+    return deleted
