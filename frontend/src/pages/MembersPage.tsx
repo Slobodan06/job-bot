@@ -1,4 +1,5 @@
 import {
+  Anchor,
   Badge,
   Box,
   Button,
@@ -11,10 +12,12 @@ import {
   Table,
   Text,
   Title,
+  Tooltip,
 } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { IconRefresh, IconUsers } from "@tabler/icons-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 
 import { adminApi, type User } from "../auth/api";
 
@@ -83,6 +86,30 @@ export default function MembersPage() {
     }
   };
 
+  const togglePermission = async (member: User, allowed: boolean) => {
+    if (member.role === "owner") return;
+    setUpdatingId(member.id);
+    try {
+      const updated = await adminApi.setMemberPermissions(member.id, allowed);
+      setMembers((prev) => prev.map((m) => (m.id === updated.id ? updated : m)));
+      notifications.show({
+        title: allowed ? "Team tracker access granted" : "Team tracker access removed",
+        message: allowed
+          ? `${member.email} can now see, add, edit and delete every member's tracked applications.`
+          : `${member.email} can only see their own applications again.`,
+        color: "teal",
+      });
+    } catch (e) {
+      notifications.show({
+        title: "Update failed",
+        message: e instanceof Error ? e.message : "Try again.",
+        color: "red",
+      });
+    } finally {
+      setUpdatingId(null);
+    }
+  };
+
   const changeTemplate = async (member: User, templateKey: string | null) => {
     if (member.role === "owner") return;
     setUpdatingId(member.id);
@@ -118,7 +145,8 @@ export default function MembersPage() {
               <Title order={2}>Member management</Title>
             </Group>
             <Text c="dimmed" size="sm" maw={640}>
-              Review new sign-ups, grant builder access, and assign CV templates (40 smart exclusive designs).
+              Review new sign-ups, grant builder access, assign CV templates (40 smart exclusive designs), and choose
+              who can manage the team's tracked applications.
             </Text>
           </Stack>
           <Button variant="light" color="teal" leftSection={<IconRefresh size={16} />} onClick={load} loading={loading}>
@@ -136,6 +164,8 @@ export default function MembersPage() {
                   <Table.Th>CV template</Table.Th>
                   <Table.Th>Joined</Table.Th>
                   <Table.Th>Builder access</Table.Th>
+                  <Table.Th>Team tracker</Table.Th>
+                  <Table.Th>Applications</Table.Th>
                 </Table.Tr>
               </Table.Thead>
               <Table.Tbody>
@@ -211,11 +241,45 @@ export default function MembersPage() {
                         />
                       )}
                     </Table.Td>
+                    <Table.Td>
+                      {member.role === "owner" ? (
+                        <Text size="sm" c="dimmed">
+                          Always on
+                        </Text>
+                      ) : (
+                        <Tooltip
+                          label={
+                            member.has_access
+                              ? "Lets this member see, add, edit and delete every member's tracked applications"
+                              : "Grant builder access first"
+                          }
+                          withArrow
+                          multiline
+                          w={240}
+                        >
+                          <div>
+                            <Switch
+                              checked={member.can_manage_applications}
+                              disabled={!member.has_access || updatingId === member.id}
+                              onChange={(e) => void togglePermission(member, e.currentTarget.checked)}
+                              color="grape"
+                              label={member.can_manage_applications ? "Can manage" : "Own only"}
+                              size="sm"
+                            />
+                          </div>
+                        </Tooltip>
+                      )}
+                    </Table.Td>
+                    <Table.Td>
+                      <Anchor component={Link} to={`/admin/applications?member=${member.id}`} size="sm">
+                        View tracker
+                      </Anchor>
+                    </Table.Td>
                   </Table.Tr>
                 ))}
                 {!loading && members.length === 0 ? (
                   <Table.Tr>
-                    <Table.Td colSpan={5}>
+                    <Table.Td colSpan={7}>
                       <Text ta="center" c="dimmed" py="md">
                         No members yet.
                       </Text>

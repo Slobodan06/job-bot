@@ -40,13 +40,14 @@ function pageTitle(pathname: string): string {
   if (pathname.startsWith("/templates")) return "CV templates";
   if (pathname.startsWith("/profile")) return "Your profile";
   if (pathname.startsWith("/admin/members")) return "Member management";
+  if (pathname.startsWith("/admin/applications")) return "Team applications";
   if (pathname.startsWith("/auth")) return "Account";
   if (pathname.startsWith("/pending-access")) return "Access pending";
   return "Resume tailor";
 }
 
 export function AppLayout() {
-  const { user, loading, logout, isAuthenticated, canBuild, isOwner } = useAuth();
+  const { user, loading, logout, isAuthenticated, canBuild, isOwner, canManageApplications } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const isBuilder = location.pathname.startsWith("/builder");
@@ -154,6 +155,11 @@ export function AppLayout() {
                     {isOwner ? (
                       <Menu.Item leftSection={<IconUsers size={16} />} component={Link} to="/admin/members">
                         Manage members
+                      </Menu.Item>
+                    ) : null}
+                    {canManageApplications ? (
+                      <Menu.Item leftSection={<IconBriefcase size={16} />} component={Link} to="/admin/applications">
+                        Team applications
                       </Menu.Item>
                     ) : null}
                     <Menu.Divider />

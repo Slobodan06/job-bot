@@ -2,7 +2,7 @@ from bson import ObjectId
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from app.auth.roles import user_can_build, user_is_owner
+from app.auth.roles import user_can_build, user_can_manage_applications, user_is_owner
 from app.auth.security import decode_access_token
 from app.database import get_db, user_doc_to_public
 
@@ -50,6 +50,16 @@ async def get_builder_user(user: dict = Depends(get_verified_user)) -> dict:
 async def get_owner_user(user: dict = Depends(get_current_user)) -> dict:
     if not user_is_owner(user):
         raise HTTPException(status_code=403, detail="Owner access required.")
+    return user
+
+
+async def get_applications_manager(user: dict = Depends(get_current_user)) -> dict:
+    """The owner, or a member the owner allowed to manage the team's tracked applications."""
+    if not user_can_manage_applications(user):
+        raise HTTPException(
+            status_code=403,
+            detail="You don't have permission to manage the team's applications. Ask the site owner.",
+        )
     return user
 
 

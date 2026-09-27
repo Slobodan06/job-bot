@@ -5,6 +5,7 @@ import { Center, Loader } from "@mantine/core";
 import { AuthProvider } from "./auth/AuthContext";
 import { AppLayout } from "./components/AppLayout";
 import {
+  ApplicationsManagerRoute,
   BuilderRoute,
   GuestRoute,
   OwnerRoute,
@@ -22,6 +23,7 @@ const VerifyEmailPage = lazy(() => import("./pages/VerifyEmailPage"));
 const PendingAccessPage = lazy(() => import("./pages/PendingAccessPage"));
 const ProfilePage = lazy(() => import("./pages/ProfilePage"));
 const MembersPage = lazy(() => import("./pages/MembersPage"));
+const TeamApplicationsPage = lazy(() => import("./pages/TeamApplicationsPage"));
 const TemplatesPage = lazy(() => import("./pages/TemplatesPage"));
 
 function PageLoader() {
@@ -104,6 +106,14 @@ export default function App() {
                   <OwnerRoute>
                     <MembersPage />
                   </OwnerRoute>
+                }
+              />
+              <Route
+                path="admin/applications"
+                element={
+                  <ApplicationsManagerRoute>
+                    <TeamApplicationsPage />
+                  </ApplicationsManagerRoute>
                 }
               />
               <Route path="*" element={<Navigate to="/" replace />} />

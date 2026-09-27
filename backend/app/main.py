@@ -18,6 +18,7 @@ load_dotenv()
 from app.auth.admin import router as admin_router
 from app.auth.routes import router as auth_router
 from app.auth.dependencies import get_builder_user
+from app.applications.admin_routes import router as admin_applications_router
 from app.applications.routes import router as applications_router
 from app.cv_templates.routes import router as cv_templates_router
 from app.extension.routes import router as extension_router
@@ -107,6 +108,7 @@ app.include_router(admin_router)
 app.include_router(cv_templates_router)
 app.include_router(resume_router)
 app.include_router(applications_router)
+app.include_router(admin_applications_router)
 app.include_router(extension_router)
 app.include_router(jobs_router)
 app.include_router(job_boards_router)

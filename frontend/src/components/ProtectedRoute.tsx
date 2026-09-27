@@ -97,6 +97,29 @@ export function BuilderRoute({ children }: { children: React.ReactNode }) {
   return children;
 }
 
+/** Owner, or a member the owner allowed to manage the team's tracked applications. */
+export function ApplicationsManagerRoute({ children }: { children: React.ReactNode }) {
+  const { user, loading, canManageApplications } = useAuth();
+
+  if (loading) {
+    return (
+      <Center mih="50dvh">
+        <Loader color="teal" />
+      </Center>
+    );
+  }
+
+  if (!user) {
+    return <Navigate to="/auth" replace />;
+  }
+
+  if (!canManageApplications) {
+    return <Navigate to={userCanBuild(user) ? "/builder" : "/pending-access"} replace />;
+  }
+
+  return children;
+}
+
 export function OwnerRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
 

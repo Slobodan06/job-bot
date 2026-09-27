@@ -27,7 +27,7 @@ import {
 } from "@tabler/icons-react";
 import { useCallback, useEffect, useState } from "react";
 
-import { APPLICATION_STATUSES, applicationsApi, type JobApplication } from "../../auth/api";
+import { APPLICATION_STATUSES, applicationsApi, type JobApplication, type TrackerApi } from "../../auth/api";
 import { ApplicationFormModal } from "./ApplicationFormModal";
 
 const STATUS_COLOR: Record<string, string> = {
@@ -51,7 +51,7 @@ function formatSize(bytes: number): string {
   return bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
 
-function ResumeCell({ app }: { app: JobApplication }) {
+function ResumeCell({ app, api }: { app: JobApplication; api: TrackerApi }) {
   const r = app.applied_resume;
   if (!r) {
     return (
@@ -67,7 +67,7 @@ function ResumeCell({ app }: { app: JobApplication }) {
         lineClamp={1}
         maw={180}
         onClick={() =>
-          applicationsApi.downloadResume(app).catch((e) =>
+          api.downloadResume(app).catch((e) =>
             notifications.show({ title: "Download failed", message: (e as Error).message, color: "red" }),
           )
         }
@@ -81,7 +81,25 @@ function ResumeCell({ app }: { app: JobApplication }) {
   );
 }
 
-export function TrackerTab() {
+type TrackerProps = {
+  /** Defaults to the signed-in member's own tracker. */
+  api?: TrackerApi;
+  /** Manager view: show whose tracker each job is in. */
+  showMember?: boolean;
+  /** When set, "Add application" is disabled with this explanation. */
+  createDisabledReason?: string | null;
+  emptyText?: string;
+  /** Fires after any create/edit/delete (e.g. to refresh a summary elsewhere). */
+  onChanged?: () => void;
+};
+
+export function TrackerTab({
+  api = applicationsApi,
+  showMember = false,
+  createDisabledReason = null,
+  emptyText = "No applications tracked yet. With the JobBot Copilot extension installed, a job is tracked automatically when you submit an application and the site confirms it — or add one by hand.",
+  onChanged,
+}: TrackerProps = {}) {
   const [items, setItems] = useState<JobApplication[]>([]);
   const [stats, setStats] = useState<Record<string, number>>({});
   const [statusFilter, setStatusFilter] = useState<string | null>(null);
@@ -97,8 +115,8 @@ export function TrackerTab() {
       if (!quiet) setLoading(true);
       try {
         const [list, s] = await Promise.all([
-          applicationsApi.list({ status: statusFilter || undefined, q: query.trim() || undefined, limit: 200 }),
-          applicationsApi.stats(),
+          api.list({ status: statusFilter || undefined, q: query.trim() || undefined, limit: 200 }),
+          api.stats(),
         ]);
         setItems(list.items);
         setStats(s.by_status);
@@ -108,7 +126,7 @@ export function TrackerTab() {
         setLoading(false);
       }
     },
-    [statusFilter, query],
+    [api, statusFilter, query],
   );
 
   useEffect(() => {
@@ -116,7 +134,10 @@ export function TrackerTab() {
     return () => window.clearTimeout(t);
   }, [load, query]);
 
-  const refreshStats = () => applicationsApi.stats().then((s) => setStats(s.by_status));
+  const refreshStats = () => {
+    api.stats().then((s) => setStats(s.by_status));
+    onChanged?.();
+  };
 
   const upsertLocal = (app: JobApplication) => {
     setItems((prev) => (prev.some((it) => it.id === app.id) ? prev.map((it) => (it.id === app.id ? app : it)) : [app, ...prev]));
@@ -125,7 +146,7 @@ export function TrackerTab() {
 
   const setStatus = async (id: string, status: string) => {
     try {
-      upsertLocal(await applicationsApi.update(id, { status }));
+      upsertLocal(await api.update(id, { status }));
     } catch (e) {
       notifications.show({ title: "Couldn't update status", message: (e as Error).message, color: "red" });
     }
@@ -133,7 +154,7 @@ export function TrackerTab() {
 
   const removeResume = async (app: JobApplication) => {
     try {
-      upsertLocal(await applicationsApi.removeResume(app.id));
+      upsertLocal(await api.removeResume(app.id));
     } catch (e) {
       notifications.show({ title: "Couldn't remove resume", message: (e as Error).message, color: "red" });
     }
@@ -143,7 +164,7 @@ export function TrackerTab() {
     if (!deleting) return;
     setDeleteBusy(true);
     try {
-      await applicationsApi.remove(deleting.id);
+      await api.remove(deleting.id);
       setItems((prev) => prev.filter((it) => it.id !== deleting.id));
       refreshStats();
       setDeleting(null);
@@ -190,28 +211,32 @@ export function TrackerTab() {
             Refresh
           </Button>
         </Group>
-        <Button
-          leftSection={<IconPlus size={16} />}
-          onClick={() => {
-            setEditing(null);
-            setFormOpen(true);
-          }}
-        >
-          Add application
-        </Button>
+        <Tooltip label={createDisabledReason} disabled={!createDisabledReason} withArrow>
+          <Button
+            leftSection={<IconPlus size={16} />}
+            disabled={!!createDisabledReason}
+            onClick={() => {
+              setEditing(null);
+              setFormOpen(true);
+            }}
+          >
+            Add application
+          </Button>
+        </Tooltip>
       </Group>
 
       {items.length === 0 && !loading ? (
         <Alert color="gray" variant="light">
           {query || statusFilter
             ? "No applications match these filters."
-            : "No applications tracked yet. With the JobBot Copilot extension installed, a job is tracked automatically when you submit an application and the site confirms it — or add one by hand."}
+            : emptyText}
         </Alert>
       ) : (
         <Table.ScrollContainer minWidth={860}>
           <Table striped highlightOnHover verticalSpacing="sm">
             <Table.Thead>
               <Table.Tr>
+                {showMember && <Table.Th>Member</Table.Th>}
                 <Table.Th>Role</Table.Th>
                 <Table.Th>Company</Table.Th>
                 <Table.Th>Status</Table.Th>
@@ -223,6 +248,18 @@ export function TrackerTab() {
             <Table.Tbody>
               {items.map((it) => (
                 <Table.Tr key={it.id}>
+                  {showMember && (
+                    <Table.Td maw={200}>
+                      <Text size="sm" fw={500} lineClamp={1}>
+                        {it.member?.name || it.member?.email || "—"}
+                      </Text>
+                      {it.member?.name && (
+                        <Text size="xs" c="dimmed" lineClamp={1}>
+                          {it.member.email}
+                        </Text>
+                      )}
+                    </Table.Td>
+                  )}
                   <Table.Td maw={260}>
                     <Anchor href={it.job_url} target="_blank" size="sm" lineClamp={1}>
                       {it.job_title || it.job_url}
@@ -259,7 +296,7 @@ export function TrackerTab() {
                     </Text>
                   </Table.Td>
                   <Table.Td>
-                    <ResumeCell app={it} />
+                    <ResumeCell app={it} api={api} />
                   </Table.Td>
                   <Table.Td>
                     <Menu position="bottom-end" withinPortal>
@@ -300,6 +337,7 @@ export function TrackerTab() {
       <ApplicationFormModal
         opened={formOpen}
         application={editing}
+        api={api}
         onClose={() => setFormOpen(false)}
         onSaved={upsertLocal}
       />
@@ -308,8 +346,9 @@ export function TrackerTab() {
         <Stack gap="md">
           <Text size="sm">
             Remove <b>{deleting?.job_title || deleting?.job_url}</b>
-            {deleting?.company ? ` at ${deleting.company}` : ""} from your tracker? Its saved resume is deleted
-            too.
+            {deleting?.company ? ` at ${deleting.company}` : ""} from{" "}
+            {showMember && deleting?.member ? `${deleting.member.name || deleting.member.email}'s` : "your"} tracker? Its
+            saved resume is deleted too.
           </Text>
           <Group justify="flex-end">
             <Button variant="default" onClick={() => setDeleting(null)}>

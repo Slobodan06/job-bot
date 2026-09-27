@@ -61,3 +61,30 @@ class ApplicationListResponse(BaseModel):
 class ApplicationStatsResponse(BaseModel):
     total: int
     by_status: dict[str, int]
+
+
+class MemberRef(BaseModel):
+    id: str
+    name: str = ""
+    email: str = ""
+
+
+class MemberApplicationPublic(ApplicationPublic):
+    """An application as the manager sees it: with the member it belongs to."""
+
+    member: MemberRef
+
+
+class MemberApplicationListResponse(BaseModel):
+    items: list[MemberApplicationPublic]
+    next_cursor: str | None = None
+
+
+class MemberTrackingSummary(BaseModel):
+    member: MemberRef
+    role: str = "member"
+    has_access: bool = False
+    total: int = 0
+    by_status: dict[str, int] = Field(default_factory=dict)
+    last_applied_at: datetime | None = None
+    last_activity_at: datetime | None = None

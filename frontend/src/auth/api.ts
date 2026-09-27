@@ -10,6 +10,8 @@ export type User = {
   role: "owner" | "member";
   email_verified: boolean;
   has_access: boolean;
+  /** Owner, or a member allowed to see/edit every member's tracked applications. */
+  can_manage_applications: boolean;
   cv_template_key: string;
   cv_template_label: string;
   created_at: string | null;
@@ -154,6 +156,8 @@ export type JobApplication = {
   notes: string;
   scores: Record<string, number>;
   applied_resume: AppliedResume | null;
+  /** Present on the manager's view: whose tracker this job is in. */
+  member?: MemberRef;
   created_at: string | null;
   updated_at: string | null;
   submitted_at: string | null;
@@ -208,19 +212,86 @@ export const applicationsApi = {
   removeResume(id: string) {
     return apiFetch<JobApplication>(`/api/applications/${id}/resume`, { method: "DELETE" });
   },
-  /** The resume download needs the bearer token, so fetch it and hand the browser a blob. */
-  async downloadResume(app: JobApplication) {
-    const token = getStoredToken();
-    const res = await fetch(`/api/applications/${app.id}/resume`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-    });
-    if (!res.ok) throw new Error(await parseError(res));
-    const url = URL.createObjectURL(await res.blob());
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = app.applied_resume?.filename || "resume";
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  downloadResume(app: JobApplication) {
+    return downloadWithAuth(`/api/applications/${app.id}/resume`, app.applied_resume?.filename || "resume");
+  },
+};
+
+/** The download needs the bearer token, so fetch it and hand the browser a blob. */
+async function downloadWithAuth(path: string, filename: string) {
+  const token = getStoredToken();
+  const res = await fetch(path, { headers: token ? { Authorization: `Bearer ${token}` } : undefined });
+  if (!res.ok) throw new Error(await parseError(res));
+  const url = URL.createObjectURL(await res.blob());
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
+
+type ApplicationList = { items: JobApplication[]; next_cursor: string | null };
+type ApplicationStats = { total: number; by_status: Record<string, number> };
+
+/** What the tracker table needs — implemented for a member's own tracker and for the manager's view. */
+export type TrackerApi = {
+  list(params: { status?: string; q?: string; limit?: number }): Promise<ApplicationList>;
+  stats(): Promise<ApplicationStats>;
+  create(body: ApplicationInput): Promise<JobApplication>;
+  update(id: string, patch: Partial<ApplicationInput>): Promise<JobApplication>;
+  remove(id: string): Promise<void>;
+  uploadResume(id: string, file: File): Promise<JobApplication>;
+  removeResume(id: string): Promise<JobApplication>;
+  downloadResume(app: JobApplication): Promise<void>;
+};
+
+export type MemberRef = { id: string; name: string; email: string };
+
+export type MemberTrackingSummary = {
+  member: MemberRef;
+  role: "owner" | "member";
+  has_access: boolean;
+  total: number;
+  by_status: Record<string, number>;
+  last_applied_at: string | null;
+  last_activity_at: string | null;
+};
+
+const ADMIN_APPS = "/api/admin/applications";
+
+/** Manager (owner) access to members' trackers. `memberId` scopes list/stats/create to one member. */
+export function adminApplicationsApi(memberId: string | null): TrackerApi {
+  const scope = (params: Record<string, string | number | undefined>) => {
+    const qs = new URLSearchParams();
+    Object.entries({ ...params, member_id: memberId ?? undefined }).forEach(
+      ([k, v]) => v != null && v !== "" && qs.set(k, String(v)),
+    );
+    return qs.toString() ? `?${qs}` : "";
+  };
+  return {
+    list: (params) => apiFetch<ApplicationList>(`${ADMIN_APPS}${scope(params)}`),
+    stats: () => apiFetch<ApplicationStats>(`${ADMIN_APPS}/stats${scope({})}`),
+    create(body) {
+      if (!memberId) return Promise.reject(new Error("Pick a member first."));
+      return apiFetch<JobApplication>(`${ADMIN_APPS}${scope({})}`, { method: "POST", body: JSON.stringify(body) });
+    },
+    update: (id, patch) =>
+      apiFetch<JobApplication>(`${ADMIN_APPS}/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
+    remove: (id) => apiFetch<void>(`${ADMIN_APPS}/${id}`, { method: "DELETE" }),
+    uploadResume(id, file) {
+      const body = new FormData();
+      body.append("resume", file);
+      return apiFetch<JobApplication>(`${ADMIN_APPS}/${id}/resume`, { method: "PUT", body });
+    },
+    removeResume: (id) => apiFetch<JobApplication>(`${ADMIN_APPS}/${id}/resume`, { method: "DELETE" }),
+    downloadResume: (app) =>
+      downloadWithAuth(`${ADMIN_APPS}/${app.id}/resume`, app.applied_resume?.filename || "resume"),
+  };
+}
+
+export const adminTrackingApi = {
+  summary() {
+    return apiFetch<MemberTrackingSummary[]>(`${ADMIN_APPS}/summary`);
   },
 };
 
@@ -409,6 +480,12 @@ export const adminApi = {
     return apiFetch<User>(`/api/admin/members/${memberId}/access`, {
       method: "PATCH",
       body: JSON.stringify({ has_access: hasAccess }),
+    });
+  },
+  setMemberPermissions(memberId: string, canManageApplications: boolean) {
+    return apiFetch<User>(`/api/admin/members/${memberId}/permissions`, {
+      method: "PATCH",
+      body: JSON.stringify({ can_manage_applications: canManageApplications }),
     });
   },
   setMemberTemplate(memberId: string, templateKey: string | null) {

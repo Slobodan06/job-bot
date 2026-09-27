@@ -32,3 +32,14 @@ def user_can_build(doc: dict) -> bool:
 
 def user_is_owner(doc: dict) -> bool:
     return doc.get("role") == "owner" or is_owner_email(doc.get("email", ""))
+
+
+def user_can_manage_applications(doc: dict) -> bool:
+    """See/insert/edit/delete every member's tracked applications.
+
+    Always true for the owner; a member needs builder access plus the
+    ``can_manage_applications`` permission the owner grants on the Members page.
+    """
+    if user_is_owner(doc):
+        return True
+    return user_can_build(doc) and bool(doc.get("can_manage_applications"))

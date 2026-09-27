@@ -41,6 +41,10 @@ class MemberAccessUpdate(BaseModel):
     has_access: bool
 
 
+class MemberPermissionsUpdate(BaseModel):
+    can_manage_applications: bool
+
+
 class MemberTemplateUpdate(BaseModel):
     template_key: str | None = Field(default=None, max_length=64)
 
@@ -57,6 +61,7 @@ class UserPublic(BaseModel):
     role: Literal["owner", "member"] = "member"
     email_verified: bool = False
     has_access: bool = False
+    can_manage_applications: bool = False
     cv_template_key: str = ""
     cv_template_label: str = ""
     created_at: datetime | None = None

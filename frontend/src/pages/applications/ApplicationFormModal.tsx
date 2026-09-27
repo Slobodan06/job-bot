@@ -9,12 +9,15 @@ import {
   applicationsApi,
   type ApplicationInput,
   type JobApplication,
+  type TrackerApi,
 } from "../../auth/api";
 
 type Props = {
   opened: boolean;
   /** null = create a new application */
   application: JobApplication | null;
+  /** Defaults to the signed-in member's own tracker. */
+  api?: TrackerApi;
   onClose: () => void;
   onSaved: (app: JobApplication) => void;
 };
@@ -23,7 +26,7 @@ const toDateInput = (iso: string | null) => (iso ? new Date(iso).toLocaleDateStr
 // Local noon, so the calendar day never shifts across time zones.
 const fromDateInput = (value: string) => (value ? new Date(`${value}T12:00:00`).toISOString() : null);
 
-export function ApplicationFormModal({ opened, application, onClose, onSaved }: Props) {
+export function ApplicationFormModal({ opened, application, api = applicationsApi, onClose, onSaved }: Props) {
   const isEdit = application != null;
   const [resumeFile, setResumeFile] = useState<File | null>(null);
   const [saving, setSaving] = useState(false);
@@ -72,9 +75,9 @@ export function ApplicationFormModal({ opened, application, onClose, onSaved }: 
       };
       if (v.applied_on) body.submitted_at = fromDateInput(v.applied_on);
       let saved = isEdit
-        ? await applicationsApi.update(application.id, body)
-        : await applicationsApi.create(body);
-      if (resumeFile) saved = await applicationsApi.uploadResume(saved.id, resumeFile);
+        ? await api.update(application.id, body)
+        : await api.create(body);
+      if (resumeFile) saved = await api.uploadResume(saved.id, resumeFile);
       onSaved(saved);
       onClose();
       notifications.show({ message: isEdit ? "Application updated." : "Application added.", color: "teal" });
@@ -86,7 +89,10 @@ export function ApplicationFormModal({ opened, application, onClose, onSaved }: 
   });
 
   return (
-    <Modal opened={opened} onClose={onClose} title={isEdit ? "Edit application" : "Add application"} size="lg">
+    <Modal opened={opened} onClose={onClose} title={
+        (isEdit ? "Edit application" : "Add application") +
+        (application?.member ? ` — ${application.member.name || application.member.email}` : "")
+      } size="lg">
       <form onSubmit={submit}>
         <Stack gap="sm">
           <TextInput label="Job URL" placeholder="https://…" required {...form.getInputProps("job_url")} />
