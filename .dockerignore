@@ -7,6 +7,10 @@
 .env
 .env.*
 !.env.example
+# Not secret: the deployed server URL the extension zip is built for.
+!extension/.env.production
+extension/dist
+extension/release
 frontend/dist
 *.md
 terminals

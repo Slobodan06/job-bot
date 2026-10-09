@@ -35,8 +35,25 @@ _ATS_HOST_RE = (
     (re.compile(r"(?:^|\.)indeed\.com$", re.I), "indeed"),
 )
 
-# Query keys that identify a specific posting and must survive normalization.
-_KEEP_QUERY_KEYS = {"gh_jid", "jobid", "job_id", "id", "lever-source", "jk"}
+# Query parameters that only say *how* someone reached a posting (ads, referrals,
+# share links, per-visit ids) — dropped so the same job always hashes the same.
+# Everything else is KEPT: many ATS identify the job in the query string
+# (Greenhouse embeds use ?for=<board>&token=<job id>, others ?gh_jid=, ?jobId=,
+# ?jk=, ?req=…), and dropping one of those would merge different jobs together.
+_TRACKING_QUERY_KEYS = {
+    "gclid", "gbraid", "wbraid", "fbclid", "msclkid", "dclid", "yclid", "twclid", "ttclid", "li_fat_id",
+    "igshid", "mc_cid", "mc_eid", "mkt_tok", "_hsenc", "_hsmi", "_ga", "_gl",
+    "ref", "ref_", "refid", "ref_id", "referrer", "referer", "referral", "referralsource",
+    "source", "src", "gh_src", "lever-source", "lever-origin", "lever-via", "sourcetype",
+    "trk", "trkid", "trackingid", "tracking_id", "trackid", "icid", "ocid", "cmpid", "campaign",
+    "jr_id", "from", "share", "shared", "shared_from", "si", "iis", "iisn", "ccuid", "feedid", "sid",
+}
+_TRACKING_QUERY_PREFIXES = ("utm_", "hsa_", "pk_", "mtm_", "matomo_")
+
+
+def _is_tracking_param(key: str) -> bool:
+    key = key.lower()
+    return key in _TRACKING_QUERY_KEYS or key.startswith(_TRACKING_QUERY_PREFIXES)
 
 
 def detect_ats(url: str) -> str:
@@ -63,8 +80,8 @@ def normalize_job_url(url: str) -> str:
     for pair in parsed.query.split("&"):
         if not pair or "=" not in pair:
             continue
-        key = pair.split("=", 1)[0].lower()
-        if key in _KEEP_QUERY_KEYS:
+        key, value = pair.split("=", 1)
+        if value and not _is_tracking_param(key):
             kept.append(pair)
     query = "&".join(sorted(kept))
     return urlunparse(("https", host, path, "", query, ""))
@@ -126,6 +143,16 @@ def build_application_doc(
     }
 
 
+def as_utc(value: Any) -> Any:
+    """Mongo returns naive datetimes that are really UTC; mark them so JSON carries the
+    offset and browsers don't read them as local time (which shifts the day)."""
+    from datetime import UTC
+
+    if isinstance(value, datetime) and value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value
+
+
 def application_doc_to_public(doc: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": str(doc["_id"]),
@@ -142,9 +169,9 @@ def application_doc_to_public(doc: dict[str, Any]) -> dict[str, Any]:
         "answers": doc.get("answers") or [],
         "scores": doc.get("scores") or {},
         "applied_resume": applied_resume_to_public(doc.get("applied_resume")),
-        "created_at": doc.get("created_at"),
-        "updated_at": doc.get("updated_at"),
-        "submitted_at": doc.get("submitted_at"),
+        "created_at": as_utc(doc.get("created_at")),
+        "updated_at": as_utc(doc.get("updated_at")),
+        "submitted_at": as_utc(doc.get("submitted_at")),
     }
 
 
@@ -195,5 +222,5 @@ def applied_resume_to_public(sub: Any) -> dict[str, Any] | None:
         "content_type": sub.get("content_type") or "application/octet-stream",
         "size": int(sub.get("size") or 0),
         "source": sub.get("source") or "uploaded_manually",
-        "stored_at": sub.get("stored_at"),
+        "stored_at": as_utc(sub.get("stored_at")),
     }

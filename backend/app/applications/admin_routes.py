@@ -11,17 +11,20 @@ Same operations as a member has on their own tracker — list, create, edit,
 delete, and manage the applied resume — but across all members, plus a
 per-member summary of how their job search is going.
 """
+from datetime import timedelta
 from typing import Any
 
 from bson import ObjectId
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 
-from app.applications import service
+from app.applications import daily, service
+from app.applications.logic import as_utc
 from app.applications.schemas import (
     ApplicationStatsResponse,
     ApplicationUpdateRequest,
     ApplicationUpsertRequest,
+    DailyApplicationsResponse,
     MemberApplicationListResponse,
     MemberApplicationPublic,
     MemberRef,
@@ -78,6 +81,19 @@ def _scope(member_id: str | None, visible: Visible) -> dict[str, Any]:
             raise HTTPException(status_code=404, detail="Member not found.")
         return {"user_id": uid}
     return {} if visible is None else {"user_id": {"$in": list(visible)}}
+
+
+def _with_day(base: dict[str, Any], day: str | None, tz: str | None) -> dict[str, Any]:
+    """Narrow a filter to applications applied on one local calendar day."""
+    if not day:
+        return base
+    try:
+        parsed = daily.parse_day(day)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="day must be YYYY-MM-DD.") from exc
+    start, end = daily.day_bounds_utc(parsed, daily.resolve_tz(tz))
+    # $and keeps this $or from colliding with the search box's $or.
+    return {**base, "$and": [*base.get("$and", []), daily.applied_between_filter(start, end)]}
 
 
 async def _member(member_id: str, visible: Visible) -> dict:
@@ -140,8 +156,8 @@ async def tracking_summary(visible: Visible = Depends(visible_members)) -> list[
                 has_access=pub["has_access"],
                 total=agg.get("total", 0),
                 by_status=agg.get("by_status", {}),
-                last_applied_at=agg.get("last_applied_at"),
-                last_activity_at=agg.get("last_activity_at"),
+                last_applied_at=as_utc(agg.get("last_applied_at")),
+                last_activity_at=as_utc(agg.get("last_activity_at")),
             )
         )
     # Most active job seekers first; members with no applications keep sign-up order.
@@ -156,9 +172,12 @@ async def list_member_applications(
     q: str | None = Query(default=None, max_length=200),
     limit: int = Query(default=50, ge=1, le=200),
     cursor: str | None = Query(default=None),
+    day: str | None = Query(default=None, description="Only jobs applied on this day (YYYY-MM-DD)"),
+    tz: str | None = Query(default=None, description="IANA time zone for `day`, e.g. Europe/Belgrade"),
     visible: Visible = Depends(visible_members),
 ) -> MemberApplicationListResponse:
-    query = service.build_list_query(_scope(member_id, visible), status=status, q=q, cursor=cursor)
+    base = _with_day(_scope(member_id, visible), day, tz)
+    query = service.build_list_query(base, status=status, q=q, cursor=cursor)
     docs, next_cursor = await service.list_page(query, limit)
     members = await _members_by_id({d["user_id"] for d in docs})
     items = [
@@ -173,10 +192,40 @@ async def list_member_applications(
 @router.get("/stats", response_model=ApplicationStatsResponse)
 async def member_application_stats(
     member_id: str | None = Query(default=None),
+    day: str | None = Query(default=None),
+    tz: str | None = Query(default=None),
     visible: Visible = Depends(visible_members),
 ) -> ApplicationStatsResponse:
-    total, by_status = await service.status_counts(_scope(member_id, visible))
+    total, by_status = await service.status_counts(_with_day(_scope(member_id, visible), day, tz))
     return ApplicationStatsResponse(total=total, by_status=by_status)
+
+
+@router.get("/daily", response_model=DailyApplicationsResponse)
+async def applications_per_day(
+    member_id: str | None = Query(default=None),
+    days: int = Query(default=30, ge=1, le=180),
+    tz: str | None = Query(default=None, description="IANA time zone, e.g. Europe/Belgrade (default UTC)"),
+    visible: Visible = Depends(visible_members),
+) -> DailyApplicationsResponse:
+    """Applications per calendar day for the last `days` days (today included)."""
+    zone = daily.resolve_tz(tz)
+    today = daily.local_today(zone)
+    first_day = today - timedelta(days=days - 1)
+    start, _ = daily.day_bounds_utc(first_day, zone)
+    _, end = daily.day_bounds_utc(today, zone)
+    query = {**_scope(member_id, visible), **daily.applied_between_filter(start, end)}
+    docs = [
+        d
+        async for d in get_db().applications.find(
+            query, {"user_id": 1, "submitted_at": 1, "created_at": 1}
+        )
+    ]
+    members = await _members_by_id({d["user_id"] for d in docs})
+    names = {uid: (u.get("name") or u.get("email") or "") for uid, u in members.items()}
+    points = daily.bucket_by_day(docs, tz=zone, first_day=first_day, days=days, member_names=names)
+    return DailyApplicationsResponse(
+        days=points, total=sum(p["count"] for p in points), tz=getattr(zone, "key", "UTC")
+    )
 
 
 # ---------------------------------------------------------------------------

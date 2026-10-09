@@ -269,11 +269,18 @@ export type MemberTrackingSummary = {
 
 const ADMIN_APPS = "/api/admin/applications";
 
-/** Manager (owner) access to members' trackers. `memberId` scopes list/stats/create to one member. */
-export function adminApplicationsApi(memberId: string | null): TrackerApi {
+/** The viewer's IANA time zone, so "a day" means their calendar day. */
+export const viewerTimeZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+
+/**
+ * Manager access to members' trackers. `memberId` scopes list/stats/create to one member;
+ * `day` (YYYY-MM-DD, viewer's time zone) narrows list/stats to jobs applied that day.
+ */
+export function adminApplicationsApi(memberId: string | null, day: string | null = null): TrackerApi {
   const scope = (params: Record<string, string | number | undefined>) => {
     const qs = new URLSearchParams();
-    Object.entries({ ...params, member_id: memberId ?? undefined }).forEach(
+    const dayParams = day ? { day, tz: viewerTimeZone() } : {};
+    Object.entries({ ...params, ...dayParams, member_id: memberId ?? undefined }).forEach(
       ([k, v]) => v != null && v !== "" && qs.set(k, String(v)),
     );
     return qs.toString() ? `?${qs}` : "";
@@ -299,9 +306,20 @@ export function adminApplicationsApi(memberId: string | null): TrackerApi {
   };
 }
 
+export type DailyApplications = {
+  days: { date: string; count: number; members: { id: string; name: string; count: number }[] }[];
+  total: number;
+  tz: string;
+};
+
 export const adminTrackingApi = {
   summary() {
     return apiFetch<MemberTrackingSummary[]>(`${ADMIN_APPS}/summary`);
+  },
+  daily(memberId: string | null, days: number) {
+    const qs = new URLSearchParams({ days: String(days), tz: viewerTimeZone() });
+    if (memberId) qs.set("member_id", memberId);
+    return apiFetch<DailyApplications>(`${ADMIN_APPS}/daily?${qs}`);
   },
 };
 

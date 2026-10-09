@@ -112,13 +112,19 @@ async def upsert(user_id: ObjectId, body: ApplicationUpsertRequest, now: datetim
     return await db.applications.find_one({"_id": existing["_id"]})
 
 
+def _duplicate_detail(existing: dict, prefix: str) -> str:
+    what = " at ".join(p for p in (existing.get("job_title"), existing.get("company")) if p)
+    return f"{prefix} ({what or existing.get('job_url') or 'existing entry'})."
+
+
 async def create_strict(user_id: ObjectId, body: ApplicationUpsertRequest) -> dict:
     """Manual insert: refuse (409) instead of merging into an existing record for the same job."""
     exists = await get_db().applications.find_one(
-        {"user_id": user_id, "job_hash": job_hash(body.job_url)}, {"_id": 1}
+        {"user_id": user_id, "job_hash": job_hash(body.job_url)},
+        {"job_title": 1, "company": 1, "job_url": 1},
     )
     if exists:
-        raise HTTPException(status_code=409, detail="This job is already in the tracker.")
+        raise HTTPException(status_code=409, detail=_duplicate_detail(exists, "This job is already in the tracker"))
     return await upsert(user_id, body, datetime.now(UTC))
 
 
@@ -131,10 +137,11 @@ async def update(doc: dict, body: ApplicationUpdateRequest) -> dict:
         url = body.job_url.strip()
         new_hash = job_hash(url)
         clash = await db.applications.find_one(
-            {"user_id": doc["user_id"], "job_hash": new_hash, "_id": {"$ne": doc["_id"]}}, {"_id": 1}
+            {"user_id": doc["user_id"], "job_hash": new_hash, "_id": {"$ne": doc["_id"]}},
+            {"job_title": 1, "company": 1, "job_url": 1},
         )
         if clash:
-            raise HTTPException(status_code=409, detail="Another tracked job already uses this URL.")
+            raise HTTPException(status_code=409, detail=_duplicate_detail(clash, "Another tracked job already uses this URL"))
         updates.update(job_url=url, job_hash=new_hash)
         detected = detect_ats(url)
         if detected != "other":

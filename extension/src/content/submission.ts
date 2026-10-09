@@ -15,7 +15,9 @@
  * into a resume-like upload field (or the extension attaches one), and the
  * background sends it along with the record.
  */
+import { detectJob } from "../detectors";
 import type { BgToFrame, FrameToBg } from "../lib/frames";
+import type { DetectedJob } from "../lib/types";
 import { sendToBackground } from "../lib/messaging";
 
 const isTopFrame = window.top === window.self;
@@ -64,7 +66,13 @@ export function isFinalSubmitControl(el: Element): boolean {
 }
 
 function arm(): void {
-  report({ type: "frame:submit-clicked", pageUrl: location.href, pageTitle: document.title });
+  let job: DetectedJob | null = null;
+  try {
+    job = detectJob();
+  } catch {
+    /* detection is best-effort here — the background has other sources */
+  }
+  report({ type: "frame:submit-clicked", pageUrl: location.href, pageTitle: document.title, job });
 }
 
 // ---------------------------------------------------------------------------

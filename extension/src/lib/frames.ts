@@ -15,7 +15,8 @@ export type FrameToBg =
   // The user clicked what looks like the form's final submit control in this
   // frame. Only *arms* tracking — nothing is recorded until a confirmation
   // follows (see content/submission.ts).
-  | { type: "frame:submit-clicked"; pageUrl: string; pageTitle: string }
+  // `job` is what this frame itself detects at click time (may be null).
+  | { type: "frame:submit-clicked"; pageUrl: string; pageTitle: string; job: DetectedJob | null }
   // A "thanks for applying"-style confirmation appeared in this frame while armed.
   | { type: "frame:confirmation"; pageUrl: string; evidence: string }
   // The resume that will go out with the application: a file the user picked

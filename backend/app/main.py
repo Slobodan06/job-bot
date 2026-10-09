@@ -21,6 +21,7 @@ from app.auth.dependencies import get_builder_user
 from app.applications.admin_routes import router as admin_applications_router
 from app.applications.routes import router as applications_router
 from app.cv_templates.routes import router as cv_templates_router
+from app.extension.download import router as extension_download_router
 from app.extension.routes import router as extension_router
 from app.job_boards.routes import router as job_boards_router
 from app.jobs.routes import router as jobs_router
@@ -109,6 +110,7 @@ app.include_router(cv_templates_router)
 app.include_router(resume_router)
 app.include_router(applications_router)
 app.include_router(admin_applications_router)
+app.include_router(extension_download_router)
 app.include_router(extension_router)
 app.include_router(jobs_router)
 app.include_router(job_boards_router)

@@ -20,13 +20,13 @@ import { notifications } from "@mantine/notifications";
 import {
   IconBrowserPlus,
   IconCheck,
-  IconExternalLink,
   IconPlus,
   IconRefresh,
   IconTrash,
   IconUpload,
 } from "@tabler/icons-react";
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 
 import { extensionApi, resumeApi } from "../auth/api";
 import { TrackerTab } from "./applications/TrackerTab";
@@ -377,10 +377,8 @@ export default function ApplicationsPage() {
           <Button
             variant="light"
             leftSection={<IconBrowserPlus size={16} />}
-            rightSection={<IconExternalLink size={14} />}
-            component="a"
-            href="https://chromewebstore.google.com/"
-            target="_blank"
+            component={Link}
+            to="/download"
           >
             Get the browser extension
           </Button>

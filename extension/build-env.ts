@@ -26,6 +26,10 @@ function toOrigin(name: string, value: string): string {
 }
 
 export function resolveOrigins(mode: string): { apiOrigin: string; webOrigin: string } {
+  // An empty variable (e.g. an unset Docker build ARG) must not override the .env file.
+  for (const key of ["JOBBOT_API_ORIGIN", "JOBBOT_WEB_ORIGIN"]) {
+    if (process.env[key] !== undefined && !process.env[key]!.trim()) delete process.env[key];
+  }
   const env = loadEnv(mode, here, "JOBBOT_");
   if (!env.JOBBOT_API_ORIGIN) {
     throw new Error(`JOBBOT_API_ORIGIN is not set — add it to extension/.env.${mode} or the environment.`);

@@ -89,3 +89,21 @@ class MemberTrackingSummary(BaseModel):
     by_status: dict[str, int] = Field(default_factory=dict)
     last_applied_at: datetime | None = None
     last_activity_at: datetime | None = None
+
+
+class DailyMemberCount(BaseModel):
+    id: str
+    name: str
+    count: int
+
+
+class DailyPoint(BaseModel):
+    date: str  # YYYY-MM-DD in the requested time zone
+    count: int
+    members: list[DailyMemberCount] = Field(default_factory=list)
+
+
+class DailyApplicationsResponse(BaseModel):
+    days: list[DailyPoint]
+    total: int
+    tz: str

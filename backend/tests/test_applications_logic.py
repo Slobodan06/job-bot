@@ -29,6 +29,34 @@ class JobUrlTests(unittest.TestCase):
             job_hash("https://jobs.lever.co/acme/bbb"),
         )
 
+    def test_greenhouse_embeds_for_different_jobs_differ(self) -> None:
+        # Regression: these used to collapse to .../embed/job_app and merge into one record.
+        yurts = "https://job-boards.greenhouse.io/embed/job_app?for=yurtsai&token=5171066007&jr_id=6a97ceabaf954907d65709a2"
+        weedmaps = "https://job-boards.greenhouse.io/embed/job_app?for=weedmaps&token=7012345&jr_id=6a97ceabaf954907d65709a2"
+        self.assertNotEqual(job_hash(yurts), job_hash(weedmaps))
+        self.assertEqual(
+            "https://job-boards.greenhouse.io/embed/job_app?for=yurtsai&token=5171066007", normalize_job_url(yurts)
+        )
+
+    def test_same_job_with_different_tracking_params_matches(self) -> None:
+        a = "https://job-boards.greenhouse.io/embed/job_app?for=yurtsai&token=5171066007&jr_id=aaa"
+        b = "https://job-boards.greenhouse.io/embed/job_app?token=5171066007&utm_source=jobright&for=yurtsai&jr_id=bbb"
+        self.assertEqual(job_hash(a), job_hash(b))
+        self.assertEqual(
+            job_hash("https://jobs.lever.co/acme/abc?lever-source=LinkedIn"),
+            job_hash("https://jobs.lever.co/acme/abc/"),
+        )
+        self.assertEqual(
+            job_hash("https://www.indeed.com/viewjob?jk=abc&from=serp&gclid=1"),
+            job_hash("https://www.indeed.com/viewjob?jk=abc"),
+        )
+
+    def test_unknown_query_params_identify_the_job(self) -> None:
+        self.assertNotEqual(
+            job_hash("https://careers.acme.com/job?req=101"),
+            job_hash("https://careers.acme.com/job?req=102"),
+        )
+
     def test_detect_ats(self) -> None:
         self.assertEqual("greenhouse", detect_ats("https://boards.greenhouse.io/x/jobs/1"))
         self.assertEqual("lever", detect_ats("https://jobs.lever.co/x/y"))

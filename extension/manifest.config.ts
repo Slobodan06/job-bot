@@ -17,7 +17,9 @@ export default function buildManifest(apiOrigin: string) {
     action: { default_popup: "src/popup/index.html", default_title: "JobBot Copilot" },
     options_ui: { page: "src/options/index.html", open_in_tab: true },
     background: { service_worker: "src/background/index.ts", type: "module" },
-    permissions: ["storage"],
+    // webNavigation: know when a tab moves to a new page / which frames still
+    // exist, so a job from an earlier page is never credited for a new submission.
+    permissions: ["storage", "webNavigation"],
     host_permissions: [`${apiOrigin}/*`],
     content_scripts: [
       {

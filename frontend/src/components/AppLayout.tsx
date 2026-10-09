@@ -14,6 +14,7 @@ import {
   UnstyledButton,
 } from "@mantine/core";
 import {
+  IconBrandChrome,
   IconBriefcase,
   IconChevronDown,
   IconFileCv,
@@ -41,6 +42,7 @@ function pageTitle(pathname: string): string {
   if (pathname.startsWith("/profile")) return "Your profile";
   if (pathname.startsWith("/admin/members")) return "Member management";
   if (pathname.startsWith("/admin/applications")) return "Team applications";
+  if (pathname.startsWith("/download")) return "Browser extension";
   if (pathname.startsWith("/auth")) return "Account";
   if (pathname.startsWith("/pending-access")) return "Access pending";
   return "Resume tailor";
@@ -149,6 +151,9 @@ export function AppLayout() {
                         </Menu.Item>
                       </>
                     ) : null}
+                    <Menu.Item leftSection={<IconBrandChrome size={16} />} component={Link} to="/download">
+                      Get the extension
+                    </Menu.Item>
                     <Menu.Item leftSection={<IconUser size={16} />} component={Link} to="/profile">
                       Profile settings
                     </Menu.Item>

@@ -24,6 +24,7 @@ const PendingAccessPage = lazy(() => import("./pages/PendingAccessPage"));
 const ProfilePage = lazy(() => import("./pages/ProfilePage"));
 const MembersPage = lazy(() => import("./pages/MembersPage"));
 const TeamApplicationsPage = lazy(() => import("./pages/TeamApplicationsPage"));
+const DownloadExtensionPage = lazy(() => import("./pages/DownloadExtensionPage"));
 const TemplatesPage = lazy(() => import("./pages/TemplatesPage"));
 
 function PageLoader() {
@@ -51,6 +52,8 @@ export default function App() {
                 }
               />
               <Route path="auth/check-email" element={<CheckEmailPage />} />
+              {/* Public, so the page can be shared as a plain link. */}
+              <Route path="download" element={<DownloadExtensionPage />} />
               <Route path="auth/verify" element={<VerifyEmailPage />} />
               <Route
                 path="pending-access"

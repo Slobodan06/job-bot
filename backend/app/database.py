@@ -2,7 +2,7 @@ import os
 from typing import Any
 
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase, AsyncIOMotorCollection
-from pymongo.errors import OperationFailure
+from pymongo.errors import DuplicateKeyError, OperationFailure
 
 from app.auth.roles import get_owner_email, is_owner_email, member_type, user_can_manage_applications
 from app.services.template_catalog import get_template_meta
@@ -62,6 +62,29 @@ def get_db() -> AsyncIOMotorDatabase:
     return _db
 
 
+async def migrate_job_hashes() -> int:
+    """Re-key applications whose stored ``job_hash`` predates the current URL rules.
+
+    Cheap and idempotent (only rows whose hash changed are written), so it simply
+    runs at every startup. If a member already has another row under the new key,
+    the old row is left as is rather than merged.
+    """
+    from app.applications.logic import job_hash
+
+    db = get_db()
+    changed = 0
+    async for doc in db.applications.find({}, {"job_url": 1, "job_hash": 1, "user_id": 1}):
+        new_hash = job_hash(doc.get("job_url") or "")
+        if not doc.get("job_url") or new_hash == doc.get("job_hash"):
+            continue
+        try:
+            await db.applications.update_one({"_id": doc["_id"]}, {"$set": {"job_hash": new_hash}})
+            changed += 1
+        except DuplicateKeyError:
+            pass
+    return changed
+
+
 async def ensure_indexes() -> None:
     db = get_db()
     await db.users.create_index("email", unique=True)
@@ -76,6 +99,7 @@ async def ensure_indexes() -> None:
     await db["applied_resumes.files"].create_index(
         [("metadata.user_id", 1), ("metadata.application_id", 1)]
     )
+    await migrate_job_hashes()
 
     # Job boards/sourced jobs are shared app-wide (only an owner adds sources; the
     # whole team sees results) — drop the earlier per-user index shape if present.

@@ -95,6 +95,33 @@ function bestJobForTab(tabId: number): DetectedJob | null {
   return best;
 }
 
+/**
+ * Forget frames that no longer exist. Without this, an iframe from a job viewed
+ * earlier in the same tab (e.g. a previous Greenhouse embed) kept "winning"
+ * bestJobForTab, so every later submission was recorded as that first job.
+ */
+async function pruneDeadFrames(tabId: number): Promise<void> {
+  const frames = framesByTab.get(tabId);
+  if (!frames?.size) return;
+  const live = await chrome.webNavigation.getAllFrames({ tabId }).catch(() => null);
+  if (!live) return;
+  const alive = new Set(live.map((f) => f.frameId));
+  for (const frameId of Array.from(frames.keys())) {
+    if (!alive.has(frameId)) frames.delete(frameId);
+  }
+}
+
+// A new top-level document means every previously reported frame is gone.
+chrome.webNavigation.onCommitted.addListener(({ tabId, frameId }) => {
+  if (frameId !== 0) return;
+  framesByTab.delete(tabId);
+  lastPushedSignature.delete(tabId);
+});
+// SPA navigation keeps the document but may swap the job's iframe.
+chrome.webNavigation.onHistoryStateUpdated.addListener(({ tabId, frameId }) => {
+  if (frameId === 0) void pruneDeadFrames(tabId);
+});
+
 function pushToTopFrame(tabId: number, message: BgToFrame): void {
   chrome.tabs.sendMessage(tabId, message, { frameId: 0 }).catch(() => {
     /* top frame may not have a listener yet (early navigation) — ignore */
@@ -120,11 +147,21 @@ type CapturedResume = {
 };
 type TabTracking = {
   lastJob: DetectedJob | null;
+  lastJobAt: number | null;
   resume: CapturedResume | null;
   armedAt: number | null;
   armedJob: DetectedJob | null;
 };
-const EMPTY_TRACKING: TabTracking = { lastJob: null, resume: null, armedAt: null, armedJob: null };
+const EMPTY_TRACKING: TabTracking = {
+  lastJob: null,
+  lastJobAt: null,
+  resume: null,
+  armedAt: null,
+  armedJob: null,
+};
+// A remembered job only stands in for the current page if it's this fresh and
+// from the same site — otherwise it's probably a different job seen earlier.
+const LAST_JOB_TTL_MS = 30 * 60 * 1000;
 
 const trackingKey = (tabId: number) => `track:${tabId}`;
 const trackingQueues = new Map<number, Promise<unknown>>();
@@ -175,13 +212,34 @@ function notifyTopFrame(tabId: number, ok: boolean, message: string): void {
   pushToTopFrame(tabId, { type: "track:recorded", ok, message });
 }
 
-async function armTracking(tabId: number, pageUrl: string, pageTitle: string): Promise<void> {
-  const tab = await chrome.tabs.get(tabId).catch(() => null);
-  const st = await updateTracking(tabId, (cur) => ({
-    armedAt: Date.now(),
-    armedJob:
-      bestJobForTab(tabId) || cur.lastJob || fallbackJob(tab?.url || pageUrl, tab?.title || pageTitle),
-  }));
+function sameSite(a: string, b: string): boolean {
+  try {
+    return new URL(a).hostname === new URL(b).hostname;
+  } catch {
+    return false;
+  }
+}
+
+async function armTracking(
+  tabId: number,
+  pageUrl: string,
+  pageTitle: string,
+  clickedFrameJob: DetectedJob | null,
+): Promise<void> {
+  await pruneDeadFrames(tabId);
+  const current = bestJobForTab(tabId);
+  const st = await updateTracking(tabId, (cur) => {
+    const recentLast =
+      cur.lastJob && cur.lastJobAt && Date.now() - cur.lastJobAt < LAST_JOB_TTL_MS && sameSite(cur.lastJob.url, pageUrl)
+        ? cur.lastJob
+        : null;
+    return {
+      armedAt: Date.now(),
+      // Most trustworthy first: what the live frames of this page show, then what the
+      // frame holding the Submit button sees itself, then a recent same-site memory.
+      armedJob: current || clickedFrameJob || recentLast || fallbackJob(pageUrl, pageTitle),
+    };
+  });
   // No frameId → every frame of the tab starts watching for the confirmation.
   chrome.tabs
     .sendMessage(tabId, { type: "track:armed", until: (st.armedAt ?? 0) + ARM_TTL_MS } satisfies BgToFrame)
@@ -250,14 +308,16 @@ function handleFrameMessage(req: FrameToBg, sender: chrome.runtime.MessageSender
       framesByTab.set(tabId, frames);
     }
     frames.set(frameId, req.job);
-    const best = bestJobForTab(tabId);
-    // Remembered past navigation: the confirmation page rarely looks like a job.
-    if (best) void updateTracking(tabId, () => ({ lastJob: best }));
-    const sig = best ? `${best.url}|${best.job_title}|${best.text.length}` : "";
-    if (sig !== lastPushedSignature.get(tabId)) {
-      lastPushedSignature.set(tabId, sig);
-      pushToTopFrame(tabId, { type: "job:update", job: best });
-    }
+    void pruneDeadFrames(tabId).then(() => {
+      const best = bestJobForTab(tabId);
+      // Remembered past navigation: the confirmation page rarely looks like a job.
+      if (best) void updateTracking(tabId, () => ({ lastJob: best, lastJobAt: Date.now() }));
+      const sig = best ? `${best.url}|${best.job_title}|${best.text.length}` : "";
+      if (sig !== lastPushedSignature.get(tabId)) {
+        lastPushedSignature.set(tabId, sig);
+        pushToTopFrame(tabId, { type: "job:update", job: best });
+      }
+    });
     return;
   }
   if (req.type === "frame:fill-progress") {
@@ -291,7 +351,7 @@ function handleFrameMessage(req: FrameToBg, sender: chrome.runtime.MessageSender
     return;
   }
   if (req.type === "frame:submit-clicked") {
-    void armTracking(tabId, req.pageUrl, req.pageTitle);
+    void armTracking(tabId, req.pageUrl, req.pageTitle, req.job);
     return;
   }
   if (req.type === "frame:confirmation") {

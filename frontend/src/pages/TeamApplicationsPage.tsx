@@ -13,7 +13,7 @@ import {
   Title,
 } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
-import { IconBriefcase, IconRefresh } from "@tabler/icons-react";
+import { IconBriefcase, IconRefresh, IconX } from "@tabler/icons-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
@@ -24,6 +24,7 @@ import {
   MEMBER_TYPE_LABEL,
   type MemberTrackingSummary,
 } from "../auth/api";
+import { ApplicationsPerDayChart, formatDay } from "../components/ApplicationsPerDayChart";
 import { TrackerTab } from "./applications/TrackerTab";
 
 // Pipeline stages worth a column in the overview (everything else is in "Total").
@@ -74,7 +75,21 @@ export default function TeamApplicationsPage() {
     setParams(next, { replace: true });
   };
 
-  const api = useMemo(() => adminApplicationsApi(memberId), [memberId]);
+  // Clicking a day in the chart lists just that day's applications (kept in the URL too).
+  const selectedDay = params.get("day");
+  const selectDay = (day: string | null) => {
+    const next = new URLSearchParams(params);
+    if (day) next.set("day", day);
+    else next.delete("day");
+    setParams(next, { replace: true });
+  };
+  const [chartKey, setChartKey] = useState(0);
+  const onTrackerChanged = useCallback(() => {
+    void loadSummary();
+    setChartKey((k) => k + 1);
+  }, [loadSummary]);
+
+  const api = useMemo(() => adminApplicationsApi(memberId, selectedDay), [memberId, selectedDay]);
   const selected = summary.find((row) => row.member.id === memberId) ?? null;
   const selectedLabel = selected ? selected.member.name || selected.member.email : null;
   const teamTotal = summary.reduce((sum, row) => sum + row.total, 0);
@@ -219,12 +234,34 @@ export default function TeamApplicationsPage() {
               }))}
             />
           </Group>
+          <ApplicationsPerDayChart
+            memberId={memberId}
+            selectedDay={selectedDay}
+            onSelectDay={selectDay}
+            refreshKey={chartKey}
+          />
+          {selectedDay ? (
+            <Group gap="xs">
+              <Text size="sm">
+                Showing applications from <b>{formatDay(selectedDay)}</b>
+              </Text>
+              <Button size="compact-xs" variant="light" color="gray" leftSection={<IconX size={12} />} onClick={() => selectDay(null)}>
+                Show all days
+              </Button>
+            </Group>
+          ) : null}
           <TrackerTab
             api={api}
             showMember={!memberId}
             createDisabledReason={memberId ? null : "Pick a member first — new jobs go into their tracker."}
-            emptyText={selectedLabel ? `${selectedLabel} hasn't tracked any applications yet.` : "No member has tracked any applications yet."}
-            onChanged={loadSummary}
+            emptyText={
+              selectedDay
+                ? `No applications on ${formatDay(selectedDay)}.`
+                : selectedLabel
+                  ? `${selectedLabel} hasn't tracked any applications yet.`
+                  : "No member has tracked any applications yet."
+            }
+            onChanged={onTrackerChanged}
           />
         </Stack>
       </Stack>
