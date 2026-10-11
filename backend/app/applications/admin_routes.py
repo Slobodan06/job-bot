@@ -30,8 +30,8 @@ from app.applications.schemas import (
     MemberRef,
     MemberTrackingSummary,
 )
-from app.auth.dependencies import get_applications_manager, public_user
-from app.auth.roles import member_type, user_is_owner
+from app.auth.dependencies import get_applications_manager, get_team_viewer, public_user
+from app.auth.roles import member_type, user_can_manage_applications, user_is_owner
 from app.database import get_db
 
 router = APIRouter(prefix="/api/admin/applications", tags=["admin"])
@@ -62,11 +62,22 @@ async def _with_member(doc: dict, member: dict | None = None) -> MemberApplicati
 Visible = set[ObjectId] | None
 
 
-async def visible_members(manager: dict = Depends(get_applications_manager)) -> Visible:
-    if user_is_owner(manager):
+async def visible_members(viewer: dict = Depends(get_team_viewer)) -> Visible:
+    """Owner: everyone. Team-tracker permission: all bidders. Team member: their assigned bidders."""
+    if user_is_owner(viewer):
         return None
-    cursor = get_db().users.find({"member_type": "bidder", "role": {"$ne": "owner"}}, {"_id": 1})
-    return {u["_id"] async for u in cursor}
+    query: dict[str, Any] = {"member_type": "bidder", "role": {"$ne": "owner"}}
+    if not user_can_manage_applications(viewer):
+        query["assigned_team_member_id"] = viewer["_id"]
+    return {u["_id"] async for u in get_db().users.find(query, {"_id": 1})}
+
+
+async def writable_members(
+    _manager: dict = Depends(get_applications_manager),
+    visible: Visible = Depends(visible_members),
+) -> Visible:
+    """Changes need the owner or the Team tracker permission — team members only view."""
+    return visible
 
 
 def _hidden(user_id: Any, visible: Visible) -> bool:
@@ -237,7 +248,7 @@ async def applications_per_day(
 async def create_member_application(
     body: ApplicationUpsertRequest,
     member_id: str = Query(..., description="Member whose tracker gets the job"),
-    visible: Visible = Depends(visible_members),
+    visible: Visible = Depends(writable_members),
 ) -> MemberApplicationPublic:
     member = await _member(member_id, visible)
     return await _with_member(await service.create_strict(member["_id"], body), member)
@@ -254,14 +265,14 @@ async def get_member_application(
 async def update_member_application(
     application_id: str,
     body: ApplicationUpdateRequest,
-    visible: Visible = Depends(visible_members),
+    visible: Visible = Depends(writable_members),
 ) -> MemberApplicationPublic:
     doc = await _application(application_id, visible)
     return await _with_member(await service.update(doc, body))
 
 
 @router.delete("/{application_id}", status_code=204)
-async def delete_member_application(application_id: str, visible: Visible = Depends(visible_members)) -> None:
+async def delete_member_application(application_id: str, visible: Visible = Depends(writable_members)) -> None:
     await service.delete(await _application(application_id, visible))
 
 
@@ -274,7 +285,7 @@ async def download_member_resume(application_id: str, visible: Visible = Depends
 async def replace_member_resume(
     application_id: str,
     resume: UploadFile = File(...),
-    visible: Visible = Depends(visible_members),
+    visible: Visible = Depends(writable_members),
 ) -> MemberApplicationPublic:
     doc = await _application(application_id, visible)
     return await _with_member(await service.replace_resume(doc, resume))
@@ -282,7 +293,7 @@ async def replace_member_resume(
 
 @router.delete("/{application_id}/resume", response_model=MemberApplicationPublic)
 async def remove_member_resume(
-    application_id: str, visible: Visible = Depends(visible_members)
+    application_id: str, visible: Visible = Depends(writable_members)
 ) -> MemberApplicationPublic:
     doc = await _application(application_id, visible)
     return await _with_member(await service.remove_resume(doc))

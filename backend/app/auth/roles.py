@@ -55,3 +55,11 @@ MEMBER_TYPES = ("team_member", "bidder")
 def member_type(doc: dict) -> str:
     value = doc.get("member_type")
     return value if value in MEMBER_TYPES else "team_member"
+
+
+def user_can_view_team(doc: dict) -> bool:
+    """Open Team applications: managers (see above) plus team members, who see the
+    bidders assigned to them — read-only unless they also can_manage_applications."""
+    if user_can_manage_applications(doc):
+        return True
+    return user_can_build(doc) and member_type(doc) == "team_member"

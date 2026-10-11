@@ -28,6 +28,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { authApi } from "../auth/api";
+import { BaseResumeCard } from "../components/BaseResumeCard";
 import { useAuth } from "../auth/AuthContext";
 
 function userInitials(name: string, email: string): string {
@@ -218,6 +219,7 @@ export default function ProfilePage() {
 
         <Grid.Col span={{ base: 12, md: 8 }}>
           <Stack gap="lg">
+            <BaseResumeCard />
             <Paper withBorder radius="lg" p={{ base: "md", sm: "lg" }} bg="dark.7">
               <Stack gap="md">
                 <div>

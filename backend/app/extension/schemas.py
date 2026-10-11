@@ -74,6 +74,10 @@ class ExtensionProfileResponse(BaseModel):
     email: str = ""
     has_base_resume: bool = False
     autofill_profile: dict[str, Any] = Field(default_factory=dict)
+    # Bidders fill applications as their team member: the resume and autofill
+    # profile shown are the team member's, and the bidder can't edit them.
+    read_only: bool = False
+    profile_owner_name: str = ""
 
 
 class FormField(BaseModel):

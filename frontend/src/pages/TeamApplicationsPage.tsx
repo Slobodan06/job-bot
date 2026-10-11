@@ -47,7 +47,9 @@ function formatDate(iso: string | null): string {
 
 /** Manager (owner) view of every member's application tracker. */
 export default function TeamApplicationsPage() {
-  const { isOwner } = useAuth();
+  const { isOwner, canManageApplications } = useAuth();
+  // Team members without the Team tracker permission only view their assigned bidders.
+  const readOnly = !canManageApplications;
   const [params, setParams] = useSearchParams();
   const memberId = params.get("member");
   const [summary, setSummary] = useState<MemberTrackingSummary[]>([]);
@@ -104,8 +106,9 @@ export default function TeamApplicationsPage() {
               <Title order={2}>Team applications</Title>
             </Group>
             <Text c="dimmed" size="sm" maw={680}>
-              Every member's tracked job applications. Pick a member to see, add, edit or delete their jobs and applied
-              resumes — changes show up in their own tracker immediately.
+              {readOnly
+                ? "Your assigned bidders' tracked job applications and how their job search is going."
+                : "Every member's tracked job applications. Pick a member to see, add, edit or delete their jobs and applied resumes — changes show up in their own tracker immediately."}
             </Text>
           </Stack>
           <Button variant="light" color="teal" leftSection={<IconRefresh size={16} />} onClick={loadSummary} loading={loading}>
@@ -115,7 +118,15 @@ export default function TeamApplicationsPage() {
 
         {!isOwner && (
           <Alert color="blue" variant="light">
-            You're seeing <b>bidders'</b> applications only. Team members' applications aren't shown here.
+            {readOnly ? (
+              <>
+                You're seeing the applications of the <b>bidders assigned to you</b> (view only).
+              </>
+            ) : (
+              <>
+                You're seeing <b>bidders'</b> applications only. Team members' applications aren't shown here.
+              </>
+            )}
           </Alert>
         )}
 
@@ -206,7 +217,11 @@ export default function TeamApplicationsPage() {
                   <Table.Tr>
                     <Table.Td colSpan={3 + SUMMARY_STATUSES.length + 1}>
                       <Text ta="center" c="dimmed" py="md">
-                        {isOwner ? "No members yet." : "No bidders yet — the owner marks members as bidders on the Members page."}
+                        {isOwner
+                          ? "No members yet."
+                          : readOnly
+                            ? "No bidders are assigned to you yet — the owner assigns them on the Members page."
+                            : "No bidders yet — the owner marks members as bidders on the Members page."}
                       </Text>
                     </Table.Td>
                   </Table.Tr>
@@ -251,6 +266,7 @@ export default function TeamApplicationsPage() {
             </Group>
           ) : null}
           <TrackerTab
+            readOnly={readOnly}
             api={api}
             showMember={!memberId}
             createDisabledReason={memberId ? null : "Pick a member first — new jobs go into their tracker."}

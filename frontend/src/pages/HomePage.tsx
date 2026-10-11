@@ -47,6 +47,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   tailorApi,
   coverLetterApi,
+  resumeApi,
+  type ResumeAccess,
   type TailorResponse,
   type CoverLetterResponse,
 } from "../auth/api";
@@ -70,6 +72,15 @@ const ACCEPT = [
 export default function HomePage() {
   const [activeTab, setActiveTab] = useState<string | null>("resume");
   const [file, setFile] = useState<File | null>(null);
+  // Which resume names this member may generate for (profile-name lock).
+  const [resumeAccess, setResumeAccess] = useState<ResumeAccess | null>(null);
+  useEffect(() => {
+    resumeApi.access().then(setResumeAccess).catch(() => setResumeAccess(null));
+  }, []);
+  // Bidders always generate from their assigned team member's base resume.
+  const usesTeamResume = Boolean(resumeAccess?.uses_team_member_resume);
+  // A dropped file, or the base resume (own, or a bidder's team member's).
+  const hasResumeSource = Boolean(file || resumeAccess?.has_base_resume);
   const [jobDescription, setJobDescription] = useState("");
   const [companyName, setCompanyName] = useState("");
   const [enableBold, setEnableBold] = useState(true);
@@ -145,8 +156,8 @@ export default function HomePage() {
   }, [coverLetterResult?.pdf_base64]);
 
   const canSubmit = useMemo(
-    () => Boolean(file && jobDescription.trim().length > 20),
-    [file, jobDescription],
+    () => hasResumeSource && jobDescription.trim().length > 20,
+    [hasResumeSource, jobDescription],
   );
 
   const resetQualificationReview = useCallback(() => {
@@ -163,7 +174,7 @@ export default function HomePage() {
   }, []);
 
   const onSubmit = useCallback(async () => {
-    if (!file) return;
+    if (!hasResumeSource) return;
     setLoading(true);
     setError(null);
     setResult(null);
@@ -182,6 +193,7 @@ export default function HomePage() {
     }
   }, [
     file,
+    hasResumeSource,
     jobDescription,
     enableBold,
     isNarrow,
@@ -189,7 +201,7 @@ export default function HomePage() {
   ]);
 
   const onCoverLetterSubmit = useCallback(async () => {
-    if (!file) return;
+    if (!hasResumeSource) return;
     setCoverLetterLoading(true);
     setCoverLetterError(null);
     setCoverLetterResult(null);
@@ -202,7 +214,7 @@ export default function HomePage() {
     } finally {
       setCoverLetterLoading(false);
     }
-  }, [file, jobDescription, companyName, isNarrow, openResultPanel]);
+  }, [file, hasResumeSource, jobDescription, companyName, isNarrow, openResultPanel]);
 
   const copyResult = async () => {
     if (!result) return;
@@ -399,72 +411,115 @@ export default function HomePage() {
           ) : null}
         </Group>
 
-        <Dropzone
-          onDrop={(files) => {
-            setFile(files[0]);
-            setError(null);
-            setCoverLetterError(null);
-            resetQualificationReview();
-          }}
-          onReject={onRejectFiles}
-          maxSize={15 * 1024 ** 2}
-          maxFiles={1}
-          accept={ACCEPT}
-          multiple={false}
-          radius="md"
-          styles={{
-            root: {
-              minHeight: isNarrow ? rem(140) : rem(160),
-            },
-          }}
-        >
-          <Group justify="center" gap="xl" mih={120} style={{ pointerEvents: "none" }}>
-            <Dropzone.Accept>
-              <ThemeIcon size={56} radius="xl" color="teal" variant="light">
-                <IconUpload size={28} stroke={1.5} />
+        {usesTeamResume ? (
+          <Paper withBorder radius="md" p="md" bg="dark.7">
+            <Group gap="sm" wrap="nowrap" align="flex-start">
+              <ThemeIcon size={40} radius="xl" variant="light" color={resumeAccess?.has_base_resume ? "teal" : "yellow"}>
+                <IconFileCv size={22} stroke={1.5} />
               </ThemeIcon>
-            </Dropzone.Accept>
-            <Dropzone.Reject>
-              <ThemeIcon size={56} radius="xl" color="red" variant="light">
-                <IconX size={28} stroke={1.5} />
-              </ThemeIcon>
-            </Dropzone.Reject>
-            <Dropzone.Idle>
-              <ThemeIcon size={56} radius="xl" color="gray" variant="light">
-                <IconFileCv size={28} stroke={1.5} />
-              </ThemeIcon>
-            </Dropzone.Idle>
-            <Stack gap={4} miw={0} style={{ flex: 1 }}>
-              <Text size="sm" fw={600} ta={{ base: "center", xs: "left" }}>
-                Drop your resume here
-              </Text>
-              <Text size="xs" c="dimmed" ta={{ base: "center", xs: "left" }} lineClamp={3}>
-                Word (.docx) or PDF (.pdf) resume — used for tailoring and cover letter context
-              </Text>
-            </Stack>
-          </Group>
-        </Dropzone>
-
-        {file ? (
-          <Group justify="space-between" wrap="nowrap" gap="xs">
-            <Text size="sm" truncate title={file.name} style={{ flex: 1 }}>
-              <Text span fw={500}>
-                Selected:
+              <Stack gap={2} miw={0}>
+                {resumeAccess?.has_base_resume ? (
+                  <>
+                    <Text size="sm" fw={600}>
+                      Using {resumeAccess.team_member_name}'s base resume
+                    </Text>
+                    <Text size="xs" c="dimmed">
+                      {resumeAccess.base_resume_name || "Base resume"}
+                      {resumeAccess.base_resume_updated_at
+                        ? ` · updated ${new Date(resumeAccess.base_resume_updated_at).toLocaleDateString()}`
+                        : ""}
+                      {" "}— managed by your team member; bidders don't upload resumes.
+                    </Text>
+                  </>
+                ) : (
+                  <Text size="sm" c="yellow.4">
+                    {resumeAccess?.reason ||
+                      `${resumeAccess?.team_member_name || "Your team member"} hasn't saved a base resume yet — ask them to upload it on the Applications page.`}
+                  </Text>
+                )}
+              </Stack>
+            </Group>
+          </Paper>
+        ) : (
+          <>
+          {resumeAccess?.has_base_resume && !file ? (
+            <Text size="xs" c="dimmed">
+              No file? Your base resume{" "}
+              <Text span fw={600} c="gray.3">
+                {resumeAccess.base_resume_name || ""}
               </Text>{" "}
-              {file.name}
+              (from your Profile page) is used.
             </Text>
-            <Button
-              variant="default"
-              size="compact-sm"
-              onClick={() => {
-                setFile(null);
-                resetQualificationReview();
-              }}
-            >
-              Clear
-            </Button>
-          </Group>
-        ) : null}
+          ) : null}
+
+          <Dropzone
+            onDrop={(files) => {
+              setFile(files[0]);
+              setError(null);
+              setCoverLetterError(null);
+              resetQualificationReview();
+            }}
+            onReject={onRejectFiles}
+            maxSize={15 * 1024 ** 2}
+            maxFiles={1}
+            accept={ACCEPT}
+            multiple={false}
+            radius="md"
+            styles={{
+              root: {
+                minHeight: isNarrow ? rem(140) : rem(160),
+              },
+            }}
+          >
+            <Group justify="center" gap="xl" mih={120} style={{ pointerEvents: "none" }}>
+              <Dropzone.Accept>
+                <ThemeIcon size={56} radius="xl" color="teal" variant="light">
+                  <IconUpload size={28} stroke={1.5} />
+                </ThemeIcon>
+              </Dropzone.Accept>
+              <Dropzone.Reject>
+                <ThemeIcon size={56} radius="xl" color="red" variant="light">
+                  <IconX size={28} stroke={1.5} />
+                </ThemeIcon>
+              </Dropzone.Reject>
+              <Dropzone.Idle>
+                <ThemeIcon size={56} radius="xl" color="gray" variant="light">
+                  <IconFileCv size={28} stroke={1.5} />
+                </ThemeIcon>
+              </Dropzone.Idle>
+              <Stack gap={4} miw={0} style={{ flex: 1 }}>
+                <Text size="sm" fw={600} ta={{ base: "center", xs: "left" }}>
+                  Drop your resume here
+                </Text>
+                <Text size="xs" c="dimmed" ta={{ base: "center", xs: "left" }} lineClamp={3}>
+                  Word (.docx) or PDF (.pdf) resume — used for tailoring and cover letter context
+                </Text>
+              </Stack>
+            </Group>
+          </Dropzone>
+
+          {file ? (
+            <Group justify="space-between" wrap="nowrap" gap="xs">
+              <Text size="sm" truncate title={file.name} style={{ flex: 1 }}>
+                <Text span fw={500}>
+                  Selected:
+                </Text>{" "}
+                {file.name}
+              </Text>
+              <Button
+                variant="default"
+                size="compact-sm"
+                onClick={() => {
+                  setFile(null);
+                  resetQualificationReview();
+                }}
+              >
+                Clear
+              </Button>
+            </Group>
+          ) : null}
+          </>
+        )}
 
         <Textarea
           label="Job description"
@@ -771,7 +826,9 @@ export default function HomePage() {
         */}
         {!canSubmit && !loading ? (
           <Text size="xs" c="dimmed" ta="center">
-            Add a .docx or .pdf resume and a job description (20+ characters).
+            {usesTeamResume
+              ? "Add a job description (20+ characters)."
+              : "Add a .docx or .pdf resume and a job description (20+ characters)."}
           </Text>
         ) : null}
         {error ? (
@@ -811,7 +868,9 @@ export default function HomePage() {
         </Button>
         {!canSubmit && !coverLetterLoading ? (
           <Text size="xs" c="dimmed" ta="center">
-            Add a .docx or .pdf resume and a job description (20+ characters).
+            {usesTeamResume
+              ? "Add a job description (20+ characters)."
+              : "Add a .docx or .pdf resume and a job description (20+ characters)."}
           </Text>
         ) : null}
         {coverLetterError ? (
@@ -1569,6 +1628,7 @@ export default function HomePage() {
           <SimpleGrid cols={{ base: 1, lg: 2 }} spacing={{ base: "md", lg: "lg" }}>
             {inputColumn}
             <ApplicationQuestionsChat
+              teamMemberResumeOf={usesTeamResume ? resumeAccess?.team_member_name || "your team member" : null}
               file={file}
               jobDescription={jobDescription}
               companyName={companyName.trim()}

@@ -14,6 +14,12 @@ export type User = {
   can_manage_applications: boolean;
   /** Bidders' applications are what delegated managers see; team members' are hidden from them. */
   member_type: MemberType;
+  /** Can open Team applications (team members see their assigned bidders, read-only). */
+  can_view_team_applications: boolean;
+  /** Whether this member saved a base resume (team members' bidders work from it). */
+  has_base_resume: boolean;
+  /** Bidders: the team member they work under. */
+  assigned_team_member_id: string | null;
   cv_template_key: string;
   cv_template_label: string;
   created_at: string | null;
@@ -338,6 +344,9 @@ export type ExtensionProfile = {
   email: string;
   has_base_resume: boolean;
   autofill_profile: Record<string, unknown>;
+  /** Bidders: the profile shown is their team member's and can't be edited. */
+  read_only: boolean;
+  profile_owner_name: string;
 };
 
 export const extensionApi = {
@@ -493,6 +502,21 @@ export const resumeApi = {
   remove() {
     return apiFetch<void>("/api/resume", { method: "DELETE" });
   },
+  /** Whose base resume this user works from (bidders: their team member's). */
+  access() {
+    return apiFetch<ResumeAccess>("/api/resume/access");
+  },
+};
+
+export type ResumeAccess = {
+  /** Bidders: everything uses the assigned team member's base resume; no uploads. */
+  uses_team_member_resume: boolean;
+  team_member_name: string;
+  /** Why a bidder can't generate yet (e.g. not assigned). */
+  reason: string;
+  has_base_resume: boolean;
+  base_resume_name: string;
+  base_resume_updated_at: string | null;
 };
 
 export const adminApi = {
@@ -527,6 +551,12 @@ export const adminApi = {
     return apiFetch<User>(`/api/admin/members/${memberId}/type`, {
       method: "PATCH",
       body: JSON.stringify({ member_type: memberType }),
+    });
+  },
+  setAssignment(memberId: string, teamMemberId: string | null) {
+    return apiFetch<User>(`/api/admin/members/${memberId}/assignment`, {
+      method: "PATCH",
+      body: JSON.stringify({ team_member_id: teamMemberId }),
     });
   },
   setMemberTemplate(memberId: string, templateKey: string | null) {
@@ -604,8 +634,9 @@ export type CandidateQualificationAnswer = {
 };
 
 export const tailorApi = {
+  /** `resume` null = use the base resume (a bidder's is always their team member's). */
   tailor(
-    resume: File,
+    resume: File | null,
     jobDescription: string,
     enableBold = true,
     candidateAnswers: CandidateQualificationAnswer[] = [],
@@ -613,7 +644,7 @@ export const tailorApi = {
     confirmedExperience = "",
   ) {
     const body = new FormData();
-    body.append("resume", resume);
+    if (resume) body.append("resume", resume);
     body.append("job_description", jobDescription);
     const verifiedAnswers = ([
       ...candidateAnswers,
@@ -631,9 +662,9 @@ export const tailorApi = {
     body.append("enable_bold", enableBold ? "true" : "false");
     return apiFetch<TailorResponse>("/api/tailor", { method: "POST", body });
   },
-  analyzeQualifications(resume: File, jobDescription: string) {
+  analyzeQualifications(resume: File | null, jobDescription: string) {
     const body = new FormData();
-    body.append("resume", resume);
+    if (resume) body.append("resume", resume);
     body.append("job_description", jobDescription);
     return apiFetch<QualificationAnalysisResponse>("/api/qualification-analysis", {
       method: "POST",
@@ -654,13 +685,13 @@ export type CoverLetterResponse = {
 
 export const coverLetterApi = {
   generate(
-    resume: File,
+    resume: File | null,
     jobDescription: string,
     companyName = "",
     targetJobRole = "",
   ) {
     const body = new FormData();
-    body.append("resume", resume);
+    if (resume) body.append("resume", resume);
     body.append("job_description", jobDescription);
     if (targetJobRole.trim()) {
       body.append("target_job_role", targetJobRole.trim());

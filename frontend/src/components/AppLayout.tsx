@@ -49,7 +49,7 @@ function pageTitle(pathname: string): string {
 }
 
 export function AppLayout() {
-  const { user, loading, logout, isAuthenticated, canBuild, isOwner, canManageApplications } = useAuth();
+  const { user, loading, logout, isAuthenticated, canBuild, isOwner, canViewTeamApplications } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const isBuilder = location.pathname.startsWith("/builder");
@@ -162,7 +162,7 @@ export function AppLayout() {
                         Manage members
                       </Menu.Item>
                     ) : null}
-                    {canManageApplications ? (
+                    {canViewTeamApplications ? (
                       <Menu.Item leftSection={<IconBriefcase size={16} />} component={Link} to="/admin/applications">
                         Team applications
                       </Menu.Item>

@@ -97,9 +97,9 @@ export function BuilderRoute({ children }: { children: React.ReactNode }) {
   return children;
 }
 
-/** Owner, or a member the owner allowed to manage the team's tracked applications. */
+/** Owner, Team-tracker permission holders, and team members (who see their assigned bidders). */
 export function ApplicationsManagerRoute({ children }: { children: React.ReactNode }) {
-  const { user, loading, canManageApplications } = useAuth();
+  const { user, loading, canViewTeamApplications } = useAuth();
 
   if (loading) {
     return (
@@ -113,7 +113,7 @@ export function ApplicationsManagerRoute({ children }: { children: React.ReactNo
     return <Navigate to="/auth" replace />;
   }
 
-  if (!canManageApplications) {
+  if (!canViewTeamApplications) {
     return <Navigate to={userCanBuild(user) ? "/builder" : "/pending-access"} replace />;
   }
 

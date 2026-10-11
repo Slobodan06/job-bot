@@ -18,6 +18,7 @@ load_dotenv()
 from app.auth.admin import router as admin_router
 from app.auth.routes import router as auth_router
 from app.auth.dependencies import get_builder_user
+from app.auth.resume_access import base_resume_for, reject_bidder_upload
 from app.applications.admin_routes import router as admin_applications_router
 from app.applications.routes import router as applications_router
 from app.cv_templates.routes import router as cv_templates_router
@@ -44,7 +45,6 @@ from app.services.cover_letter import generate_cover_letter
 from app.services.extract_text import extract_text_from_bytes
 from app.services.email import log_email_config
 from app.services.resume_ingest import ingest_resume
-from app.resume.store import get_base_resume_model
 from app.services.fresh_resume_builder import build_fresh_tailored_resume
 from app.services.qualification_questions import analyze_resume_qualification_gaps
 from app.services.tailor import tailor_resume
@@ -63,6 +63,20 @@ async def _read_resume_upload(resume: UploadFile) -> tuple[bytes, str]:
             detail="Upload a Word resume (.docx) or PDF (.pdf).",
         )
     return raw, name
+
+
+def _has_file(resume: UploadFile | None) -> bool:
+    return resume is not None and bool((resume.filename or "").strip())
+
+
+def _resume_filename(model) -> str:
+    return f"{(model.name or 'resume').split(' ')[0]}-resume.docx"
+
+
+async def _read_allowed_resume(resume: UploadFile, user: dict) -> tuple[bytes, str]:
+    """Read an uploaded resume — bidders may not upload (they use their team member's)."""
+    reject_bidder_upload(user)
+    return await _read_resume_upload(resume)
 
 
 @asynccontextmanager
@@ -136,10 +150,10 @@ async def health() -> dict[str, str | bool]:
 @app.post("/api/parse-sections", response_model=ParseSectionsResponse)
 async def parse_sections(
     resume: UploadFile = File(...),
-    _user: dict = Depends(get_builder_user),
+    user: dict = Depends(get_builder_user),
 ) -> ParseSectionsResponse:
     """Convert the upload into the normalized canonical resume model."""
-    raw, name = await _read_resume_upload(resume)
+    raw, name = await _read_allowed_resume(resume, user)
     try:
         model = await ingest_resume(raw, filename=name)
     except ValueError as e:
@@ -204,17 +218,13 @@ async def tailor(
     mode = (export_mode or "fresh_pdf").strip().lower()
 
     if resume is None or not (resume.filename or "").strip():
-        # No file: tailor from the user's saved base resume (used by the extension).
-        base_model = get_base_resume_model(user)
-        if base_model is None:
-            raise HTTPException(
-                status_code=400,
-                detail="Attach a resume or save a base resume first.",
-            )
+        # No file: tailor from the base resume — the user's own, or (for a bidder)
+        # their assigned team member's. Also what the extension uses.
+        base_model = await base_resume_for(user)
         try:
             return await build_fresh_tailored_resume(
                 resume_model=base_model,
-                original_filename=f"{(user.get('name') or 'resume').split(' ')[0]}-resume.docx",
+                original_filename=_resume_filename(base_model),
                 job_description=job_description,
                 target_job_role=target_job_role.strip(),
                 cv_template_key=None,
@@ -224,7 +234,7 @@ async def tailor(
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
 
-    raw, name = await _read_resume_upload(resume)
+    raw, name = await _read_allowed_resume(resume, user)
     lower_name = name.lower()
     # In-place Word editing needs the original .docx; anything else uses fresh export.
     if mode != "fresh_pdf" and not lower_name.endswith(".docx"):
@@ -265,16 +275,19 @@ async def tailor(
 
 @app.post("/api/qualification-analysis", response_model=QualificationAnalysisResponse)
 async def qualification_analysis(
-    resume: UploadFile = File(...),
+    resume: UploadFile | None = File(None),
     job_description: str = Form(...),
-    _user: dict = Depends(get_builder_user),
+    user: dict = Depends(get_builder_user),
 ) -> QualificationAnalysisResponse:
     """Compare the JD with source evidence before any resume is generated."""
     if not job_description or not job_description.strip():
         raise HTTPException(status_code=400, detail="Job description is required.")
-    raw, name = await _read_resume_upload(resume)
     try:
-        model = await ingest_resume(raw, filename=name)
+        if _has_file(resume):
+            raw, name = await _read_allowed_resume(resume, user)
+            model = await ingest_resume(raw, filename=name)
+        else:
+            model = await base_resume_for(user)
         result = analyze_resume_qualification_gaps(
             resume_model=model,
             job_description=job_description,
@@ -286,17 +299,21 @@ async def qualification_analysis(
 
 @app.post("/api/cover-letter", response_model=CoverLetterResponse)
 async def cover_letter(
-    resume: UploadFile = File(...),
+    resume: UploadFile | None = File(None),
     job_description: str = Form(...),
     target_job_role: str = Form(""),
     company_name: str = Form(""),
-    _user: dict = Depends(get_builder_user),
+    user: dict = Depends(get_builder_user),
 ) -> CoverLetterResponse:
     if not job_description or not job_description.strip():
         raise HTTPException(status_code=400, detail="Job description is required.")
-    raw, name = await _read_resume_upload(resume)
     try:
-        model = await ingest_resume(raw, filename=name)
+        if _has_file(resume):
+            raw, name = await _read_allowed_resume(resume, user)
+            model = await ingest_resume(raw, filename=name)
+        else:
+            model = await base_resume_for(user)
+            name = _resume_filename(model)
         result = await generate_cover_letter(
             resume_model=model,
             job_description=job_description,
@@ -323,14 +340,9 @@ async def application_answer(
     """Stream a resume-grounded answer to a job-application question (plain text)."""
     if not question.strip():
         raise HTTPException(status_code=400, detail="Type the application question first.")
-    if not openai_configured():
-        raise HTTPException(
-            status_code=503,
-            detail="OpenAI is not configured on the server (OPENAI_API_KEY) — answers need it.",
-        )
 
     if resume is not None and (resume.filename or "").strip():
-        raw, name = await _read_resume_upload(resume)
+        raw, name = await _read_allowed_resume(resume, user)
         try:
             # Raw text is all the model needs here — skips the (slow) AI normalization
             # that full resume ingestion does, so every question stays fast.
@@ -338,15 +350,14 @@ async def application_answer(
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
     else:
-        base_model = get_base_resume_model(user)
-        if base_model is None:
-            raise HTTPException(
-                status_code=400,
-                detail="Attach a resume (or save a base resume on the Applications page) first.",
-            )
-        resume_text = resume_text_from_model(base_model)
+        resume_text = resume_text_from_model(await base_resume_for(user))
     if not resume_text.strip():
         raise HTTPException(status_code=400, detail="Could not read any text from the resume.")
+    if not openai_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="OpenAI is not configured on the server (OPENAI_API_KEY) — answers need it.",
+        )
 
     try:
         turns = json.loads(history or "[]")

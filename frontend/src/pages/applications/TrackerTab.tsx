@@ -91,6 +91,8 @@ type TrackerProps = {
   emptyText?: string;
   /** Fires after any create/edit/delete (e.g. to refresh a summary elsewhere). */
   onChanged?: () => void;
+  /** View only: no add/edit/delete/status changes (team members viewing their bidders). */
+  readOnly?: boolean;
 };
 
 export function TrackerTab({
@@ -99,6 +101,7 @@ export function TrackerTab({
   createDisabledReason = null,
   emptyText = "No applications tracked yet. With the JobBot Copilot extension installed, a job is tracked automatically when you submit an application and the site confirms it — or add one by hand.",
   onChanged,
+  readOnly = false,
 }: TrackerProps = {}) {
   const [items, setItems] = useState<JobApplication[]>([]);
   const [stats, setStats] = useState<Record<string, number>>({});
@@ -211,18 +214,20 @@ export function TrackerTab({
             Refresh
           </Button>
         </Group>
-        <Tooltip label={createDisabledReason} disabled={!createDisabledReason} withArrow>
-          <Button
-            leftSection={<IconPlus size={16} />}
-            disabled={!!createDisabledReason}
-            onClick={() => {
-              setEditing(null);
-              setFormOpen(true);
-            }}
-          >
-            Add application
-          </Button>
-        </Tooltip>
+        {!readOnly && (
+          <Tooltip label={createDisabledReason} disabled={!createDisabledReason} withArrow>
+            <Button
+              leftSection={<IconPlus size={16} />}
+              disabled={!!createDisabledReason}
+              onClick={() => {
+                setEditing(null);
+                setFormOpen(true);
+              }}
+            >
+              Add application
+            </Button>
+          </Tooltip>
+        )}
       </Group>
 
       {items.length === 0 && !loading ? (
@@ -277,16 +282,22 @@ export function TrackerTab({
                   </Table.Td>
                   <Table.Td>{it.company || "—"}</Table.Td>
                   <Table.Td>
-                    <Select
-                      size="xs"
-                      w={140}
-                      data={APPLICATION_STATUSES.map((s) => ({ value: s, label: s }))}
-                      value={it.status}
-                      allowDeselect={false}
-                      onChange={(v) => v && setStatus(it.id, v)}
-                      leftSection={<Badge color={STATUS_COLOR[it.status] || "gray"} variant="dot" size="xs" p={0} />}
-                      styles={{ input: { textTransform: "capitalize" } }}
-                    />
+                    {readOnly ? (
+                      <Badge color={STATUS_COLOR[it.status] || "gray"} variant="light" tt="capitalize">
+                        {it.status}
+                      </Badge>
+                    ) : (
+                      <Select
+                        size="xs"
+                        w={140}
+                        data={APPLICATION_STATUSES.map((s) => ({ value: s, label: s }))}
+                        value={it.status}
+                        allowDeselect={false}
+                        onChange={(v) => v && setStatus(it.id, v)}
+                        leftSection={<Badge color={STATUS_COLOR[it.status] || "gray"} variant="dot" size="xs" p={0} />}
+                        styles={{ input: { textTransform: "capitalize" } }}
+                      />
+                    )}
                   </Table.Td>
                   <Table.Td>
                     <Text size="xs" c="dimmed">
@@ -299,26 +310,27 @@ export function TrackerTab({
                     <ResumeCell app={it} api={api} />
                   </Table.Td>
                   <Table.Td>
-                    <Menu position="bottom-end" withinPortal>
-                      <Menu.Target>
-                        <ActionIcon variant="subtle" aria-label="Actions">
-                          <IconDots size={16} />
-                        </ActionIcon>
-                      </Menu.Target>
-                      <Menu.Dropdown>
-                        <Menu.Item
-                          leftSection={<IconPencil size={14} />}
-                          onClick={() => {
-                            setEditing(it);
-                            setFormOpen(true);
-                          }}
-                        >
-                          Edit
-                        </Menu.Item>
-                        {it.applied_resume && (
-                          <Menu.Item leftSection={<IconTrash size={14} />} onClick={() => removeResume(it)}>
-                            Remove resume
+                    {!readOnly && (
+                      <Menu position="bottom-end" withinPortal>
+                        <Menu.Target>
+                          <ActionIcon variant="subtle" aria-label="Actions">
+                            <IconDots size={16} />
+                          </ActionIcon>
+                        </Menu.Target>
+                        <Menu.Dropdown>
+                          <Menu.Item
+                            leftSection={<IconPencil size={14} />}
+                            onClick={() => {
+                              setEditing(it);
+                              setFormOpen(true);
+                            }}
+                          >
+                            Edit
                           </Menu.Item>
+                          {it.applied_resume && (
+                            <Menu.Item leftSection={<IconTrash size={14} />} onClick={() => removeResume(it)}>
+                              Remove resume
+                            </Menu.Item>
                         )}
                         <Menu.Divider />
                         <Menu.Item color="red" leftSection={<IconTrash size={14} />} onClick={() => setDeleting(it)}>
@@ -326,6 +338,7 @@ export function TrackerTab({
                         </Menu.Item>
                       </Menu.Dropdown>
                     </Menu>
+                    )}
                   </Table.Td>
                 </Table.Tr>
               ))}

@@ -6,6 +6,11 @@ from fastapi.responses import Response
 
 from app.applications.logic import job_hash
 from app.auth.dependencies import get_builder_user
+from app.auth.resume_access import (
+    base_resume_for,
+    profile_owner,
+    works_from_team_member,
+)
 from app.database import get_db
 from app.extension.answers import draft_free_text_answers
 from app.extension.autofill import (
@@ -48,11 +53,14 @@ def _profile_for_display(stored: dict) -> dict:
 
 @router.get("/profile", response_model=ExtensionProfileResponse)
 async def get_extension_profile(user: dict = Depends(get_builder_user)) -> ExtensionProfileResponse:
+    owner = await profile_owner(user)
     return ExtensionProfileResponse(
         name=user.get("name") or "",
         email=user.get("email") or "",
-        has_base_resume=isinstance(user.get("base_resume_model"), dict),
-        autofill_profile=_profile_for_display(user.get("autofill_profile") or {}),
+        has_base_resume=isinstance(owner.get("base_resume_model"), dict),
+        autofill_profile=_profile_for_display(owner.get("autofill_profile") or {}),
+        read_only=owner is not user,
+        profile_owner_name=(owner.get("name") or owner.get("email") or "") if owner is not user else "",
     )
 
 
@@ -61,6 +69,11 @@ async def put_extension_profile(
     body: AutofillProfile,
     user: dict = Depends(get_builder_user),
 ) -> ExtensionProfileResponse:
+    if works_from_team_member(user):
+        raise HTTPException(
+            status_code=403,
+            detail="Bidders use their team member's autofill profile — only the team member can change it.",
+        )
     clean = normalize_autofill_profile(body.model_dump())
     stored = user.get("autofill_profile") or {}
     new_password = clean.pop("application_password", "")
@@ -116,8 +129,10 @@ async def autofill(
     body: AutofillRequest,
     user: dict = Depends(get_builder_user),
 ) -> AutofillResponse:
-    model = get_base_resume_model(user)
-    stored_profile = user.get("autofill_profile") or {}
+    # Bidders fill applications as their team member: that member's resume + profile.
+    owner = await profile_owner(user)
+    model = get_base_resume_model(owner)
+    stored_profile = owner.get("autofill_profile") or {}
     profile = normalize_autofill_profile(stored_profile)
     if stored_profile.get("application_password_enc"):
         # Decrypted only transiently, in memory, to fill an actual form field —
@@ -129,7 +144,7 @@ async def autofill(
         fields=fields,
         profile=profile,
         model=model,
-        email=user.get("email") or "",
+        email=owner.get("email") or "",
     )
     free_text = unresolved_free_text_fields(fields, resolved)
     answers = await draft_free_text_answers(
@@ -183,12 +198,8 @@ async def tailor_for_job(
     body: TailorForJobRequest,
     user: dict = Depends(get_builder_user),
 ) -> TailorForJobResponse:
-    model = get_base_resume_model(user)
-    if model is None:
-        raise HTTPException(
-            status_code=400,
-            detail="Save a base resume first (Resume builder → Save as my base resume).",
-        )
+    # Own base resume, or (bidders) the assigned team member's — lock-checked.
+    model = await base_resume_for(user)
     text = _job_text(body.job)
     if len(text) < 40:
         raise HTTPException(status_code=400, detail="Not enough job text to tailor against.")
@@ -196,7 +207,7 @@ async def tailor_for_job(
     try:
         result = await build_fresh_tailored_resume(
             resume_model=model,
-            original_filename=f"{(user.get('name') or 'resume').split(' ')[0]}-resume.docx",
+            original_filename=f"{(model.name or 'resume').split(' ')[0]}-resume.docx",
             job_description=text,
             target_job_role=body.target_job_role.strip(),
             sample_mode=False,

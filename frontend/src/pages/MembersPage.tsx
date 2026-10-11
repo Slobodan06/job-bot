@@ -38,6 +38,74 @@ function formatDate(iso: string | null): string {
   }
 }
 
+/**
+ * Bidders: which team member they work under (they generate from that member's base resume).
+ * Team members: whether their base resume is uploaded, and how many bidders they have.
+ */
+function TeamSetupCell({
+  member,
+  teamMembers,
+  bidderCount,
+  disabled,
+  onUpdated,
+}: {
+  member: User;
+  teamMembers: User[];
+  bidderCount: number;
+  disabled: boolean;
+  onUpdated: (u: User) => void;
+}) {
+  if (member.role === "owner") {
+    return (
+      <Text size="sm" c="dimmed">
+        —
+      </Text>
+    );
+  }
+
+  if (member.member_type === "bidder") {
+    return (
+      <Select
+        size="xs"
+        w={210}
+        placeholder="Assign a team member"
+        clearable
+        searchable
+        disabled={disabled}
+        value={member.assigned_team_member_id}
+        error={member.assigned_team_member_id ? undefined : "Not assigned — can't generate resumes"}
+        data={teamMembers.map((t) => ({
+          value: t.id,
+          label: `${t.name || t.email}${t.has_base_resume ? "" : " (no base resume)"}`,
+        }))}
+        onChange={(teamMemberId) => {
+          adminApi
+            .setAssignment(member.id, teamMemberId)
+            .then(onUpdated)
+            .catch((e: unknown) =>
+              notifications.show({
+                title: "Update failed",
+                message: e instanceof Error ? e.message : "Try again.",
+                color: "red",
+              }),
+            );
+        }}
+      />
+    );
+  }
+
+  return (
+    <Stack gap={4}>
+      <Badge color={member.has_base_resume ? "teal" : "yellow"} variant="light" size="sm" w="fit-content">
+        {member.has_base_resume ? "Base resume uploaded" : "No base resume yet"}
+      </Badge>
+      <Text size="xs" c="dimmed">
+        {bidderCount ? `${bidderCount} bidder${bidderCount === 1 ? "" : "s"} assigned` : "No bidders assigned"}
+      </Text>
+    </Stack>
+  );
+}
+
 export default function MembersPage() {
   const [members, setMembers] = useState<User[]>([]);
   const [templateOptions, setTemplateOptions] = useState<TemplateOption[]>([]);
@@ -71,6 +139,11 @@ export default function MembersPage() {
   const selectData = useMemo(
     () => [{ value: "", label: "No template" }, ...templateOptions.map((t) => ({ value: t.key, label: t.label }))],
     [templateOptions],
+  );
+
+  const teamMembers = useMemo(
+    () => members.filter((m) => m.role !== "owner" && m.member_type === "team_member"),
+    [members],
   );
 
   const toggleAccess = async (member: User, hasAccess: boolean) => {
@@ -123,8 +196,9 @@ export default function MembersPage() {
     if (member.role === "owner" || member.member_type === memberType) return;
     setUpdatingId(member.id);
     try {
-      const updated = await adminApi.setMemberType(member.id, memberType);
-      setMembers((prev) => prev.map((m) => (m.id === updated.id ? updated : m)));
+      await adminApi.setMemberType(member.id, memberType);
+      // Changing type can unassign bidders on other rows, so reload everyone.
+      await load();
       notifications.show({
         title: memberType === "bidder" ? "Marked as bidder" : "Marked as team member",
         message:
@@ -210,8 +284,8 @@ export default function MembersPage() {
             </Group>
             <Text c="dimmed" size="sm" maw={640}>
               Review new sign-ups, grant builder access, assign CV templates (40 smart exclusive designs), and choose
-              who can manage the team's tracked applications (they see bidders' applications only). Remove members you
-              no longer work with.
+              who can manage the team's tracked applications. Assign each bidder to a team member — bidders work from
+              that team member's base resume.
             </Text>
           </Stack>
           <Button variant="light" color="teal" leftSection={<IconRefresh size={16} />} onClick={load} loading={loading}>
@@ -234,6 +308,16 @@ export default function MembersPage() {
                       w={240}
                     >
                       <span>Type</span>
+                    </Tooltip>
+                  </Table.Th>
+                  <Table.Th>
+                    <Tooltip
+                      label="Assign each bidder to a team member — bidders generate everything from that team member's base resume (uploaded on the team member's Profile page)."
+                      withArrow
+                      multiline
+                      w={280}
+                    >
+                      <span>Assigned to / Base resume</span>
                     </Tooltip>
                   </Table.Th>
                   <Table.Th>CV template</Table.Th>
@@ -295,6 +379,15 @@ export default function MembersPage() {
                           ]}
                         />
                       )}
+                    </Table.Td>
+                    <Table.Td>
+                      <TeamSetupCell
+                        member={member}
+                        teamMembers={teamMembers}
+                        bidderCount={members.filter((m) => m.assigned_team_member_id === member.id).length}
+                        disabled={updatingId === member.id}
+                        onUpdated={(u) => setMembers((prev) => prev.map((m) => (m.id === u.id ? u : m)))}
+                      />
                     </Table.Td>
                     <Table.Td miw={200}>
                       {member.role === "owner" ? (
@@ -389,7 +482,7 @@ export default function MembersPage() {
                 ))}
                 {!loading && members.length === 0 ? (
                   <Table.Tr>
-                    <Table.Td colSpan={9}>
+                    <Table.Td colSpan={10}>
                       <Text ta="center" c="dimmed" py="md">
                         No members yet.
                       </Text>

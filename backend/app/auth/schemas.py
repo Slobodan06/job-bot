@@ -49,6 +49,10 @@ class MemberTypeUpdate(BaseModel):
     member_type: Literal["team_member", "bidder"]
 
 
+class MemberAssignmentUpdate(BaseModel):
+    team_member_id: str | None = None
+
+
 class MemberDeleteResponse(BaseModel):
     email: str
     applications_deleted: int = 0
@@ -73,6 +77,11 @@ class UserPublic(BaseModel):
     has_access: bool = False
     can_manage_applications: bool = False
     member_type: Literal["team_member", "bidder"] = "team_member"
+    can_view_team_applications: bool = False
+    # Team members: whether they've saved the base resume their bidders work from.
+    has_base_resume: bool = False
+    # Bidders: the team member whose profile they work under.
+    assigned_team_member_id: str | None = None
     cv_template_key: str = ""
     cv_template_label: str = ""
     created_at: datetime | None = None

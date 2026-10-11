@@ -35,6 +35,8 @@ type Props = {
   jobDescription: string;
   companyName: string;
   height: Record<string, string>;
+  /** Set for bidders: whose base resume answers are written from. */
+  teamMemberResumeOf?: string | null;
 };
 
 const EXAMPLES = [
@@ -47,7 +49,7 @@ const EXAMPLES = [
 
 const FOLLOW_UPS = ["Make it shorter", "Make it more specific to the job", "More technical detail"];
 
-export function ApplicationQuestionsChat({ file, jobDescription, companyName, height }: Props) {
+export function ApplicationQuestionsChat({ file, jobDescription, companyName, height, teamMemberResumeOf }: Props) {
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [draft, setDraft] = useState("");
   const [length, setLength] = useState<AnswerLength>("standard");
@@ -270,7 +272,9 @@ export function ApplicationQuestionsChat({ file, jobDescription, companyName, he
           <Text size="xs" c="dimmed">
             {file
               ? `Using ${file.name}${jobDescription.trim() ? " and the job description" : " (add the job description for tailored answers)"}.`
-              : "No resume attached — your saved base resume is used if you have one."}{" "}
+              : teamMemberResumeOf
+                ? `Using ${teamMemberResumeOf}'s base resume.`
+                : "No resume attached — your saved base resume is used if you have one."}{" "}
             Enter to send, Shift+Enter for a new line.
           </Text>
         </Stack>

@@ -16,6 +16,7 @@ type AuthContextValue = {
   canBuild: boolean;
   isOwner: boolean;
   canManageApplications: boolean;
+  canViewTeamApplications: boolean;
   login: (email: string, password: string) => Promise<AuthResult>;
   register: (email: string, password: string, name: string) => Promise<AuthResult>;
   verifyEmail: (token: string) => Promise<AuthResult>;
@@ -96,6 +97,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       canBuild: userCanBuild(user),
       isOwner: user?.role === "owner",
       canManageApplications: Boolean(user?.can_manage_applications),
+      canViewTeamApplications: Boolean(user?.can_view_team_applications),
       login,
       register,
       verifyEmail,

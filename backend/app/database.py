@@ -4,7 +4,13 @@ from typing import Any
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase, AsyncIOMotorCollection
 from pymongo.errors import DuplicateKeyError, OperationFailure
 
-from app.auth.roles import get_owner_email, is_owner_email, member_type, user_can_manage_applications
+from app.auth.roles import (
+    get_owner_email,
+    is_owner_email,
+    member_type,
+    user_can_manage_applications,
+    user_can_view_team,
+)
 from app.services.template_catalog import get_template_meta
 
 _client: AsyncIOMotorClient | None = None
@@ -151,6 +157,11 @@ def user_doc_to_public(doc: dict[str, Any]) -> dict[str, Any]:
         "has_access": has_access,
         "can_manage_applications": user_can_manage_applications(doc),
         "member_type": member_type(doc),
+        "can_view_team_applications": user_can_view_team(doc),
+        "has_base_resume": isinstance(doc.get("base_resume_model"), dict),
+        "assigned_team_member_id": (
+            str(doc["assigned_team_member_id"]) if doc.get("assigned_team_member_id") else None
+        ),
         "cv_template_key": cv_template_key,
         "cv_template_label": cv_template_label,
         "created_at": doc.get("created_at"),

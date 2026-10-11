@@ -4,8 +4,9 @@ from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.auth.dependencies import get_owner_user, public_user
-from app.auth.roles import user_is_owner
+from app.auth.roles import member_type, user_is_owner
 from app.auth.schemas import (
+    MemberAssignmentUpdate,
     MemberDeleteResponse,
     MemberAccessUpdate,
     MemberPermissionsUpdate,
@@ -107,12 +108,53 @@ async def update_member_type(
         raise HTTPException(status_code=404, detail="Member not found.")
     if user_is_owner(doc):
         raise HTTPException(status_code=400, detail="The owner account has no member type.")
-    await db.users.update_one(
-        {"_id": doc["_id"]},
-        {"$set": {"member_type": body.member_type, "updated_at": datetime.now(UTC)}},
-    )
+    changes: dict = {"$set": {"member_type": body.member_type, "updated_at": datetime.now(UTC)}}
+    if body.member_type == "team_member":
+        # Team members aren't assigned to anyone.
+        changes["$unset"] = {"assigned_team_member_id": ""}
+    else:
+        # A former team member's bidders lose their assignment (and with it resume access).
+        await db.users.update_many(
+            {"assigned_team_member_id": doc["_id"]}, {"$unset": {"assigned_team_member_id": ""}}
+        )
+    await db.users.update_one({"_id": doc["_id"]}, changes)
     updated = await db.users.find_one({"_id": doc["_id"]})
     return UserPublic(**public_user(updated))
+
+
+async def _non_owner_member(member_id: str) -> dict:
+    if not ObjectId.is_valid(member_id):
+        raise HTTPException(status_code=400, detail="Invalid member id.")
+    doc = await get_db().users.find_one({"_id": ObjectId(member_id)})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Member not found.")
+    if user_is_owner(doc):
+        raise HTTPException(status_code=400, detail="The owner account can't be assigned.")
+    return doc
+
+
+@router.patch("/members/{member_id}/assignment", response_model=UserPublic)
+async def update_member_assignment(
+    member_id: str,
+    body: MemberAssignmentUpdate,
+    owner: dict = Depends(get_owner_user),
+) -> UserPublic:
+    """Owner assigns a bidder to a team member (or clears it with team_member_id = null)."""
+    doc = await _non_owner_member(member_id)
+    if member_type(doc) != "bidder":
+        raise HTTPException(status_code=400, detail="Only bidders are assigned to a team member.")
+    db = get_db()
+    if body.team_member_id:
+        if not ObjectId.is_valid(body.team_member_id):
+            raise HTTPException(status_code=400, detail="Invalid team member id.")
+        team_member = await db.users.find_one({"_id": ObjectId(body.team_member_id)})
+        if not team_member or user_is_owner(team_member) or member_type(team_member) != "team_member":
+            raise HTTPException(status_code=400, detail="Pick a member whose type is Team member.")
+        change: dict = {"$set": {"assigned_team_member_id": team_member["_id"], "updated_at": datetime.now(UTC)}}
+    else:
+        change = {"$unset": {"assigned_team_member_id": ""}, "$set": {"updated_at": datetime.now(UTC)}}
+    await db.users.update_one({"_id": doc["_id"]}, change)
+    return UserPublic(**public_user(await db.users.find_one({"_id": doc["_id"]})))
 
 
 @router.patch("/members/{member_id}/template", response_model=UserPublic)
@@ -159,6 +201,9 @@ async def delete_member(member_id: str, owner: dict = Depends(get_owner_user)) -
 
     files_deleted = await delete_all_user_files(doc["_id"])
     apps = await db.applications.delete_many({"user_id": doc["_id"]})
+    await db.users.update_many(
+        {"assigned_team_member_id": doc["_id"]}, {"$unset": {"assigned_team_member_id": ""}}
+    )
     await db.users.delete_one({"_id": doc["_id"]})
     return MemberDeleteResponse(
         email=doc.get("email") or "",

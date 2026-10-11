@@ -2,7 +2,7 @@ from bson import ObjectId
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from app.auth.roles import user_can_build, user_can_manage_applications, user_is_owner
+from app.auth.roles import user_can_build, user_can_manage_applications, user_can_view_team, user_is_owner
 from app.auth.security import decode_access_token
 from app.database import get_db, user_doc_to_public
 
@@ -50,6 +50,13 @@ async def get_builder_user(user: dict = Depends(get_verified_user)) -> dict:
 async def get_owner_user(user: dict = Depends(get_current_user)) -> dict:
     if not user_is_owner(user):
         raise HTTPException(status_code=403, detail="Owner access required.")
+    return user
+
+
+async def get_team_viewer(user: dict = Depends(get_current_user)) -> dict:
+    """May open Team applications (what they see is narrowed by admin_routes.visible_members)."""
+    if not user_can_view_team(user):
+        raise HTTPException(status_code=403, detail="You don't have access to team applications.")
     return user
 
 
