@@ -16,6 +16,7 @@ import re
 from openai import AsyncOpenAI
 
 from app.services.openai_compat import chat_completion_controls
+from app.services.pdf_resume import is_plausible_personal_link
 from app.services.resume_analysis_ai import _json_object
 from app.services.resume_model import (
     ResumeContact,
@@ -125,6 +126,26 @@ def _looks_like_location(text: str, location: str) -> bool:
 
 _LINK_REQUIRED_DOMAINS = {"linkedin": "linkedin.com", "github": "github.com"}
 
+# First section heading ends the resume header (name, title, contact details).
+_SECTION_HEADING_RE = re.compile(
+    r"^\s*(?:professional\s+|career\s+|technical\s+|core\s+|work\s+|key\s+)?"
+    r"(?:summary|profile|objective|about(?:\s+me)?|skills|competencies|experience|employment|"
+    r"work\s+history|education|projects|certifications?|qualifications)\b[\s:]*$",
+    re.I,
+)
+
+
+def header_region(source_raw: str, max_lines: int = 15) -> str:
+    """The resume's header: lines before the first section heading (capped)."""
+    out: list[str] = []
+    for line in (source_raw or "").splitlines():
+        if _SECTION_HEADING_RE.match(line) and len(line.strip()) <= 40:
+            break
+        out.append(line)
+        if len(out) >= max_lines:
+            break
+    return "\n".join(out)
+
 
 def _validated_contact(raw: dict, draft: ResumeContact, source_norm: str, source_raw: str) -> ResumeContact:
     email = str(raw.get("email") or "").strip()
@@ -134,6 +155,8 @@ def _validated_contact(raw: dict, draft: ResumeContact, source_norm: str, source
     if not (_digits(phone) and _digits(phone) in _digits(source_raw)):
         phone = draft.phone
 
+    header = header_region(source_raw)
+
     def link(name: str, fallback: str) -> str:
         url = str(raw.get(name) or "").strip()
         bare = url.lower().replace("https://", "").replace("http://", "").rstrip("/")
@@ -142,6 +165,13 @@ def _validated_contact(raw: dict, draft: ResumeContact, source_norm: str, source
             # Rejects the model echoing a bare label ("GitHub") or an unrelated
             # word instead of leaving the field empty or returning a real URL.
             return fallback
+        if name == "website":
+            # A personal website lives in the header. Anywhere else, "asp.net" or
+            # "judge.me" is a skill/tool name the model mistook for a link.
+            haystack = header.lower().replace("https://", "").replace("http://", "")
+            if not (bare and bare in haystack and is_plausible_personal_link(url, header)):
+                return fallback
+            return url
         haystack = source_raw.lower().replace("https://", "").replace("http://", "")
         return url if bare and bare in haystack else fallback
 

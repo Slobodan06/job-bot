@@ -12,7 +12,7 @@ from openai import AsyncOpenAI
 from app.schemas import TailorResponse
 from app.services.docx_resume import output_docx_filename
 from app.services.docx_convert import pdf_download_filename
-from app.services.pdf_resume import parse_contact, sanitize_for_pdf
+from app.services.pdf_resume import is_plausible_personal_link, parse_contact, sanitize_for_pdf
 from app.services.resume_model import (
     ResumeExperienceEntry,
     ResumeModel,
@@ -1051,6 +1051,28 @@ def _build_tailored_model(
     )
 
 
+def drop_tech_lookalike_website(model: ResumeModel) -> ResumeModel:
+    """Remove a "website" that is really a tool/tech name from the resume body.
+
+    Resumes parsed before link validation was tightened can carry e.g. "asp.net"
+    (from "ASP.NET Core" in Skills) or "judge.me" as their website. A bare domain
+    that also shows up in the body text — or fails the plausibility check — is
+    dropped so it never lands in the tailored header.
+    """
+    website = (model.contact.website or "").strip()
+    if not website:
+        return model
+    body = "\n".join(
+        [model.professional_summary, model.skills_text(), model.experience_text(), model.education_text(), model.extras_text()]
+    )
+    bare = re.sub(r"(?i)^https?://(www\.)?", "", website).rstrip("/").lower()
+    host, _, path = bare.partition("/")
+    in_body = bool(host) and not path and re.search(rf"(?<![\w.]){re.escape(host)}(?![\w])", body, re.I)
+    if in_body or not is_plausible_personal_link(website, body):
+        return model.model_copy(update={"contact": model.contact.model_copy(update={"website": ""})})
+    return model
+
+
 async def build_fresh_tailored_resume(
     *,
     resume_model: ResumeModel,
@@ -1062,6 +1084,7 @@ async def build_fresh_tailored_resume(
     sample_mode: bool = True,
 ) -> TailorResponse:
     """Normalized resume model → AI tailor → user's smart CV template PDF."""
+    resume_model = drop_tech_lookalike_website(resume_model)
     roles = [
         role
         for role in resume_model.work_experience_roles()

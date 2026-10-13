@@ -56,6 +56,50 @@ def _normalize_url(url: str) -> str:
     return u
 
 
+# Technology / tool names that look like domains ("ASP.NET", "Judge.me") — never a
+# candidate's personal link, even though the dot + TLD pattern matches.
+_TECH_DOMAIN_LOOKALIKES = frozenset(
+    {
+        "asp.net", "vb.net", "ado.net", "dot.net", "f.net", "ml.net", "socket.io", "judge.me", "about.me",
+        "node.js", "vue.js", "next.js", "nuxt.js", "react.js", "express.js", "three.js", "d3.js", "chart.js",
+        "ember.js", "backbone.js", "angular.js", "nest.js", "deno.land", "rails.app", "fly.io", "render.com",
+        "vercel.app", "netlify.app", "heroku.com", "replit.com", "bit.io", "dev.to", "medium.com", "hashnode.dev",
+    }
+)
+
+
+def is_plausible_personal_link(url: str, source_text: str = "") -> bool:
+    """False for technology names that merely look like domains ("ASP.NET Core", "Judge.me").
+
+    A link with a path (``janedoe.dev/work``) or written in the resume with ``http(s)://``
+    or ``www.`` is kept. A bare ``word.tld`` is rejected when it's a known tech/tool name,
+    or when the resume only ever writes it in capitals (``ASP.NET``) — that's how
+    frameworks are written, not personal sites. (Callers normalize URLs by adding
+    ``https://``, so "was it written as a link?" is judged from `source_text`.)
+    """
+    bare = re.sub(r"(?i)^https?://", "", (url or "").strip()).rstrip("/").lower()
+    if bare.startswith("www."):
+        bare = bare[4:]
+    host, _, path = bare.partition("/")
+    if not host:
+        return False
+    if path:
+        return True
+    if host in _TECH_DOMAIN_LOOKALIKES:
+        return False
+    if not source_text:
+        return True
+    occurrences = list(re.finditer(re.escape(host), source_text, re.I))
+    for match in occurrences:
+        before = source_text[max(0, match.start() - 12) : match.start()].lower()
+        if before.endswith(("://", "www.")):
+            return True  # written as a real link somewhere
+    # Every occurrence in capitals ("ASP.NET", "VB.NET") → a technology name.
+    return not occurrences or not all(
+        (letters := re.sub(r"[^A-Za-z]", "", m.group(0))) and letters.isupper() for m in occurrences
+    )
+
+
 def _extract_url(text: str) -> str | None:
     stripped = _strip_leading_bullet(text)
     if _is_email_part(stripped):
@@ -435,6 +479,8 @@ def parse_contact_identity(contact: str) -> ContactIdentity:
                 github = github or url
         elif _is_root_email_provider_url(url, email):
             continue
+        elif not is_plausible_personal_link(url, raw):
+            continue  # "ASP.NET" in a headline is a framework, not a website
         elif not portfolio:
             portfolio = url
         else:
