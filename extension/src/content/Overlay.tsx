@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { WEB_ORIGIN } from "../lib/env";
+import { AUTOFILL_ENABLED, WEB_ORIGIN } from "../lib/env";
 import type { BgToFrame } from "../lib/frames";
 import { bg } from "../lib/messaging";
 import type { DetectedJob } from "../lib/types";
@@ -143,21 +143,31 @@ export function Overlay({ job, onDismiss }: Props) {
 
       {authed && (
         <>
+          {!AUTOFILL_ENABLED && (
+            <p style={{ margin: "0 0 8px", color: "#adb5bd" }}>
+              Apply as usual — when the site confirms your application, JobBot records it in your tracker with the
+              resume you sent.
+            </p>
+          )}
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <button
-              style={{ ...btn, background: "#20c997", color: "#04211a" }}
-              disabled={phase === "working"}
-              onClick={() => run("quick")}
-            >
-              Quick fill
-            </button>
-            <button
-              style={{ ...btn, background: "#4c6ef5", color: "#fff" }}
-              disabled={phase === "working"}
-              onClick={() => run("tailored")}
-            >
-              Tailor &amp; fill
-            </button>
+            {AUTOFILL_ENABLED && (
+              <>
+                <button
+                  style={{ ...btn, background: "#20c997", color: "#04211a" }}
+                  disabled={phase === "working"}
+                  onClick={() => run("quick")}
+                >
+                  Quick fill
+                </button>
+                <button
+                  style={{ ...btn, background: "#4c6ef5", color: "#fff" }}
+                  disabled={phase === "working"}
+                  onClick={() => run("tailored")}
+                >
+                  Tailor &amp; fill
+                </button>
+              </>
+            )}
             <a
               href={`${WEB_ORIGIN}/applications`}
               target="_blank"
@@ -177,9 +187,11 @@ export function Overlay({ job, onDismiss }: Props) {
               {msg}
             </p>
           )}
-          <p style={{ margin: "8px 0 0", fontSize: 11, color: "#868e96" }}>
-            JobBot never submits for you. Always review AI-drafted answers.
-          </p>
+          {AUTOFILL_ENABLED && (
+            <p style={{ margin: "8px 0 0", fontSize: 11, color: "#868e96" }}>
+              JobBot never submits for you. Always review AI-drafted answers.
+            </p>
+          )}
         </>
       )}
     </div>

@@ -1,4 +1,5 @@
 import base64
+import os
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -38,6 +39,14 @@ from app.services.resume_evidence import analyze_job_description
 from app.services.tailor import extract_keywords
 
 router = APIRouter(prefix="/api/extension", tags=["extension"])
+
+
+def _require_autofill_enabled() -> None:
+    """Quick fill / Tailor & fill spend OpenAI credits; they're off unless
+    EXTENSION_AUTOFILL_ENABLED=1. Job detection and application tracking don't
+    use OpenAI and keep working either way."""
+    if os.getenv("EXTENSION_AUTOFILL_ENABLED", "").strip().lower() not in ("1", "true", "yes", "on"):
+        raise HTTPException(status_code=403, detail="Quick fill and Tailor & fill are turned off by the site owner.")
 
 
 def _job_text(job: DetectedJob) -> str:
@@ -129,6 +138,7 @@ async def autofill(
     body: AutofillRequest,
     user: dict = Depends(get_builder_user),
 ) -> AutofillResponse:
+    _require_autofill_enabled()
     # Bidders fill applications as their team member: that member's resume + profile.
     owner = await profile_owner(user)
     model = get_base_resume_model(owner)
@@ -198,6 +208,7 @@ async def tailor_for_job(
     body: TailorForJobRequest,
     user: dict = Depends(get_builder_user),
 ) -> TailorForJobResponse:
+    _require_autofill_enabled()
     # Own base resume, or (bidders) the assigned team member's — lock-checked.
     model = await base_resume_for(user)
     text = _job_text(body.job)
