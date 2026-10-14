@@ -24,23 +24,24 @@ logger = logging.getLogger("uvicorn.error")
 _current_user: ContextVar[Any] = ContextVar("ai_usage_user", default=None)
 _current_path: ContextVar[str] = ContextVar("ai_usage_path", default="")
 
-# USD per 1M tokens: (input, output). These are ESTIMATES taken from OpenAI's
-# published prices at the time of writing — verify on https://openai.com/api/pricing
-# and override with OPENAI_PRICING_JSON='{"model-name": [input, output], ...}'.
-# Matched by longest model-name prefix, so dated snapshots ("gpt-4o-2024-08-06") work.
-DEFAULT_PRICING: dict[str, tuple[float, float]] = {
-    "gpt-4o-mini": (0.15, 0.60),
-    "gpt-4o": (2.50, 10.00),
-    "gpt-4.1-nano": (0.10, 0.40),
-    "gpt-4.1-mini": (0.40, 1.60),
-    "gpt-4.1": (2.00, 8.00),
-    "o4-mini": (1.10, 4.40),
-    "o3-mini": (1.10, 4.40),
-    "gpt-5-nano": (0.05, 0.40),
-    "gpt-5-mini": (0.25, 2.00),
-    "gpt-5": (1.25, 10.00),
-    # The app's default writing model; assumed to be priced like gpt-5-chat-latest.
-    "chat-latest": (1.25, 10.00),
+# USD per 1M tokens: (input, output, cached input). Verify on
+# https://developers.openai.com/api/docs/pricing and override with
+# OPENAI_PRICING_JSON='{"model-name": [input, output, cached_input], ...}' (cached optional).
+# Matched by longest model-name prefix, so dated snapshots ("gpt-4o-mini-2024-07-18") work.
+# chat-latest / gpt-4o / gpt-4o-mini were checked against that page on 2026-10-14;
+# the others are from earlier price lists.
+DEFAULT_PRICING: dict[str, tuple[float, float, float | None]] = {
+    "chat-latest": (5.00, 30.00, 0.50),  # the app's default writing model — expensive
+    "gpt-4o-mini": (0.15, 0.60, 0.075),
+    "gpt-4o": (2.50, 10.00, 1.25),
+    "gpt-4.1-nano": (0.10, 0.40, None),
+    "gpt-4.1-mini": (0.40, 1.60, None),
+    "gpt-4.1": (2.00, 8.00, None),
+    "o4-mini": (1.10, 4.40, None),
+    "o3-mini": (1.10, 4.40, None),
+    "gpt-5-nano": (0.05, 0.40, None),
+    "gpt-5-mini": (0.25, 2.00, None),
+    "gpt-5": (1.25, 10.00, None),
 }
 
 # Request path prefix → feature name shown on the AI usage page.
@@ -67,27 +68,40 @@ def set_usage_user(user_doc: dict | None) -> None:
     _current_user.set(user_doc.get("_id") if user_doc else None)
 
 
-def _pricing() -> dict[str, tuple[float, float]]:
+def _pricing() -> dict[str, tuple[float, float, float | None]]:
     prices = dict(DEFAULT_PRICING)
     raw = os.getenv("OPENAI_PRICING_JSON", "").strip()
     if raw:
         try:
-            for model, pair in json.loads(raw).items():
-                prices[str(model)] = (float(pair[0]), float(pair[1]))
+            for model, values in json.loads(raw).items():
+                cached = float(values[2]) if len(values) > 2 and values[2] is not None else None
+                prices[str(model)] = (float(values[0]), float(values[1]), cached)
         except (ValueError, TypeError, IndexError, AttributeError):
             logger.warning("Ignoring invalid OPENAI_PRICING_JSON")
     return prices
 
 
-def estimate_cost_usd(model: str, prompt_tokens: int, completion_tokens: int) -> float | None:
-    """Estimated USD for one call, or None when the model has no known price."""
+def estimate_cost_usd(
+    model: str, prompt_tokens: int, completion_tokens: int, cached_tokens: int = 0
+) -> float | None:
+    """Estimated USD for one call, or None when the model has no known price.
+
+    `cached_tokens` (part of `prompt_tokens`) are billed at the cheaper cached-input
+    rate when the model has one.
+    """
     name = (model or "").strip().lower()
     prices = _pricing()
     match = max((key for key in prices if name.startswith(key.lower())), key=len, default=None)
     if match is None:
         return None
-    price_in, price_out = prices[match]
-    return round(prompt_tokens / 1_000_000 * price_in + completion_tokens / 1_000_000 * price_out, 6)
+    price_in, price_out, price_cached = prices[match]
+    cached = min(max(cached_tokens, 0), prompt_tokens) if price_cached is not None else 0
+    cost = (
+        (prompt_tokens - cached) / 1_000_000 * price_in
+        + cached / 1_000_000 * (price_cached or 0.0)
+        + completion_tokens / 1_000_000 * price_out
+    )
+    return round(cost, 6)
 
 
 async def record_usage(*, user_id: Any, path: str, model: str, usage: Any) -> None:
@@ -95,6 +109,8 @@ async def record_usage(*, user_id: Any, path: str, model: str, usage: Any) -> No
         return
     prompt = int(getattr(usage, "prompt_tokens", 0) or 0)
     completion = int(getattr(usage, "completion_tokens", 0) or 0)
+    details = getattr(usage, "prompt_tokens_details", None)
+    cached = int(getattr(details, "cached_tokens", 0) or 0) if details is not None else 0
     doc = {
         "user_id": user_id,
         "at": datetime.now(UTC),
@@ -104,7 +120,9 @@ async def record_usage(*, user_id: Any, path: str, model: str, usage: Any) -> No
         "prompt_tokens": prompt,
         "completion_tokens": completion,
         "total_tokens": int(getattr(usage, "total_tokens", 0) or (prompt + completion)),
-        "cost_usd": estimate_cost_usd(model, prompt, completion),
+        "cached_tokens": cached,
+        # Snapshot at call time; the report re-prices from tokens with current prices.
+        "cost_usd": estimate_cost_usd(model, prompt, completion, cached),
     }
     try:
         from app.database import get_db

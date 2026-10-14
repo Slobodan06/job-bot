@@ -59,6 +59,13 @@ class PricingTests(unittest.TestCase):
         # Longest prefix wins: gpt-4o-mini is not priced as gpt-4o.
         self.assertNotEqual(estimate_cost_usd("gpt-4o-mini", 10**6, 0), estimate_cost_usd("gpt-4o", 10**6, 0))
 
+    def test_chat_latest_uses_its_real_price_and_cached_discount(self) -> None:
+        # $5 / 1M input, $30 / 1M output, $0.50 / 1M cached input (checked 2026-10-14).
+        self.assertAlmostEqual(5.00 + 30.00, estimate_cost_usd("chat-latest", 10**6, 10**6))
+        self.assertAlmostEqual(0.50, estimate_cost_usd("chat-latest", 10**6, 0, cached_tokens=10**6))
+        with mock.patch.dict(os.environ, {"OPENAI_PRICING_JSON": '{"chat-latest": [2, 8]}'}):  # no cached price
+            self.assertAlmostEqual(2.0, estimate_cost_usd("chat-latest", 10**6, 0, cached_tokens=10**6))
+
     def test_unknown_model_is_unpriced_and_override_works(self) -> None:
         self.assertIsNone(estimate_cost_usd("some-new-model", 1000, 1000))
         with mock.patch.dict(os.environ, {"OPENAI_PRICING_JSON": '{"some-new-model": [1, 2]}'}):
