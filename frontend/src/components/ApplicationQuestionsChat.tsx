@@ -130,7 +130,7 @@ export function ApplicationQuestionsChat({ file, jobDescription, companyName, he
               Application questions
             </Title>
             <Badge variant="light" color="teal" leftSection={<IconSparkles size={12} />}>
-              AI (OpenAI)
+              AI
             </Badge>
           </Group>
           {turns.length > 0 && (

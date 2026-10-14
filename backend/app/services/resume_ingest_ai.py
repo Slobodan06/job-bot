@@ -10,11 +10,10 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 
-from openai import AsyncOpenAI
 
+from app.services.llm_config import llm_api_key, llm_model, make_llm_client
 from app.services.openai_compat import chat_completion_controls
 from app.services.pdf_resume import is_plausible_personal_link
 from app.services.resume_analysis_ai import _json_object
@@ -265,15 +264,11 @@ def _validated_list(raw_list, draft: list[str], source_norm: str) -> list[str]:
 
 
 async def normalize_resume_model_with_ai(raw_text: str, draft: ResumeModel) -> tuple[ResumeModel, bool]:
-    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    api_key = llm_api_key()
     if not api_key or not raw_text.strip():
         return draft, False
 
-    model_name = (
-        os.getenv("OPENAI_MODEL_ANALYSIS", "").strip()
-        or os.getenv("OPENAI_MODEL_FAST", "").strip()
-        or "gpt-4o-mini"
-    )
+    model_name = llm_model("OPENAI_MODEL_ANALYSIS", "OPENAI_MODEL_FAST", openai_default="gpt-4o-mini", role="fast")
     draft_json = draft.model_dump(exclude={"meta"})
     prompt = (
         f"SOURCE RESUME TEXT:\n{raw_text[:40000]}\n\n"
@@ -282,8 +277,7 @@ async def normalize_resume_model_with_ai(raw_text: str, draft: ResumeModel) -> t
         f"{_SCHEMA_HINT}"
     )
     try:
-        timeout = float(os.getenv("OPENAI_TIMEOUT_SECONDS", "120") or "120")
-        client = AsyncOpenAI(api_key=api_key, timeout=max(30.0, min(timeout, 300.0)))
+        client = make_llm_client(api_key=api_key)
         completion = await client.chat.completions.create(
             model=model_name,
             messages=[

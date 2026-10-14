@@ -19,8 +19,9 @@ class ResumePromptPolicyTests(unittest.TestCase):
         self.assertIn("+ CANONICAL_TAILORING_POLICY", fresh_source)
         self.assertIn("STRUCTURED_SYSTEM", inplace_source)
         self.assertIn("+ CANONICAL_TAILORING_POLICY", inplace_source)
-        self.assertIn('or "chat-latest"', inplace_source)
-        self.assertIn('os.getenv("OPENAI_MODEL", "chat-latest")', fresh_source)
+        # With OpenAI, both writers still default to chat-latest (via the shared llm_model()).
+        self.assertIn('openai_default="chat-latest"', inplace_source)
+        self.assertIn('openai_default="chat-latest"', fresh_source)
 
     def test_policy_preserves_truth_and_transferable_boundaries(self) -> None:
         self.assertIn("never fabricate", CANONICAL_TAILORING_POLICY.lower())

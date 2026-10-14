@@ -10,12 +10,11 @@ resume doesn't contain (salary, notice period, visa…), it leaves a clearly mar
 from __future__ import annotations
 
 import logging
-import os
 from collections.abc import AsyncIterator
 from typing import Literal
 
-from openai import AsyncOpenAI
 
+from app.services.llm_config import llm_configured, llm_model, make_llm_client
 from app.services.openai_compat import chat_completion_controls
 from app.services.resume_model import ResumeModel
 
@@ -64,16 +63,11 @@ def resume_text_from_model(model: ResumeModel) -> str:
 
 
 def openai_configured() -> bool:
-    return bool(os.getenv("OPENAI_API_KEY", "").strip())
+    return llm_configured()
 
 
 def _model_name() -> str:
-    return (
-        os.getenv("OPENAI_MODEL_ANSWERS", "").strip()
-        or os.getenv("OPENAI_MODEL_WRITE", "").strip()
-        or os.getenv("OPENAI_MODEL", "").strip()
-        or "gpt-4o-mini"
-    )
+    return llm_model("OPENAI_MODEL_ANSWERS", "OPENAI_MODEL_WRITE", "OPENAI_MODEL", openai_default="gpt-4o-mini")
 
 
 def build_messages(
@@ -114,10 +108,7 @@ async def open_answer_stream(messages: list[dict[str, str]]) -> AsyncIterator[st
     normal exception (→ HTTP error) instead of in the middle of a streamed body.
     """
     model = _model_name()
-    timeout = float(os.getenv("OPENAI_TIMEOUT_SECONDS", "120") or "120")
-    client = AsyncOpenAI(
-        api_key=os.getenv("OPENAI_API_KEY", "").strip(), timeout=max(30.0, min(timeout, 300.0))
-    )
+    client = make_llm_client()
     stream = await client.chat.completions.create(
         model=model,
         messages=messages,

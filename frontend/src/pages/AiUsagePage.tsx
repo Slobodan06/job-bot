@@ -84,8 +84,9 @@ export default function AiUsagePage() {
               <Title order={2}>AI usage</Title>
             </Group>
             <Text c="dimmed" size="sm" maw={680}>
-              OpenAI usage per member — every tailored resume, cover letter, answer and resume parse is counted.
-              Costs are estimates from token counts and model prices; check exact billing in your OpenAI dashboard.
+              AI usage per member (OpenAI or DeepSeek) — every tailored resume, cover letter, answer and resume parse
+              is counted. Costs are estimates from token counts and model prices; check exact billing in your AI
+              provider's dashboard.
             </Text>
           </Stack>
           <Group gap="xs">

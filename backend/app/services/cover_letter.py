@@ -3,12 +3,11 @@ from __future__ import annotations
 
 import base64
 import json
-import os
 import re
 from io import BytesIO
 from pathlib import Path
 
-from openai import AsyncOpenAI
+from app.services.llm_config import llm_api_key, llm_model, make_llm_client
 from app.services.openai_compat import chat_completion_controls
 from reportlab.lib.enums import TA_LEFT
 from reportlab.lib.pagesizes import letter
@@ -138,8 +137,8 @@ async def _llm_cover_letter(
         f"JOB DESCRIPTION:\n{job_description.strip()}\n\n"
         f"RESUME CONTEXT JSON:\n{json.dumps(payload, ensure_ascii=False)}"
     )
-    client = AsyncOpenAI(api_key=api_key)
-    model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    client = make_llm_client(api_key=api_key)
+    model = llm_model("OPENAI_MODEL", openai_default="gpt-4o-mini", role="write")
     completion = await client.chat.completions.create(
         model=model,
         **chat_completion_controls(model, max_output_tokens=1200, temperature=0.55),
@@ -231,7 +230,7 @@ async def generate_cover_letter(
     role = sanitize_target_job_role(target_job_role) or extract_jd_target_role_title(job_description) or "this role"
     candidate_name = _extract_candidate_name(parsed.contact)
 
-    key = os.getenv("OPENAI_API_KEY", "").strip()
+    key = llm_api_key()
     used_llm = False
     if key:
         try:

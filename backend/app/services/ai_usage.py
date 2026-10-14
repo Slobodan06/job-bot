@@ -32,6 +32,10 @@ _current_path: ContextVar[str] = ContextVar("ai_usage_path", default="")
 # the others are from earlier price lists.
 DEFAULT_PRICING: dict[str, tuple[float, float, float | None]] = {
     "chat-latest": (5.00, 30.00, 0.50),  # the app's default writing model — expensive
+    # DeepSeek (AI_PROVIDER=deepseek). NOT verified here — check
+    # https://api-docs.deepseek.com/quick_start/pricing and override via OPENAI_PRICING_JSON.
+    "deepseek-chat": (0.28, 0.42, 0.028),
+    "deepseek-reasoner": (0.28, 0.42, 0.028),
     "gpt-4o-mini": (0.15, 0.60, 0.075),
     "gpt-4o": (2.50, 10.00, 1.25),
     "gpt-4.1-nano": (0.10, 0.40, None),
@@ -111,6 +115,8 @@ async def record_usage(*, user_id: Any, path: str, model: str, usage: Any) -> No
     completion = int(getattr(usage, "completion_tokens", 0) or 0)
     details = getattr(usage, "prompt_tokens_details", None)
     cached = int(getattr(details, "cached_tokens", 0) or 0) if details is not None else 0
+    # DeepSeek reports cache hits in its own field.
+    cached = cached or int(getattr(usage, "prompt_cache_hit_tokens", 0) or 0)
     doc = {
         "user_id": user_id,
         "at": datetime.now(UTC),
@@ -170,6 +176,9 @@ def install_openai_usage_tracking() -> None:
     original = AsyncCompletions.create
 
     async def tracked_create(self, *args: Any, **kwargs: Any) -> Any:
+        from app.services.llm_config import adapt_request_for_provider
+
+        kwargs = adapt_request_for_provider(kwargs)
         user_id = _current_user.get()
         path = _current_path.get()
         model = str(kwargs.get("model") or "")

@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 from app.schemas import TailorResponse
 from app.services.resume_prompts import CANONICAL_TAILORING_POLICY
+from app.services.llm_config import llm_api_key, llm_key_env_name, llm_model, make_llm_client
 from app.services.openai_compat import chat_completion_controls
 from app.services.docx_convert import convert_docx_bytes_to_pdf, pdf_download_filename
 from app.services.docx_resume import (
@@ -4153,23 +4154,19 @@ def _openai_pipeline_mode() -> str:
 
 
 def _openai_model_fast() -> str:
-    return os.getenv("OPENAI_MODEL_FAST", "").strip() or "gpt-4o-mini"
+    return llm_model("OPENAI_MODEL_FAST", openai_default="gpt-4o-mini", role="fast")
 
 
 def _openai_model_write() -> str:
-    return (
-        os.getenv("OPENAI_MODEL_WRITE", "").strip()
-        or os.getenv("OPENAI_MODEL", "").strip()
-        or "chat-latest"
-    )
+    return llm_model("OPENAI_MODEL_WRITE", "OPENAI_MODEL", openai_default="chat-latest", role="write")
 
 
 def _openai_model_strategy() -> str:
-    return os.getenv("OPENAI_MODEL_STRATEGY", "").strip() or _openai_model_write()
+    return llm_model("OPENAI_MODEL_STRATEGY", openai_default=_openai_model_write(), role="write")
 
 
 def _openai_model_review() -> str:
-    return os.getenv("OPENAI_MODEL_REVIEW", "").strip() or _openai_model_write()
+    return llm_model("OPENAI_MODEL_REVIEW", openai_default=_openai_model_write(), role="write")
 
 
 def _strategy_to_dict(strategy: TailoringStrategy) -> dict[str, object]:
@@ -4639,12 +4636,8 @@ async def _run_multi_stage_pipeline(
 
 
 def _openai_client(api_key: str) -> AsyncOpenAI:
-    timeout_raw = os.getenv("OPENAI_TIMEOUT_SECONDS", "120").strip()
-    try:
-        timeout = float(timeout_raw)
-    except ValueError:
-        timeout = 120.0
-    return AsyncOpenAI(api_key=api_key, timeout=max(30.0, min(timeout, 900.0)))
+    """Client for the configured AI provider (OpenAI or DeepSeek)."""
+    return make_llm_client(api_key=api_key, max_timeout=900.0)
 
 
 async def _llm_tailor_structured(
@@ -5149,7 +5142,7 @@ def _default_tips_llm() -> list[str]:
 
 def _default_tips_offline() -> list[str]:
     return [
-        "Set OPENAI_API_KEY in backend/.env for AI-generated ATS experience bullets from the job description.",
+        f"Set {llm_key_env_name()} in backend/.env for AI-generated ATS experience bullets from the job description.",
         "Offline mode kept your original experience bullets; summary and skills include JD keyword alignment notes.",
         "Use clear section headers in your .docx (Summary, Experience, Skills, Education) for best results.",
         "Review headline, education, and contact lines before sending applications.",
@@ -5232,7 +5225,7 @@ async def tailor_resume(
         other=parsed.other,
     )
     keywords = extract_keywords(job_description, top_k=22)
-    key = os.getenv("OPENAI_API_KEY", "").strip()
+    key = llm_api_key()
     openai_configured = bool(key)
     used_llm = False
     llm_error = ""

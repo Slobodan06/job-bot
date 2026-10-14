@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -45,6 +46,7 @@ from app.services.application_answers import (
 )
 from app.services.ai_usage import UsageContextMiddleware, install_openai_usage_tracking
 from app.services.cover_letter import generate_cover_letter
+from app.services.llm_config import llm_configured, llm_key_env_name, llm_provider
 from app.services.extract_text import extract_text_from_bytes
 from app.services.email import log_email_config
 from app.services.resume_ingest import ingest_resume
@@ -150,7 +152,9 @@ app.add_middleware(
 async def health() -> dict[str, str | bool]:
     return {
         "status": "ok",
-        "openai_configured": bool(os.getenv("OPENAI_API_KEY", "").strip()),
+        # Kept as "openai_configured" for the frontend; true for whichever provider is set.
+        "openai_configured": llm_configured(),
+        "ai_provider": llm_provider(),
         "job_search_configured": bool(os.getenv("RAPIDAPI_KEY", "").strip()),
     }
 
@@ -369,7 +373,7 @@ async def application_answer(
     if not openai_configured():
         raise HTTPException(
             status_code=503,
-            detail="OpenAI is not configured on the server (OPENAI_API_KEY) — answers need it.",
+            detail=f"AI is not configured on the server ({llm_key_env_name()}) — answers need it.",
         )
 
     try:
@@ -389,7 +393,13 @@ async def application_answer(
         chunks = await open_answer_stream(messages)
     except Exception as e:
         logging.getLogger("uvicorn.error").exception("Application answer request failed")
-        raise HTTPException(status_code=502, detail=f"OpenAI request failed: {e}") from e
+        text = str(e)
+        if re.search(r"insufficient[_ ](balance|quota)|credit_balance_exhausted|no credits remaining", text, re.I):
+            raise HTTPException(
+                status_code=402,
+                detail="The AI provider account is out of credit — ask the site owner to top up, then try again.",
+            ) from e
+        raise HTTPException(status_code=502, detail=f"AI request failed: {e}") from e
     return StreamingResponse(
         chunks,
         media_type="text/plain; charset=utf-8",

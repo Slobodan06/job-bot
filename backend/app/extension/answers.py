@@ -8,12 +8,11 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from typing import Any
 
-from openai import AsyncOpenAI
 
 from app.extension.autofill import custom_answer_for
+from app.services.llm_config import llm_api_key, llm_model, make_llm_client
 from app.services.openai_compat import chat_completion_controls
 from app.services.resume_analysis_ai import _json_object
 from app.services.resume_model import ResumeModel
@@ -49,15 +48,11 @@ async def draft_free_text_answers(
             continue
         pending.append({"key": key, "question": label[:400]})
 
-    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    api_key = llm_api_key()
     if not pending or not api_key or model is None:
         return answers
 
-    model_name = (
-        os.getenv("OPENAI_MODEL_WRITE", "").strip()
-        or os.getenv("OPENAI_MODEL", "").strip()
-        or "gpt-4o-mini"
-    )
+    model_name = llm_model("OPENAI_MODEL_WRITE", "OPENAI_MODEL", openai_default="gpt-4o-mini", role="write")
     resume_json = json.dumps(model.model_dump(exclude={"meta"}), ensure_ascii=False)[:12000]
     profile_json = json.dumps(
         {k: v for k, v in profile.items() if k != "custom_answers"}, ensure_ascii=False
@@ -72,8 +67,7 @@ async def draft_free_text_answers(
         'Return {"answers": [{"key": "...", "answer": "..."}]}'
     )
     try:
-        timeout = float(os.getenv("OPENAI_TIMEOUT_SECONDS", "120") or "120")
-        client = AsyncOpenAI(api_key=api_key, timeout=max(30.0, min(timeout, 300.0)))
+        client = make_llm_client(api_key=api_key)
         completion = await client.chat.completions.create(
             model=model_name,
             messages=[

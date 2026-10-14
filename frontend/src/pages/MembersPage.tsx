@@ -348,7 +348,7 @@ export default function MembersPage() {
                   <Table.Th>Team tracker</Table.Th>
                   <Table.Th>
                     <Tooltip
-                      label="Shows the Application questions tab in the Resume builder (uses OpenAI credits)"
+                      label="Shows the Application questions tab in the Resume builder (uses AI credits)"
                       withArrow
                       multiline
                       w={240}

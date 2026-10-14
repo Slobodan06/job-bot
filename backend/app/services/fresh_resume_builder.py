@@ -12,6 +12,7 @@ from openai import AsyncOpenAI
 from app.schemas import TailorResponse
 from app.services.docx_resume import output_docx_filename
 from app.services.docx_convert import pdf_download_filename
+from app.services.llm_config import llm_api_key, llm_key_env_name, llm_model
 from app.services.pdf_resume import is_plausible_personal_link, parse_contact, sanitize_for_pdf
 from app.services.resume_model import (
     ResumeExperienceEntry,
@@ -729,7 +730,7 @@ async def _llm_generate_fresh_content(
         f"{json.dumps(roles_payload, ensure_ascii=False)}\n\n"
         f"JOB DESCRIPTION:\n{job_description.strip()[:8000]}"
     )
-    writer_model = os.getenv("OPENAI_MODEL_WRITE", os.getenv("OPENAI_MODEL", "chat-latest"))
+    writer_model = llm_model("OPENAI_MODEL_WRITE", "OPENAI_MODEL", openai_default="chat-latest", role="write")
     completion = await client.chat.completions.create(
         model=writer_model,
         **chat_completion_controls(writer_model, max_output_tokens=12000, temperature=0.55),
@@ -1146,10 +1147,10 @@ async def build_fresh_tailored_resume(
             for index in range(role_count)
         ]
 
-    key = os.getenv("OPENAI_API_KEY", "").strip()
+    key = llm_api_key()
     openai_configured = bool(key)
     if sample_mode and not key:
-        raise ValueError("OPENAI_API_KEY is required to generate an ideal fictional sample resume.")
+        raise ValueError(f"{llm_key_env_name()} is required to generate an ideal fictional sample resume.")
     used_llm = False
     llm_error = ""
     summary = source_summary
@@ -1488,7 +1489,7 @@ async def build_fresh_tailored_resume(
         "sample_mode": sample_mode,
         "prompt_version": PROMPT_VERSION,
         "model_metadata": {
-            "writer_model": os.getenv("OPENAI_MODEL_WRITE", os.getenv("OPENAI_MODEL", "chat-latest")),
+            "writer_model": llm_model("OPENAI_MODEL_WRITE", "OPENAI_MODEL", openai_default="chat-latest", role="write"),
             "used_llm": used_llm,
         },
         "pipeline": [
@@ -1532,7 +1533,7 @@ async def build_fresh_tailored_resume(
     if used_llm:
         tips.append("AI rewrote summary, skills, and accomplishment bullets for the target job.")
     else:
-        tips.append("Set OPENAI_API_KEY for AI-generated bullets and summary.")
+        tips.append(f"Set {llm_key_env_name()} for AI-generated bullets and summary.")
     if gap_report:
         tips.append(
             f"Evidence guardrails found {len(gap_report)} unsupported JD requirement(s); those claims were kept out of the resume."

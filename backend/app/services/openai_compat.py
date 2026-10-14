@@ -20,6 +20,9 @@ def chat_completion_controls(
     max_output_tokens: int,
     temperature: float | None = None,
 ) -> dict[str, Any]:
+    if (model or "").strip().lower().startswith("deepseek-chat"):
+        # DeepSeek's chat model rejects max_tokens above 8K (reasoner allows more).
+        max_output_tokens = min(max_output_tokens, 8192)
     if uses_completion_token_limit(model):
         # These models use max_completion_tokens and may reject non-default
         # temperature values, so omit temperature entirely.

@@ -70,6 +70,11 @@ const ACCEPT = [
   ".pdf",
 ];
 
+/** "Insufficient Balance" (DeepSeek 402) / "insufficient_quota" (OpenAI 429) → the account needs a top-up. */
+function isOutOfCredit(error: string | null | undefined): boolean {
+  return /insufficient[_ ](balance|quota)|credit_balance_exhausted|no credits remaining/i.test(error || "");
+}
+
 export default function HomePage() {
   const [activeTab, setActiveTab] = useState<string | null>("resume");
   // The owner decides per member whether the "Application questions" tab is available.
@@ -943,7 +948,7 @@ export default function HomePage() {
                 color={result.used_llm ? "teal" : "gray"}
                 leftSection={result.used_llm ? <IconSparkles size={14} /> : undefined}
               >
-                {result.used_llm ? "AI (OpenAI)" : "Offline + keywords"}
+                {result.used_llm ? "AI" : "Offline + keywords"}
               </Badge>
               <Tooltip label="Copy full assembled resume">
                 <ActionIcon variant="filled" color="teal" size="lg" radius="md" onClick={copyResult} aria-label="Copy full">
@@ -975,18 +980,28 @@ export default function HomePage() {
             <Alert variant="light" color="orange" title="AI experience bullets not generated" icon={<IconAlertCircle size={18} />}>
               {result.openai_configured === false ? (
                 <>
-                  This backend has no <code>OPENAI_API_KEY</code>. Add it to <code>backend/.env</code> for local dev
-                  (port <code>8010</code> via <code>npm run dev</code>) or set the variable in Railway/Render for
-                  production, then restart the server.
+                  No AI API key is configured on the server (<code>DEEPSEEK_API_KEY</code> with{" "}
+                  <code>AI_PROVIDER=deepseek</code>, or <code>OPENAI_API_KEY</code>). Add it to{" "}
+                  <code>backend/.env</code> for local dev or set it in Railway for production, then restart the server.
                 </>
               ) : result.llm_error ? (
                 <>
-                  OpenAI is configured but the AI pass failed: <Text span fw={500}>{result.llm_error}</Text> Your original
-                  experience bullets are shown below. Check backend logs, API billing, and network access to OpenAI.
+                  {isOutOfCredit(result.llm_error) ? (
+                    <>
+                      The AI provider account is out of credit, so the AI step couldn&apos;t run. Ask the site owner to
+                      top up the AI balance, then try again.
+                    </>
+                  ) : (
+                    <>
+                      The AI step failed: <Text span fw={500}>{result.llm_error}</Text> Check the backend logs, the AI
+                      provider&apos;s billing, and network access.
+                    </>
+                  )}{" "}
+                  Your original experience bullets are shown below.
                 </>
               ) : (
                 <>
-                  OpenAI is configured but the AI pass did not run successfully. Restart the backend and try again. Until
+                  AI is configured but the AI step did not run successfully. Restart the backend and try again. Until
                   then, your original experience bullets are shown below (summary/skills get keyword notes only).
                 </>
               )}
@@ -1512,7 +1527,7 @@ export default function HomePage() {
                 color={coverLetterResult.used_llm ? "teal" : "gray"}
                 leftSection={coverLetterResult.used_llm ? <IconSparkles size={14} /> : undefined}
               >
-                {coverLetterResult.used_llm ? "AI (OpenAI)" : "Template draft"}
+                {coverLetterResult.used_llm ? "AI" : "Template draft"}
               </Badge>
               <Tooltip label="Copy cover letter">
                 <ActionIcon

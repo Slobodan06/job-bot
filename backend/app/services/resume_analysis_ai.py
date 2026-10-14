@@ -3,12 +3,11 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 from typing import Sequence
 
-from openai import AsyncOpenAI
 
+from app.services.llm_config import llm_api_key, llm_model, make_llm_client
 from app.services.openai_compat import chat_completion_controls
 from app.services.pdf_resume import ContactIdentity, format_contact_identity_block, parse_contact_identity
 from app.services.resume_sections import WorkExperienceRole
@@ -62,7 +61,7 @@ async def repair_resume_metadata_with_ai(
     source_text: str,
 ) -> tuple[str, tuple[WorkExperienceRole, ...]]:
     """Fill missing links/employers from source-backed AI extraction; preserve known fields."""
-    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    api_key = llm_api_key()
     if not api_key or not roles:
         return contact, tuple(roles)
 
@@ -157,14 +156,9 @@ Rules:
 - company_evidence and other evidence fields must be verbatim source text; leave a value empty when no exact evidence exists.
 - A mail provider domain such as outlook.com is never a LinkedIn or portfolio URL.
 """
-    model = (
-        os.getenv("OPENAI_MODEL_ANALYSIS", "").strip()
-        or os.getenv("OPENAI_MODEL_FAST", "").strip()
-        or "gpt-4o-mini"
-    )
+    model = llm_model("OPENAI_MODEL_ANALYSIS", "OPENAI_MODEL_FAST", openai_default="gpt-4o-mini", role="fast")
     try:
-        timeout = float(os.getenv("OPENAI_TIMEOUT_SECONDS", "120") or "120")
-        client = AsyncOpenAI(api_key=api_key, timeout=max(30.0, min(timeout, 300.0)))
+        client = make_llm_client(api_key=api_key)
         completion = await client.chat.completions.create(
             model=model,
             messages=[

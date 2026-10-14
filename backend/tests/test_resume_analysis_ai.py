@@ -51,7 +51,7 @@ class ResumeAnalysisAIRepairTests(unittest.IsolatedAsyncioTestCase):
             "https://davidjovanovic.dev\nhttps://github.com/davidjovanovic"
         )
         with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}), patch(
-            "app.services.resume_analysis_ai.AsyncOpenAI", _FakeClient
+            "app.services.llm_config.AsyncOpenAI", _FakeClient
         ):
             contact, _roles = await repair_resume_metadata_with_ai(
                 contact="David Jovanovic\nFrontend Developer",
@@ -94,7 +94,7 @@ class ResumeAnalysisAIRepairTests(unittest.IsolatedAsyncioTestCase):
             "Experis\nAI Automation Engineer\nChicago, IL, USA\n05/2023 - 05/2026"
         )
         with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}), patch(
-            "app.services.resume_analysis_ai.AsyncOpenAI", _FakeClient
+            "app.services.llm_config.AsyncOpenAI", _FakeClient
         ):
             contact, roles = await repair_resume_metadata_with_ai(
                 contact="Het Patel\nhet-patel12@outlook.com\noutlook.com",
@@ -111,7 +111,7 @@ class ResumeAnalysisAIRepairTests(unittest.IsolatedAsyncioTestCase):
             "roles": [{"index": 0, "company": "Invented Corp", "company_evidence": "Invented Corp"}],
         }
         with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}), patch(
-            "app.services.resume_analysis_ai.AsyncOpenAI", _FakeClient
+            "app.services.llm_config.AsyncOpenAI", _FakeClient
         ):
             _contact, roles = await repair_resume_metadata_with_ai(
                 contact="Candidate",
