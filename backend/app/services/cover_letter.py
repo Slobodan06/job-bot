@@ -36,6 +36,7 @@ Rules:
 - Return valid JSON: {"cover_letter": "..."}
 - Include a proper salutation (Dear Hiring Manager, or Dear [Company] Team if company is known).
 - End with a professional sign-off (Sincerely, / Best regards,) then the candidate's name on the next line.
+- NEVER include an email address, phone number, street address, or any links anywhere in the letter (not in the header, body, or after the name).
 - Keep total length 250–400 words.
 """
 
@@ -56,17 +57,33 @@ def _extract_candidate_name(contact: str) -> str:
     return ""
 
 
-def _extract_email(contact: str) -> str:
-    match = re.search(r"[\w.+-]+@[\w.-]+\.\w+", contact or "")
-    return match.group(0) if match else ""
+_EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+# 7+ digit phone numbers in common formats: +1 (555) 010-2000, 555.010.2000, +44 20 7946 0958
+_PHONE_RE = re.compile(r"(?<![\w/])\+?\(?\d[\d\s().-]{6,}\d(?![\w/])")
+_CONTACT_WORD = r"(?:e-?mail|phone|tel|telephone|mobile|cell)"
 
 
-def _extract_phone(contact: str) -> str:
-    for line in (contact or "").splitlines():
-        match = re.search(r"(\+?\d[\d\s().\-]{7,}\d)", line)
-        if match:
-            return match.group(1).strip()
-    return ""
+def strip_contact_details(text: str) -> str:
+    """Remove email addresses and phone numbers from a cover letter.
+
+    Lines that are only contact details (a signature block) are dropped; inline
+    mentions are cut out and the leftover wording/punctuation tidied.
+    """
+    out: list[str] = []
+    for line in (text or "").split("\n"):
+        if not (_EMAIL_RE.search(line) or _PHONE_RE.search(line)):
+            out.append(line)
+            continue
+        cleaned = _PHONE_RE.sub("", _EMAIL_RE.sub("", line))
+        # Dangling labels ("Email:", "Phone |") and connectors ("reach me at .").
+        cleaned = re.sub(rf"\b{_CONTACT_WORD}\s*[:.]?(?=\s*(?:[|·,;]|$))", "", cleaned, flags=re.I)
+        cleaned = re.sub(r"\s+(?:at|on|via)(?:\s+or)?\s*(?=[.,;!?]|$)", "", cleaned)
+        cleaned = re.sub(r"\s+or\s*(?=[.,;!?]|$)", "", cleaned)
+        cleaned = re.sub(r"\s*[|·,;]\s*(?=[|·,;.]|$)", "", cleaned)
+        cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" |·,;-")
+        if re.search(r"[A-Za-z]{3}", cleaned):
+            out.append(cleaned)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
 
 
 def _offline_cover_letter(
@@ -108,7 +125,6 @@ async def _llm_cover_letter(
         "candidate_name": candidate_name,
         "target_job_role": target_job_role,
         "company_name": company_name,
-        "contact": parsed.contact,
         "professional_summary": parsed.professional_summary,
         "professional_experience": parsed.professional_experience[:6000],
         "skills": parsed.skills[:3000],
@@ -117,7 +133,7 @@ async def _llm_cover_letter(
     user_msg = (
         f"TARGET ROLE: {target_job_role}\n"
         f"COMPANY: {company_name or '(not specified — use generic salutation)'}\n"
-        f"CANDIDATE NAME (sign-off): {candidate_name or '(extract from contact)'}\n"
+        f"CANDIDATE NAME (sign-off): {candidate_name or '(not provided — end with the sign-off only)'}\n"
         f"JD KEYWORDS (weave naturally when truthful): {', '.join(keywords[:16])}\n\n"
         f"JOB DESCRIPTION:\n{job_description.strip()}\n\n"
         f"RESUME CONTEXT JSON:\n{json.dumps(payload, ensure_ascii=False)}"
@@ -145,8 +161,6 @@ def build_cover_letter_pdf(
     cover_letter: str,
     *,
     candidate_name: str = "",
-    email: str = "",
-    phone: str = "",
 ) -> bytes:
     """Render cover letter as a clean letter-size PDF."""
     reg_font, _ = register_reportlab_fira_fonts()
@@ -177,15 +191,8 @@ def build_cover_letter_pdf(
     )
 
     story: list = []
-    header_lines: list[str] = []
-    if candidate_name:
-        header_lines.append(candidate_name)
-    if email:
-        header_lines.append(email)
-    if phone:
-        header_lines.append(phone)
-    if header_lines:
-        story.append(Paragraph("<br/>".join(sanitize_for_pdf(line) for line in header_lines), header_style))
+    if candidate_name:  # name only — no email / phone on cover letters
+        story.append(Paragraph(sanitize_for_pdf(candidate_name), header_style))
         story.append(Spacer(1, 0.15 * inch))
 
     paragraphs = [p.strip() for p in re.split(r"\n\s*\n", (cover_letter or "").strip()) if p.strip()]
@@ -223,8 +230,6 @@ async def generate_cover_letter(
     )
     role = sanitize_target_job_role(target_job_role) or extract_jd_target_role_title(job_description) or "this role"
     candidate_name = _extract_candidate_name(parsed.contact)
-    email = _extract_email(parsed.contact)
-    phone = _extract_phone(parsed.contact)
 
     key = os.getenv("OPENAI_API_KEY", "").strip()
     used_llm = False
@@ -256,12 +261,9 @@ async def generate_cover_letter(
             candidate_name=candidate_name,
         )
 
-    pdf_bytes = build_cover_letter_pdf(
-        cover_letter,
-        candidate_name=candidate_name,
-        email=email,
-        phone=phone,
-    )
+    # Cover letters carry no contact details (no email / phone) — the name only.
+    cover_letter = strip_contact_details(cover_letter)
+    pdf_bytes = build_cover_letter_pdf(cover_letter, candidate_name=candidate_name)
     pdf_name = cover_letter_download_filename(original_filename)
 
     return {
