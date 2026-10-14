@@ -17,6 +17,7 @@ import {
   IconBrandChrome,
   IconBriefcase,
   IconChevronDown,
+  IconCoin,
   IconFileCv,
   IconLogout,
   IconSearch,
@@ -43,6 +44,7 @@ function pageTitle(pathname: string): string {
   if (pathname.startsWith("/admin/members")) return "Member management";
   if (pathname.startsWith("/admin/applications")) return "Team applications";
   if (pathname.startsWith("/download")) return "Browser extension";
+  if (pathname.startsWith("/admin/ai-usage")) return "AI usage";
   if (pathname.startsWith("/auth")) return "Account";
   if (pathname.startsWith("/pending-access")) return "Access pending";
   return "Resume tailor";
@@ -160,6 +162,11 @@ export function AppLayout() {
                     {isOwner ? (
                       <Menu.Item leftSection={<IconUsers size={16} />} component={Link} to="/admin/members">
                         Manage members
+                      </Menu.Item>
+                    ) : null}
+                    {isOwner ? (
+                      <Menu.Item leftSection={<IconCoin size={16} />} component={Link} to="/admin/ai-usage">
+                        AI usage
                       </Menu.Item>
                     ) : null}
                     {canViewTeamApplications ? (

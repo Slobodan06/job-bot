@@ -6,6 +6,7 @@ import type { BgToFrame, FrameToBg } from "../lib/frames";
 import type { DetectedJob } from "../lib/types";
 import { runFillInThisFrame } from "./fill-runner";
 import { Overlay } from "./Overlay";
+import { initSessionSync } from "./session-sync";
 import { initSubmissionTracking } from "./submission";
 
 const isTopFrame = window.top === window.self;
@@ -34,6 +35,9 @@ chrome.runtime.onMessage.addListener((msg: BgToFrame) => {
 // never bubble up to the parent document, and the "thanks for applying"
 // confirmation can appear in any frame (see ./submission.ts).
 initSubmissionTracking();
+
+// The extension uses the JobBot website's session (one browser per account).
+initSessionSync();
 
 if (isTopFrame) {
   let host: HTMLDivElement | null = null;

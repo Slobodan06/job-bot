@@ -16,6 +16,8 @@ export type User = {
   member_type: MemberType;
   /** Can open Team applications (team members see their assigned bidders, read-only). */
   can_view_team_applications: boolean;
+  /** Owner-controlled per member: may use the Resume builder's "Application questions" tab. */
+  can_use_application_questions: boolean;
   /** Whether this member saved a base resume (team members' bidders work from it). */
   has_base_resume: boolean;
   /** Bidders: the team member they work under. */
@@ -66,7 +68,26 @@ export function setStoredToken(token: string | null): void {
   else localStorage.removeItem(TOKEN_KEY);
 }
 
+/** Fired when the server says this browser's session was replaced by a sign-in elsewhere. */
+export const SESSION_ENDED_EVENT = "jobbot:session-ended";
+
+function notifySessionEnded(message: string) {
+  setStoredToken(null);
+  window.dispatchEvent(new CustomEvent(SESSION_ENDED_EVENT, { detail: message }));
+}
+
 export async function parseError(res: Response): Promise<string> {
+  if (res.status === 401 && res.headers.get("X-Session-Ended")) {
+    let message = "You were signed out because this account signed in on another browser.";
+    try {
+      const data = await res.clone().json();
+      if (typeof data?.detail === "string") message = data.detail;
+    } catch {
+      /* keep default */
+    }
+    notifySessionEnded(message);
+    return message;
+  }
   try {
     const data = await res.json();
     if (typeof data?.detail === "string") return data.detail;
@@ -135,6 +156,10 @@ export const authApi = {
   },
   me(token?: string) {
     return apiFetch<User>("/api/auth/me", {}, token);
+  },
+  /** Ends the session on the server too, so the token stops working everywhere. */
+  logout() {
+    return apiFetch<void>("/api/auth/logout", { method: "POST" });
   },
   updateProfile(payload: ProfileUpdatePayload) {
     return apiFetch<User>("/api/auth/profile", {
@@ -553,6 +578,12 @@ export const adminApi = {
       body: JSON.stringify({ member_type: memberType }),
     });
   },
+  setApplicationQuestions(memberId: string, enabled: boolean) {
+    return apiFetch<User>(`/api/admin/members/${memberId}/features`, {
+      method: "PATCH",
+      body: JSON.stringify({ application_questions: enabled }),
+    });
+  },
   setAssignment(memberId: string, teamMemberId: string | null) {
     return apiFetch<User>(`/api/admin/members/${memberId}/assignment`, {
       method: "PATCH",
@@ -781,5 +812,35 @@ export const applicationAnswerApi = {
     }
     text += decoder.decode();
     return text;
+  },
+};
+
+export type AiUsageMember = {
+  member_id: string | null;
+  name: string;
+  email: string;
+  requests: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  cost_usd: number;
+  last_used_at: string | null;
+  features: { feature: string; requests: number; total_tokens: number; cost_usd: number }[];
+};
+
+export type AiUsageReport = {
+  days: number;
+  total_requests: number;
+  total_tokens: number;
+  total_cost_usd: number;
+  unpriced_models: string[];
+  members: AiUsageMember[];
+  daily: { date: string; requests: number; total_tokens: number; cost_usd: number }[];
+};
+
+export const aiUsageApi = {
+  /** Owner only: OpenAI usage per member over the last `days` days. */
+  report(days: number) {
+    return apiFetch<AiUsageReport>(`/api/admin/ai-usage?days=${days}`);
   },
 };

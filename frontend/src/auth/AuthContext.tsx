@@ -3,11 +3,15 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState, t
 import {
   authApi,
   getStoredToken,
+  SESSION_ENDED_EVENT,
   setStoredToken,
   userCanBuild,
   type AuthResult,
   type User,
 } from "./api";
+
+/** sessionStorage key: why the user was just signed out (shown once on the sign-in page). */
+export const SESSION_NOTICE_KEY = "jobbot_session_notice";
 
 type AuthContextValue = {
   user: User | null;
@@ -66,6 +70,36 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     })();
   }, [refreshUser]);
 
+  // One browser per account: if this account signs in somewhere else, the server
+  // rejects this browser's token. Drop to the sign-in page with an explanation.
+  useEffect(() => {
+    const onEnded = (e: Event) => {
+      const message = (e as CustomEvent<string>).detail;
+      try {
+        sessionStorage.setItem(SESSION_NOTICE_KEY, message);
+      } catch {
+        /* storage unavailable — the redirect still happens */
+      }
+      setUser(null);
+    };
+    window.addEventListener(SESSION_ENDED_EVENT, onEnded);
+    return () => window.removeEventListener(SESSION_ENDED_EVENT, onEnded);
+  }, []);
+
+  // Notice a replaced session promptly even when idle: re-check on focus and every minute.
+  useEffect(() => {
+    if (!user) return;
+    const check = () => {
+      if (getStoredToken()) void authApi.me().catch(() => {});
+    };
+    window.addEventListener("focus", check);
+    const timer = window.setInterval(check, 60_000);
+    return () => {
+      window.removeEventListener("focus", check);
+      window.clearInterval(timer);
+    };
+  }, [user]);
+
   const login = useCallback(async (email: string, password: string) => {
     const res = await authApi.login(email, password);
     applyAuthResult(res);
@@ -85,6 +119,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [applyAuthResult]);
 
   const logout = useCallback(() => {
+    // End the session server-side too (best effort), then forget it locally.
+    if (getStoredToken()) void authApi.logout().catch(() => {});
     setStoredToken(null);
     setUser(null);
   }, []);

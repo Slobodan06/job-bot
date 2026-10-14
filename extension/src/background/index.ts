@@ -5,7 +5,7 @@
  * (see ../lib/frames.ts) — a job posting or its application form frequently
  * lives in an iframe, so no single frame can be assumed to own everything.
  */
-import { API_ORIGIN, TOKEN_KEY } from "../lib/env";
+import { API_ORIGIN, TOKEN_KEY, WEB_ORIGIN } from "../lib/env";
 import type { BgRequest, BgResponse } from "../lib/messaging";
 import type { BgToFrame, FrameToBg } from "../lib/frames";
 import type { Application, DetectedJob } from "../lib/types";
@@ -37,7 +37,16 @@ async function api<T>(path: string, init: RequestInit = {}, auth = true): Promis
   const res = await fetch(`${API_ORIGIN}${path}`, { ...init, headers });
   if (res.status === 401) {
     await setToken(null, null);
-    throw new HttpError(401, "Your session expired — sign in again from the popup.");
+    let detail = "Your JobBot session ended — sign in on the JobBot website in this browser.";
+    if (res.headers.get("X-Session-Ended")) {
+      try {
+        const j = await res.json();
+        if (typeof j?.detail === "string") detail = j.detail;
+      } catch {
+        /* keep default */
+      }
+    }
+    throw new HttpError(401, detail);
   }
   if (!res.ok) {
     let detail = res.statusText;
@@ -256,7 +265,7 @@ async function recordConfirmedApplication(tabId: number, pageUrl: string): Promi
     await updateTracking(tabId, () => ({ armedAt: null, armedJob: null }));
 
     if (!(await getToken())) {
-      notifyTopFrame(tabId, false, "JobBot: sign in from the extension popup to track your applications.");
+      notifyTopFrame(tabId, false, "JobBot: sign in on the JobBot website in this browser to track your applications.");
       return;
     }
     const job = st.armedJob || st.lastJob || fallbackJob(pageUrl, "");
@@ -395,17 +404,31 @@ async function handle(req: BgRequest, sender: chrome.runtime.MessageSender): Pro
         const s = await chrome.storage.local.get([TOKEN_KEY, "jobbot_email"]);
         return { ok: true, data: { token: s[TOKEN_KEY] || null, email: s.jobbot_email || null } };
       }
-      case "auth:login": {
-        const r = await api<{ status: string; access_token?: string; email: string; message: string }>(
-          "/api/auth/login",
-          { method: "POST", body: JSON.stringify({ email: req.email, password: req.password }) },
-          false,
-        );
-        if (!r.access_token) return { ok: false, error: r.message || "Login incomplete." };
-        await setToken(r.access_token, r.email);
-        return { ok: true, data: { email: r.email } };
+      case "auth:sync": {
+        // One browser per account: the extension never signs in on its own — it uses
+        // the JobBot website's session in this same browser. Only that site may set it.
+        let origin = "";
+        try {
+          origin = new URL(sender.url || "").origin;
+        } catch {
+          /* no url */
+        }
+        if (origin !== WEB_ORIGIN || sender.frameId !== 0) return { ok: false, error: "Not allowed." };
+        const current = await getToken();
+        if (!req.token) {
+          if (current) await setToken(null, null);
+          return { ok: true, data: null };
+        }
+        if (req.token === current) return { ok: true, data: null };
+        const me = await fetch(`${API_ORIGIN}/api/auth/me`, { headers: { Authorization: `Bearer ${req.token}` } });
+        if (!me.ok) return { ok: false, error: "Website session isn't valid." };
+        const user = (await me.json()) as { email?: string };
+        await setToken(req.token, user.email || null);
+        return { ok: true, data: { email: user.email || null } };
       }
       case "auth:logout":
+        // Signing out ends the account's session everywhere (website included).
+        await api("/api/auth/logout", { method: "POST" }).catch(() => {});
         await setToken(null, null);
         return { ok: true, data: null };
       case "profile:get":

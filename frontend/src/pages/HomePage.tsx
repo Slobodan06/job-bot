@@ -22,6 +22,7 @@ import {
   Tooltip,
   Tabs,
 } from "@mantine/core";
+import { useAuth } from "../auth/AuthContext";
 import { ApplicationQuestionsChat } from "../components/ApplicationQuestionsChat";
 import { highlightTermsInText } from "../highlightTerms";
 import { useDisclosure, useMediaQuery } from "@mantine/hooks";
@@ -71,6 +72,12 @@ const ACCEPT = [
 
 export default function HomePage() {
   const [activeTab, setActiveTab] = useState<string | null>("resume");
+  // The owner decides per member whether the "Application questions" tab is available.
+  const { user } = useAuth();
+  const canUseQuestions = Boolean(user?.can_use_application_questions);
+  useEffect(() => {
+    if (!canUseQuestions && activeTab === "questions") setActiveTab("resume");
+  }, [canUseQuestions, activeTab]);
   const [file, setFile] = useState<File | null>(null);
   // Which resume names this member may generate for (profile-name lock).
   const [resumeAccess, setResumeAccess] = useState<ResumeAccess | null>(null);
@@ -1596,9 +1603,11 @@ export default function HomePage() {
           <Tabs.Tab value="cover-letter" leftSection={<IconMail size={16} />}>
             Cover letter
           </Tabs.Tab>
-          <Tabs.Tab value="questions" leftSection={<IconMessageQuestion size={16} />}>
-            Application questions
-          </Tabs.Tab>
+          {canUseQuestions ? (
+            <Tabs.Tab value="questions" leftSection={<IconMessageQuestion size={16} />}>
+              Application questions
+            </Tabs.Tab>
+          ) : null}
         </Tabs.List>
 
         <Tabs.Panel value="resume">
@@ -1624,18 +1633,20 @@ export default function HomePage() {
         </Tabs.Panel>
 
         {/* keepMounted (Tabs default) keeps the chat history when switching tabs. */}
-        <Tabs.Panel value="questions">
-          <SimpleGrid cols={{ base: 1, lg: 2 }} spacing={{ base: "md", lg: "lg" }}>
-            {inputColumn}
-            <ApplicationQuestionsChat
-              teamMemberResumeOf={usesTeamResume ? resumeAccess?.team_member_name || "your team member" : null}
-              file={file}
-              jobDescription={jobDescription}
-              companyName={companyName.trim()}
-              height={resultHeight}
-            />
-          </SimpleGrid>
-        </Tabs.Panel>
+        {canUseQuestions ? (
+          <Tabs.Panel value="questions">
+            <SimpleGrid cols={{ base: 1, lg: 2 }} spacing={{ base: "md", lg: "lg" }}>
+              {inputColumn}
+              <ApplicationQuestionsChat
+                teamMemberResumeOf={usesTeamResume ? resumeAccess?.team_member_name || "your team member" : null}
+                file={file}
+                jobDescription={jobDescription}
+                companyName={companyName.trim()}
+                height={resultHeight}
+              />
+            </SimpleGrid>
+          </Tabs.Panel>
+        ) : null}
       </Tabs>
     </Container>
   );

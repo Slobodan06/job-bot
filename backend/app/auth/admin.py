@@ -8,6 +8,7 @@ from app.auth.roles import member_type, user_is_owner
 from app.auth.schemas import (
     MemberAssignmentUpdate,
     MemberDeleteResponse,
+    MemberFeaturesUpdate,
     MemberAccessUpdate,
     MemberPermissionsUpdate,
     MemberTemplateUpdate,
@@ -131,6 +132,28 @@ async def _non_owner_member(member_id: str) -> dict:
     if user_is_owner(doc):
         raise HTTPException(status_code=400, detail="The owner account can't be assigned.")
     return doc
+
+
+@router.patch("/members/{member_id}/features", response_model=UserPublic)
+async def update_member_features(
+    member_id: str,
+    body: MemberFeaturesUpdate,
+    owner: dict = Depends(get_owner_user),
+) -> UserPublic:
+    """Owner switches optional features on/off per member (e.g. the Application questions tab)."""
+    if not ObjectId.is_valid(member_id):
+        raise HTTPException(status_code=400, detail="Invalid member id.")
+    db = get_db()
+    doc = await db.users.find_one({"_id": ObjectId(member_id)})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Member not found.")
+    if user_is_owner(doc):
+        raise HTTPException(status_code=400, detail="The owner always has every feature.")
+    await db.users.update_one(
+        {"_id": doc["_id"]},
+        {"$set": {"can_use_application_questions": body.application_questions, "updated_at": datetime.now(UTC)}},
+    )
+    return UserPublic(**public_user(await db.users.find_one({"_id": doc["_id"]})))
 
 
 @router.patch("/members/{member_id}/assignment", response_model=UserPublic)

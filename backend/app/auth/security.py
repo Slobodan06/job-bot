@@ -1,4 +1,5 @@
 import os
+import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -34,6 +35,10 @@ def create_access_token(subject: str, extra: dict[str, Any] | None = None) -> st
     if extra:
         payload.update(extra)
     return jwt.encode(payload, _jwt_secret(), algorithm=JWT_ALGORITHM)
+
+
+def new_session_id() -> str:
+    return secrets.token_urlsafe(24)
 
 
 def decode_access_token(token: str) -> dict[str, Any]:

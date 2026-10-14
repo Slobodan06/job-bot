@@ -10,7 +10,8 @@ import type {
 
 export type BgRequest =
   | { type: "auth:get" }
-  | { type: "auth:login"; email: string; password: string }
+  // Sent by the content script on the JobBot website: its current session token (or null).
+  | { type: "auth:sync"; token: string | null }
   | { type: "auth:logout" }
   | { type: "profile:get" }
   | { type: "job:track"; job: DetectedJob; status?: string }
@@ -46,8 +47,7 @@ export function sendToBackground<T = unknown>(req: BgRequest): Promise<BgRespons
 // Convenience typed wrappers
 export const bg = {
   authGet: () => sendToBackground<{ token: string | null; email: string | null }>({ type: "auth:get" }),
-  login: (email: string, password: string) =>
-    sendToBackground<{ email: string }>({ type: "auth:login", email, password }),
+  syncSession: (token: string | null) => sendToBackground<{ email: string | null } | null>({ type: "auth:sync", token }),
   logout: () => sendToBackground({ type: "auth:logout" }),
   profile: () => sendToBackground<ExtensionProfile>({ type: "profile:get" }),
   track: (job: DetectedJob, status?: string) =>

@@ -63,3 +63,9 @@ def user_can_view_team(doc: dict) -> bool:
     if user_can_manage_applications(doc):
         return True
     return user_can_build(doc) and member_type(doc) == "team_member"
+
+
+def user_can_use_application_questions(doc: dict) -> bool:
+    """The Resume builder's "Application questions" tab: the owner always; members only
+    when the owner switched it on for them (Members page)."""
+    return user_is_owner(doc) or bool(doc.get("can_use_application_questions"))

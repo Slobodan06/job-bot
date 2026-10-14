@@ -14,10 +14,10 @@ import {
 import { useForm } from "@mantine/form";
 import { notifications } from "@mantine/notifications";
 import { IconAlertCircle, IconLock, IconMail, IconUser } from "@tabler/icons-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 
-import { getPostAuthPath, useAuth } from "../auth/AuthContext";
+import { getPostAuthPath, SESSION_NOTICE_KEY, useAuth } from "../auth/AuthContext";
 
 export default function AuthPage() {
   const [params] = useSearchParams();
@@ -25,6 +25,19 @@ export default function AuthPage() {
   const [tab, setTab] = useState<string | null>(initialTab);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Shown once after being signed out because the account signed in on another browser.
+  const [sessionNotice, setSessionNotice] = useState<string | null>(null);
+  useEffect(() => {
+    try {
+      const notice = sessionStorage.getItem(SESSION_NOTICE_KEY);
+      if (notice) {
+        setSessionNotice(notice);
+        sessionStorage.removeItem(SESSION_NOTICE_KEY);
+      }
+    } catch {
+      /* storage unavailable */
+    }
+  }, []);
   const { login, register } = useAuth();
   const navigate = useNavigate();
 
@@ -109,6 +122,12 @@ export default function AuthPage() {
                 : "Sign in with email. You will receive an activation link if your account is not verified yet."}
             </Text>
           </Stack>
+
+          {sessionNotice && !error ? (
+            <Alert icon={<IconAlertCircle size={18} />} color="yellow" variant="light">
+              {sessionNotice}
+            </Alert>
+          ) : null}
 
           {error ? (
             <Alert icon={<IconAlertCircle size={18} />} color="red" variant="light">

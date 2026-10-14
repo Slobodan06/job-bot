@@ -25,6 +25,7 @@ const ProfilePage = lazy(() => import("./pages/ProfilePage"));
 const MembersPage = lazy(() => import("./pages/MembersPage"));
 const TeamApplicationsPage = lazy(() => import("./pages/TeamApplicationsPage"));
 const DownloadExtensionPage = lazy(() => import("./pages/DownloadExtensionPage"));
+const AiUsagePage = lazy(() => import("./pages/AiUsagePage"));
 const TemplatesPage = lazy(() => import("./pages/TemplatesPage"));
 
 function PageLoader() {
@@ -108,6 +109,14 @@ export default function App() {
                 element={
                   <OwnerRoute>
                     <MembersPage />
+                  </OwnerRoute>
+                }
+              />
+              <Route
+                path="admin/ai-usage"
+                element={
+                  <OwnerRoute>
+                    <AiUsagePage />
                   </OwnerRoute>
                 }
               />

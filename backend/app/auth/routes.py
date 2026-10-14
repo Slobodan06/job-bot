@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from app.auth.dependencies import get_current_user, public_user
 from app.auth.schemas import (
@@ -14,7 +14,7 @@ from app.auth.schemas import (
     ResendVerificationRequest,
     UserPublic,
 )
-from app.auth.security import create_access_token, hash_password, verify_password
+from app.auth.security import create_access_token, hash_password, new_session_id, verify_password
 from app.auth.verification import new_verification_token, verification_is_valid
 from app.auth.roles import owner_bootstrap_fields, user_can_build
 from app.database import get_db, user_doc_to_public
@@ -23,15 +23,38 @@ from app.services.email import send_verification_email
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
-def _auth_response(doc: dict) -> AuthResponse:
-    token = create_access_token(str(doc["_id"]))
+async def _start_session(doc: dict, request: Request | None) -> str:
+    """One session per account: a new sign-in replaces (signs out) any other browser.
+
+    The session id lives on the user and inside the token; get_current_user only
+    accepts a token whose session is still the account's current one.
+    """
+    sid = new_session_id()
+    headers = request.headers if request else {}
+    await get_db().users.update_one(
+        {"_id": doc["_id"]},
+        {
+            "$set": {
+                "session": {
+                    "id": sid,
+                    "started_at": datetime.now(UTC),
+                    "user_agent": (headers.get("user-agent") or "")[:300],
+                    "ip": (request.client.host if request and request.client else "")[:64],
+                }
+            }
+        },
+    )
+    return create_access_token(str(doc["_id"]), extra={"sid": sid})
+
+
+async def _auth_response(doc: dict, request: Request | None) -> AuthResponse:
     return AuthResponse(
-        access_token=token,
+        access_token=await _start_session(doc, request),
         user=UserPublic(**public_user(doc)),
     )
 
 
-def _auth_result(doc: dict, *, message: str) -> AuthResultResponse:
+async def _auth_result(doc: dict, *, message: str, request: Request | None = None) -> AuthResultResponse:
     public = UserPublic(**public_user(doc))
     if not public.email_verified:
         return AuthResultResponse(
@@ -40,7 +63,7 @@ def _auth_result(doc: dict, *, message: str) -> AuthResultResponse:
             email=public.email,
         )
     if not user_can_build(doc):
-        token = create_access_token(str(doc["_id"]))
+        token = await _start_session(doc, request)
         return AuthResultResponse(
             status="pending_access",
             message=message,
@@ -48,7 +71,7 @@ def _auth_result(doc: dict, *, message: str) -> AuthResultResponse:
             access_token=token,
             user=public,
         )
-    full = _auth_response(doc)
+    full = await _auth_response(doc, request)
     return AuthResultResponse(
         status="authenticated",
         message=message,
@@ -102,7 +125,7 @@ async def register(body: RegisterRequest) -> AuthResultResponse:
     doc["_id"] = result.inserted_id
 
     if bootstrap["email_verified"]:
-        return _auth_result(
+        return await _auth_result(
             doc,
             message="Owner account created. You can use the resume builder and manage members.",
         )
@@ -116,7 +139,7 @@ async def register(body: RegisterRequest) -> AuthResultResponse:
 
 
 @router.post("/login", response_model=AuthResultResponse)
-async def login(body: LoginRequest) -> AuthResultResponse:
+async def login(body: LoginRequest, request: Request) -> AuthResultResponse:
     db = get_db()
     email = body.email.strip().lower()
     doc = await db.users.find_one({"email": email})
@@ -134,11 +157,11 @@ async def login(body: LoginRequest) -> AuthResultResponse:
             email=email,
         )
 
-    return _auth_result(doc, message="Signed in successfully.")
+    return await _auth_result(doc, message="Signed in successfully.", request=request)
 
 
 @router.get("/verify-email", response_model=AuthResultResponse)
-async def verify_email(token: str = Query(min_length=10)) -> AuthResultResponse:
+async def verify_email(request: Request, token: str = Query(min_length=10)) -> AuthResultResponse:
     db = get_db()
     doc = await db.users.find_one({"verification_token": token})
     if not doc or not verification_is_valid(doc, token):
@@ -158,7 +181,7 @@ async def verify_email(token: str = Query(min_length=10)) -> AuthResultResponse:
         },
     )
     doc = await db.users.find_one({"_id": doc["_id"]})
-    return _auth_result(doc, message="Email verified successfully.")
+    return await _auth_result(doc, message="Email verified successfully.", request=request)
 
 
 @router.post("/resend-verification", response_model=MessageResponse)
@@ -172,6 +195,12 @@ async def resend_verification(body: ResendVerificationRequest) -> MessageRespons
         return MessageResponse(message="This account is already verified. You can sign in.")
     await _issue_verification(doc)
     return MessageResponse(message="A new activation link was sent to your email.")
+
+
+@router.post("/logout", status_code=204)
+async def logout(user: dict = Depends(get_current_user)) -> None:
+    """End this account's session on the server (the token stops working everywhere)."""
+    await get_db().users.update_one({"_id": user["_id"]}, {"$unset": {"session": ""}})
 
 
 @router.get("/me", response_model=UserPublic)

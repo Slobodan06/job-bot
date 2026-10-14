@@ -192,6 +192,28 @@ export default function MembersPage() {
     }
   };
 
+  const toggleQuestions = async (member: User, enabled: boolean) => {
+    if (member.role === "owner") return;
+    setUpdatingId(member.id);
+    try {
+      const updated = await adminApi.setApplicationQuestions(member.id, enabled);
+      setMembers((prev) => prev.map((m) => (m.id === updated.id ? updated : m)));
+      notifications.show({
+        title: enabled ? "Application questions on" : "Application questions off",
+        message: `${member.email} ${enabled ? "can now" : "can no longer"} use the Application questions tab.`,
+        color: "teal",
+      });
+    } catch (e) {
+      notifications.show({
+        title: "Update failed",
+        message: e instanceof Error ? e.message : "Try again.",
+        color: "red",
+      });
+    } finally {
+      setUpdatingId(null);
+    }
+  };
+
   const changeType = async (member: User, memberType: MemberType) => {
     if (member.role === "owner" || member.member_type === memberType) return;
     setUpdatingId(member.id);
@@ -324,6 +346,16 @@ export default function MembersPage() {
                   <Table.Th>Joined</Table.Th>
                   <Table.Th>Builder access</Table.Th>
                   <Table.Th>Team tracker</Table.Th>
+                  <Table.Th>
+                    <Tooltip
+                      label="Shows the Application questions tab in the Resume builder (uses OpenAI credits)"
+                      withArrow
+                      multiline
+                      w={240}
+                    >
+                      <span>Q&amp;A tab</span>
+                    </Tooltip>
+                  </Table.Th>
                   <Table.Th>Applications</Table.Th>
                   <Table.Th w={48} />
                 </Table.Tr>
@@ -459,6 +491,22 @@ export default function MembersPage() {
                       )}
                     </Table.Td>
                     <Table.Td>
+                      {member.role === "owner" ? (
+                        <Text size="sm" c="dimmed">
+                          Always on
+                        </Text>
+                      ) : (
+                        <Switch
+                          checked={member.can_use_application_questions}
+                          disabled={updatingId === member.id}
+                          onChange={(e) => void toggleQuestions(member, e.currentTarget.checked)}
+                          color="teal"
+                          label={member.can_use_application_questions ? "On" : "Off"}
+                          size="sm"
+                        />
+                      )}
+                    </Table.Td>
+                    <Table.Td>
                       <Anchor component={Link} to={`/admin/applications?member=${member.id}`} size="sm">
                         View tracker
                       </Anchor>
@@ -482,7 +530,7 @@ export default function MembersPage() {
                 ))}
                 {!loading && members.length === 0 ? (
                   <Table.Tr>
-                    <Table.Td colSpan={10}>
+                    <Table.Td colSpan={11}>
                       <Text ta="center" c="dimmed" py="md">
                         No members yet.
                       </Text>

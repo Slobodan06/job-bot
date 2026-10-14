@@ -16,9 +16,11 @@ load_dotenv(_root / "atlas-credentials.env")
 load_dotenv()
 
 from app.auth.admin import router as admin_router
+from app.auth.ai_usage_routes import router as ai_usage_router
 from app.auth.routes import router as auth_router
 from app.auth.dependencies import get_builder_user
 from app.auth.resume_access import base_resume_for, reject_bidder_upload
+from app.auth.roles import user_can_use_application_questions
 from app.applications.admin_routes import router as admin_applications_router
 from app.applications.routes import router as applications_router
 from app.cv_templates.routes import router as cv_templates_router
@@ -41,6 +43,7 @@ from app.services.application_answers import (
     openai_configured,
     resume_text_from_model,
 )
+from app.services.ai_usage import UsageContextMiddleware, install_openai_usage_tracking
 from app.services.cover_letter import generate_cover_letter
 from app.services.extract_text import extract_text_from_bytes
 from app.services.email import log_email_config
@@ -118,8 +121,13 @@ def _frontend_dist() -> Path | None:
 
 app = FastAPI(title="Resume Tailor API", version="1.0.0", lifespan=lifespan)
 
+# Record every OpenAI call per account (see app/services/ai_usage.py).
+install_openai_usage_tracking()
+app.add_middleware(UsageContextMiddleware)
+
 app.include_router(auth_router)
 app.include_router(admin_router)
+app.include_router(ai_usage_router)
 app.include_router(cv_templates_router)
 app.include_router(resume_router)
 app.include_router(applications_router)
@@ -338,6 +346,11 @@ async def application_answer(
     user: dict = Depends(get_builder_user),
 ) -> StreamingResponse:
     """Stream a resume-grounded answer to a job-application question (plain text)."""
+    if not user_can_use_application_questions(user):
+        raise HTTPException(
+            status_code=403,
+            detail="Application questions aren't enabled for your account — ask the site owner.",
+        )
     if not question.strip():
         raise HTTPException(status_code=400, detail="Type the application question first.")
 

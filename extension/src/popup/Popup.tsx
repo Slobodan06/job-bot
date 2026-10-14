@@ -5,17 +5,6 @@ import { bg } from "../lib/messaging";
 import type { Application, ApplicationStats } from "../lib/types";
 
 const wrap: React.CSSProperties = { padding: 14 };
-const input: React.CSSProperties = {
-  width: "100%",
-  boxSizing: "border-box",
-  padding: "8px 10px",
-  margin: "4px 0",
-  borderRadius: 8,
-  border: "1px solid #373a40",
-  background: "#25262b",
-  color: "#e9ecef",
-  font: "13px system-ui",
-};
 const button: React.CSSProperties = {
   width: "100%",
   padding: "9px 12px",
@@ -31,8 +20,6 @@ const button: React.CSSProperties = {
 export function Popup() {
   const [email, setEmail] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [form, setForm] = useState({ email: "", password: "" });
-  const [error, setError] = useState("");
   const [apps, setApps] = useState<Application[]>([]);
   const [stats, setStats] = useState<ApplicationStats | null>(null);
 
@@ -51,46 +38,25 @@ export function Popup() {
     load();
   }, []);
 
-  const login = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError("");
-    const r = await bg.login(form.email.trim(), form.password);
-    if (!r.ok) {
-      setError(r.error);
-      return;
-    }
-    await load();
-  };
-
   if (loading) return <div style={wrap}>Loading…</div>;
 
   if (!email) {
     return (
       <div style={wrap}>
         <h3 style={{ margin: "0 0 8px", color: "#20c997" }}>Sign in to JobBot</h3>
-        <form onSubmit={login}>
-          <input
-            style={input}
-            type="email"
-            placeholder="Email"
-            value={form.email}
-            onChange={(e) => setForm({ ...form, email: e.target.value })}
-          />
-          <input
-            style={input}
-            type="password"
-            placeholder="Password"
-            value={form.password}
-            onChange={(e) => setForm({ ...form, password: e.target.value })}
-          />
-          {error && <p style={{ color: "#ff8787", margin: "4px 0" }}>{error}</p>}
-          <button style={button} type="submit">
-            Sign in
-          </button>
-        </form>
-        <a href={`${WEB_ORIGIN}/auth`} target="_blank" rel="noreferrer" style={{ color: "#4dabf7", fontSize: 12 }}>
-          Create an account
-        </a>
+        <p style={{ margin: "0 0 8px", color: "#adb5bd", fontSize: 12, lineHeight: 1.5 }}>
+          The extension uses your JobBot website sign-in. Sign in on the JobBot website in <b>this browser</b> and
+          the extension connects automatically — one browser per account.
+        </p>
+        <button style={button} onClick={() => chrome.tabs.create({ url: `${WEB_ORIGIN}/auth` })}>
+          Open JobBot to sign in
+        </button>
+        <button
+          onClick={() => load()}
+          style={{ ...button, background: "none", color: "#4dabf7", border: "1px solid #373a40" }}
+        >
+          I've signed in — refresh
+        </button>
       </div>
     );
   }
@@ -106,7 +72,7 @@ export function Popup() {
           }}
           style={{ background: "none", border: "none", color: "#868e96", cursor: "pointer" }}
         >
-          Sign out
+          Sign out of JobBot
         </button>
       </div>
       <p style={{ margin: "2px 0 10px", color: "#adb5bd", fontSize: 12 }}>{email}</p>

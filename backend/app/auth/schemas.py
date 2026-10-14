@@ -49,6 +49,10 @@ class MemberTypeUpdate(BaseModel):
     member_type: Literal["team_member", "bidder"]
 
 
+class MemberFeaturesUpdate(BaseModel):
+    application_questions: bool
+
+
 class MemberAssignmentUpdate(BaseModel):
     team_member_id: str | None = None
 
@@ -78,6 +82,8 @@ class UserPublic(BaseModel):
     can_manage_applications: bool = False
     member_type: Literal["team_member", "bidder"] = "team_member"
     can_view_team_applications: bool = False
+    # Owner-controlled: may this member use the "Application questions" tab?
+    can_use_application_questions: bool = False
     # Team members: whether they've saved the base resume their bidders work from.
     has_base_resume: bool = False
     # Bidders: the team member whose profile they work under.

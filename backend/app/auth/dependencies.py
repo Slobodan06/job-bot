@@ -5,8 +5,14 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from app.auth.roles import user_can_build, user_can_manage_applications, user_can_view_team, user_is_owner
 from app.auth.security import decode_access_token
 from app.database import get_db, user_doc_to_public
+from app.services.ai_usage import set_usage_user
 
 _bearer = HTTPBearer(auto_error=False)
+
+SESSION_ENDED_DETAIL = (
+    "You were signed out because this account signed in on another browser. "
+    "Only one browser can use an account at a time."
+)
 
 
 async def get_current_user(
@@ -25,6 +31,16 @@ async def get_current_user(
     doc = await db.users.find_one({"_id": ObjectId(user_id)})
     if not doc:
         raise HTTPException(status_code=401, detail="User not found.")
+    # One browser per account: only the most recent sign-in's session is valid.
+    current = (doc.get("session") or {}).get("id")
+    if not current or payload.get("sid") != current:
+        raise HTTPException(
+            status_code=401,
+            # No session at all = signed out; a different one = signed in elsewhere.
+            detail=SESSION_ENDED_DETAIL if current else "You were signed out. Please sign in again.",
+            headers={"X-Session-Ended": "1"},
+        )
+    set_usage_user(doc)
     return doc
 
 
