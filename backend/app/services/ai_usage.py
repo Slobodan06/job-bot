@@ -108,7 +108,16 @@ def estimate_cost_usd(
     return round(cost, 6)
 
 
-async def record_usage(*, user_id: Any, path: str, model: str, usage: Any) -> None:
+def estimate_call_cost(model: str, requested_model: str, prompt: int, completion: int, cached: int = 0) -> float | None:
+    """Price by the model that ran; fall back to the requested one (providers may report
+    an internal name, e.g. DeepSeek answers "deepseek-chat" requests as "deepseek-flash")."""
+    cost = estimate_cost_usd(model, prompt, completion, cached)
+    if cost is None and requested_model and requested_model != model:
+        cost = estimate_cost_usd(requested_model, prompt, completion, cached)
+    return cost
+
+
+async def record_usage(*, user_id: Any, path: str, model: str, usage: Any, requested_model: str = "") -> None:
     if usage is None:
         return
     prompt = int(getattr(usage, "prompt_tokens", 0) or 0)
@@ -121,6 +130,7 @@ async def record_usage(*, user_id: Any, path: str, model: str, usage: Any) -> No
         "user_id": user_id,
         "at": datetime.now(UTC),
         "model": model or "",
+        "requested_model": requested_model or "",
         "path": path,
         "feature": feature_for_path(path),
         "prompt_tokens": prompt,
@@ -128,7 +138,7 @@ async def record_usage(*, user_id: Any, path: str, model: str, usage: Any) -> No
         "total_tokens": int(getattr(usage, "total_tokens", 0) or (prompt + completion)),
         "cached_tokens": cached,
         # Snapshot at call time; the report re-prices from tokens with current prices.
-        "cost_usd": estimate_cost_usd(model, prompt, completion, cached),
+        "cost_usd": estimate_call_cost(model, requested_model, prompt, completion, cached),
     }
     try:
         from app.database import get_db
@@ -155,12 +165,17 @@ class _TrackedStream:
         usage = None
         try:
             async for chunk in self._stream:
+                if getattr(chunk, "model", None):
+                    self._served_model = chunk.model
                 if getattr(chunk, "usage", None) is not None:
                     usage = chunk.usage
                 yield chunk
         finally:
             if usage is not None:
-                await record_usage(usage=usage, **self._ctx)
+                ctx = dict(self._ctx)
+                ctx["requested_model"] = ctx["model"]
+                ctx["model"] = getattr(self, "_served_model", None) or ctx["model"]
+                await record_usage(usage=usage, **ctx)
 
 
 _installed = False
@@ -189,7 +204,11 @@ def install_openai_usage_tracking() -> None:
             return _TrackedStream(stream, user_id=user_id, path=path, model=model)
         response = await original(self, *args, **kwargs)
         await record_usage(
-            user_id=user_id, path=path, model=getattr(response, "model", None) or model, usage=response.usage
+            user_id=user_id,
+            path=path,
+            model=getattr(response, "model", None) or model,
+            requested_model=model,
+            usage=response.usage,
         )
         return response
 

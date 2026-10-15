@@ -580,6 +580,7 @@ EVIDENCE_RESUME_SYSTEM = """You are an evidence-based resume tailoring engine.
 Your goal is to create the strongest truthful resume for a target job while preserving factual accuracy.
 
 Return ONLY valid JSON with these keys:
+- headline (string, one line under the name, max 110 characters): the TARGET ROLE title, optionally followed by 2-4 of the job's most important skills separated by " | ". Every skill named must also appear in your skills value. No company names, no first person, no years-of-experience claims.
 - professional_summary (string, 4-5 information-dense sentences, derived from final verified bullets, no first person)
 - skills (string, 6-10 labeled categories with colon format; include the broadest nonredundant set of JD-relevant, source-supported or candidate-confirmed tools/skills)
 - roles (array of objects, one per employer in order, each with:
@@ -631,6 +632,7 @@ SAMPLE_RESUME_SYSTEM = """You generate an idealized SAMPLE resume for software d
 The content is fictional sample data, not factual employment verification.
 
 Return ONLY valid JSON with these keys:
+- headline: one line under the name (max 110 characters): the target role title, optionally followed by 2-4 of the job's most important skills separated by " | " (each also present in skills)
 - professional_summary: 4-5 dense, ATS-friendly sentences targeted to the job
 - skills: one newline-delimited STRING containing 10-12 labeled technical categories using `Category: skill, skill`; never return skills as an array or object
 - roles: one object per supplied role, in the same order, with experienceId and bullets
@@ -669,7 +671,8 @@ async def _llm_generate_fresh_content(
     job_analysis: dict[str, object],
     requirement_evidence_map: list[dict[str, object]],
     sample_mode: bool = False,
-) -> tuple[str, str, list[list[str]]]:
+) -> tuple[str, str, list[list[str]], str]:
+    """Returns (summary, skills, bullets per role, headline)."""
     roles_payload = []
     for i, role in enumerate(roles):
         experience_id = f"exp_{i + 1:03d}"
@@ -743,6 +746,7 @@ async def _llm_generate_fresh_content(
     data = _parse_json_object(completion.choices[0].message.content or "{}")
     summary = str(data.get("professional_summary", "")).strip()
     skills = normalize_generated_skills(data.get("skills", ""))
+    headline = str(data.get("headline", "") or "").strip()
     raw_roles = data.get("roles")
     bullets_out: list[list[str]] = []
     if isinstance(raw_roles, list):
@@ -783,7 +787,7 @@ async def _llm_generate_fresh_content(
             bullets_out.append(cleaned[:want])
     else:
         bullets_out = [list(r.bullets)[: bullets_per_role[i]] for i, r in enumerate(roles)]
-    return summary, skills, bullets_out
+    return summary, skills, bullets_out, headline
 
 
 def _bind_verified_answers_to_roles(
@@ -1014,6 +1018,85 @@ def _has_practical_ai_evidence(facts: list[SourceFact]) -> bool:
     return False
 
 
+_HEADLINE_MAX = 110
+
+
+def _skill_items(skills: str) -> list[str]:
+    """Individual skills from "Category: a, b, c" lines."""
+    items: list[str] = []
+    for line in (skills or "").splitlines():
+        body = line.split(":", 1)[1] if ":" in line else line
+        items.extend(part.strip(" .;") for part in body.split(",") if part.strip(" .;"))
+    return items
+
+
+def _clean_headline_part(text: str) -> str:
+    text = sanitize_for_pdf(text or "")
+    text = re.sub(r"\s+", " ", text).strip(" \"'`.,;:-|")
+    return text
+
+
+def build_tailored_headline(
+    *,
+    ai_headline: str,
+    target_role: str,
+    skills: str,
+    job_description: str,
+    source_title: str,
+) -> str:
+    """The line under the name, tailored to the job.
+
+    Uses the AI's headline when present, keeping only skill segments that appear in
+    the tailored skills (so the headline never claims anything the resume doesn't).
+    Otherwise: target role + up to 3 tailored skills the job description mentions most.
+    Falls back to the original title when there is no target role at all.
+    """
+    skills_lower = (skills or "").lower()
+    segments = [_clean_headline_part(p) for p in re.split(r"\s*[|•·]\s*", ai_headline or "")]
+    segments = [p for p in segments if p]
+    role = _clean_headline_part(target_role) or (segments[0] if segments else "")
+    parts: list[str] = []
+    if segments:
+        role = segments[0]
+        for seg in segments[1:]:
+            if re.search(r"\d+\+?\s*(?:years?|yrs?)\b", seg, re.I):
+                continue  # no years-of-experience claims in the headline
+            if seg.lower() in skills_lower:
+                parts.append(seg)
+    else:
+        jd = (job_description or "").lower()
+        ranked = sorted(
+            {item for item in _skill_items(skills) if item and item.lower() in jd},
+            key=lambda item: (-jd.count(item.lower()), jd.find(item.lower())),
+        )
+        parts = ranked[:3]
+    if not role:
+        return _clean_headline_part(source_title)
+    headline = role
+    for part in parts[:4]:
+        candidate = f"{headline} | {part}"
+        if len(candidate) > _HEADLINE_MAX:
+            break
+        headline = candidate
+    return headline[:_HEADLINE_MAX]
+
+
+def _replace_title_line(contact_block: str, old_title: str, new_title: str) -> str:
+    """Swap the original title line in the plain contact block for the tailored one."""
+    if not new_title or new_title == old_title:
+        return contact_block
+    lines = (contact_block or "").split("\n")
+    old = (old_title or "").strip()
+    for i, line in enumerate(lines[:4]):
+        if old and line.strip() == old:
+            lines[i] = new_title
+            return "\n".join(lines)
+    # No title line in the source header: put the headline right under the name.
+    if lines and lines[0].strip():
+        lines.insert(1, new_title)
+    return "\n".join(lines)
+
+
 def _build_tailored_model(
     source_model: ResumeModel,
     *,
@@ -1022,6 +1105,7 @@ def _build_tailored_model(
     skills: str,
     display_roles: list[WorkExperienceRole],
     display_bullets_by_role: list[list[object]],
+    headline: str = "",
 ) -> ResumeModel:
     """Assemble the final typed model the renderers consume (no string re-parsing)."""
     experience: list[ResumeExperienceEntry] = []
@@ -1038,7 +1122,7 @@ def _build_tailored_model(
         )
     return ResumeModel(
         name=source_model.name,
-        title=source_model.title,
+        title=headline or source_model.title,
         location=source_model.location,
         contact=source_model.contact,
         professional_summary=summary,
@@ -1153,6 +1237,7 @@ async def build_fresh_tailored_resume(
         raise ValueError(f"{llm_key_env_name()} is required to generate an ideal fictional sample resume.")
     used_llm = False
     llm_error = ""
+    ai_headline = ""
     summary = source_summary
     skills = source_skills
     bullets_by_role: list[list[str]] = [list(r.bullets) for r in roles]
@@ -1188,7 +1273,7 @@ async def build_fresh_tailored_resume(
                     "Preserve fixed source fields, but synthesize perfect-match summary, skills, and role bullets."
                 )
             client = _openai_client(key)
-            summary, skills, bullets_by_role = await _llm_generate_fresh_content(
+            summary, skills, bullets_by_role, ai_headline = await _llm_generate_fresh_content(
                 client=client,
                 job_description=job_description,
                 target_role=target_role,
@@ -1420,6 +1505,15 @@ async def build_fresh_tailored_resume(
     template_key = rendercv_template_key(theme)
     template_label = rendercv_template_label(theme)
 
+    # The line under the name follows the job too (not just the original title).
+    headline = build_tailored_headline(
+        ai_headline=ai_headline,
+        target_role=target_role,
+        skills=skills,
+        job_description=job_description,
+        source_title=resume_model.title,
+    )
+    contact_block = _replace_title_line(contact_block, resume_model.title, headline)
     tailored_model = _build_tailored_model(
         resume_model,
         contact_block=contact_block,
@@ -1427,6 +1521,7 @@ async def build_fresh_tailored_resume(
         skills=skills,
         display_roles=display_roles,
         display_bullets_by_role=display_bullets_by_role,
+        headline=headline,
     )
 
     try:

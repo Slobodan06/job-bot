@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 from io import BytesIO
 from typing import Any
 
@@ -183,8 +184,12 @@ def build_docx_resume(
     skill_entries: list[dict[str, str]] | None = None,
     education_entries: list[dict[str, Any]] | None = None,
     extra_sections: list[tuple[str, list[str]]] | None = None,
+    headline: str | None = None,
 ) -> bytes:
     """Return a polished single-column DOCX containing the final generated resume.
+
+    ``headline``, when supplied, is used verbatim for the line under the name (the
+    contact parser would otherwise split a "Role | Skill | Skill" headline on its pipes).
 
     ``skill_entries`` / ``education_entries`` / ``extra_sections``, when supplied,
     bypass the string re-parsing and render the typed data straight through.
@@ -213,6 +218,8 @@ def build_docx_resume(
     bullet_style.paragraph_format.first_line_indent = Inches(-0.16)
 
     identity = parse_contact_identity(contact or "")
+    if headline:
+        identity = replace(identity, headline=sanitize_for_pdf(headline).strip())
     name = doc.add_paragraph()
     name.alignment = WD_ALIGN_PARAGRAPH.CENTER
     name.paragraph_format.space_after = Pt(1)
@@ -331,4 +338,5 @@ def build_docx_resume_from_model(model: Any) -> bytes:
         skill_entries=_skill_entries_from_model(model.technical_skills),
         education_entries=_education_entries_from_model(model.education),
         extra_sections=[(heading, list(entries)) for heading, entries in model.extra_sections()],
+        headline=getattr(model, "title", "") or None,
     )

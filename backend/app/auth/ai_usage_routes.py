@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 from app.auth.dependencies import get_owner_user
 from app.database import get_db
-from app.services.ai_usage import estimate_cost_usd
+from app.services.ai_usage import estimate_call_cost
 
 router = APIRouter(prefix="/api/admin/ai-usage", tags=["admin"])
 
@@ -66,7 +66,7 @@ async def ai_usage_report(
         r
         async for r in db.ai_usage.find(
             {"at": {"$gte": since}},
-            {"user_id": 1, "at": 1, "model": 1, "feature": 1, "prompt_tokens": 1,
+            {"user_id": 1, "at": 1, "model": 1, "requested_model": 1, "feature": 1, "prompt_tokens": 1,
              "completion_tokens": 1, "total_tokens": 1, "cached_tokens": 1},
         )
     ]
@@ -78,8 +78,9 @@ async def ai_usage_report(
         uid = r.get("user_id")
         # Re-priced from tokens with the current price table, so a price correction
         # (or OPENAI_PRICING_JSON) also fixes past rows.
-        cost = estimate_cost_usd(
+        cost = estimate_call_cost(
             r.get("model") or "",
+            r.get("requested_model") or "",
             r.get("prompt_tokens") or 0,
             r.get("completion_tokens") or 0,
             r.get("cached_tokens") or 0,

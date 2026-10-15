@@ -69,6 +69,19 @@ class ProviderSelectionTests(unittest.TestCase):
             self.assertEqual(1, len(adapt_request_for_provider(dict(bare))["messages"]))
 
 
+class ServedModelPricingTests(unittest.TestCase):
+    def test_unknown_served_name_falls_back_to_requested_model_price(self) -> None:
+        # DeepSeek answers "deepseek-chat" requests as "deepseek-flash" (seen live 2026-10-14).
+        from app.services.ai_usage import estimate_call_cost
+
+        self.assertIsNone(estimate_cost_usd("deepseek-flash", 1000, 500))
+        self.assertEqual(estimate_cost_usd("deepseek-chat", 1000, 500),
+                         estimate_call_cost("deepseek-flash", "deepseek-chat", 1000, 500))
+        # A known served name keeps its own price.
+        self.assertEqual(estimate_cost_usd("gpt-4o-mini", 1000, 500),
+                         estimate_call_cost("gpt-4o-mini-2024-07-18", "chat-latest", 1000, 500))
+
+
 class DeepSeekRoundTripTests(unittest.TestCase):
     def test_request_shape_and_usage_tracking_against_fake_deepseek(self) -> None:
         seen: list[httpx.Request] = []
