@@ -107,3 +107,33 @@ class DailyApplicationsResponse(BaseModel):
     days: list[DailyPoint]
     total: int
     tz: str
+
+
+class EmailSignal(BaseModel):
+    """One Gmail message the extension saw (inbox row or opened message)."""
+
+    key: str = Field(min_length=1, max_length=200)
+    from_name: str = Field(default="", max_length=200)
+    from_email: str = Field(default="", max_length=200)
+    subject: str = Field(default="", max_length=500)
+    snippet: str = Field(default="", max_length=1000)
+    body: str = Field(default="", max_length=8000)
+    received_at: datetime | None = None
+
+
+class EmailSignalsRequest(BaseModel):
+    emails: list[EmailSignal] = Field(max_length=40)
+
+
+class EmailStatusUpdate(BaseModel):
+    application_id: str
+    company: str = ""
+    job_title: str = ""
+    previous_status: str
+    status: str
+    subject: str = ""
+
+
+class EmailSignalsResponse(BaseModel):
+    processed_keys: list[str]
+    updated: list[EmailStatusUpdate]

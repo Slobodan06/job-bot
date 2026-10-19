@@ -35,6 +35,7 @@ const STATUS_COLOR: Record<string, string> = {
   drafting: "yellow",
   ready: "cyan",
   submitted: "teal",
+  assessment: "orange",
   interviewing: "grape",
   offer: "green",
   rejected: "red",

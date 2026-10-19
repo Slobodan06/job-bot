@@ -22,6 +22,7 @@ export function Popup() {
   const [loading, setLoading] = useState(true);
   const [apps, setApps] = useState<Application[]>([]);
   const [stats, setStats] = useState<ApplicationStats | null>(null);
+  const [gmailOn, setGmailOn] = useState(true);
 
   const load = async () => {
     const auth = await bg.authGet();
@@ -29,9 +30,10 @@ export function Popup() {
     setEmail(signedIn ? auth.data.email : null);
     setLoading(false);
     if (signedIn) {
-      const [a, s] = await Promise.all([bg.applications(15), bg.stats()]);
+      const [a, s, g] = await Promise.all([bg.applications(15), bg.stats(), bg.gmailEnabled()]);
       if (a.ok) setApps(a.data.items);
       if (s.ok) setStats(s.data);
+      if (g.ok) setGmailOn(g.data);
     }
   };
   useEffect(() => {
@@ -46,7 +48,7 @@ export function Popup() {
         <h3 style={{ margin: "0 0 8px", color: "#20c997" }}>Sign in to JobBot</h3>
         <p style={{ margin: "0 0 8px", color: "#adb5bd", fontSize: 12, lineHeight: 1.5 }}>
           The extension uses your JobBot website sign-in. Sign in on the JobBot website in <b>this browser</b> and
-          the extension connects automatically — one browser per account.
+          the extension connects automatically.
         </p>
         <button style={button} onClick={() => chrome.tabs.create({ url: `${WEB_ORIGIN}/auth` })}>
           Open JobBot to sign in
@@ -86,6 +88,24 @@ export function Popup() {
           ))}
         </div>
       )}
+
+      <label
+        style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: 12, color: "#adb5bd", marginBottom: 10 }}
+      >
+        <input
+          type="checkbox"
+          checked={gmailOn}
+          onChange={async (e) => {
+            const enabled = e.currentTarget.checked;
+            setGmailOn(enabled);
+            await bg.setGmailEnabled(enabled);
+          }}
+        />
+        <span>
+          <b style={{ color: "#e9ecef" }}>Track statuses from Gmail</b> — when Gmail is open, job emails (assessment,
+          interview, offer, rejection) update your tracker.
+        </span>
+      </label>
 
       <div style={{ maxHeight: 260, overflowY: "auto" }}>
         {apps.length === 0 && <p style={{ color: "#868e96", fontSize: 12 }}>No applications tracked yet.</p>}

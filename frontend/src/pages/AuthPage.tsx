@@ -25,7 +25,7 @@ export default function AuthPage() {
   const [tab, setTab] = useState<string | null>(initialTab);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Shown once after being signed out because the account signed in on another browser.
+  // Shown once after this browser's session ended on the server (e.g. signed out).
   const [sessionNotice, setSessionNotice] = useState<string | null>(null);
   useEffect(() => {
     try {

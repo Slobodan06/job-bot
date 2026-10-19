@@ -9,10 +9,19 @@ from app.services.ai_usage import set_usage_user
 
 _bearer = HTTPBearer(auto_error=False)
 
-SESSION_ENDED_DETAIL = (
-    "You were signed out because this account signed in on another browser. "
-    "Only one browser can use an account at a time."
-)
+SESSION_ENDED_DETAIL = "You were signed out. Please sign in again."
+
+# Key under which get_current_user stashes the token's session id on the user doc.
+SESSION_ID_KEY = "_session_id"
+
+
+def _session_ids(doc: dict) -> set[str]:
+    ids = {s.get("id") for s in doc.get("sessions") or [] if isinstance(s, dict)}
+    legacy = (doc.get("session") or {}).get("id")  # from the old one-browser-per-account scheme
+    if legacy:
+        ids.add(legacy)
+    ids.discard(None)
+    return ids
 
 
 async def get_current_user(
@@ -31,15 +40,12 @@ async def get_current_user(
     doc = await db.users.find_one({"_id": ObjectId(user_id)})
     if not doc:
         raise HTTPException(status_code=401, detail="User not found.")
-    # One browser per account: only the most recent sign-in's session is valid.
-    current = (doc.get("session") or {}).get("id")
-    if not current or payload.get("sid") != current:
-        raise HTTPException(
-            status_code=401,
-            # No session at all = signed out; a different one = signed in elsewhere.
-            detail=SESSION_ENDED_DETAIL if current else "You were signed out. Please sign in again.",
-            headers={"X-Session-Ended": "1"},
-        )
+    # Any number of browsers may be signed in; a token is valid while its session exists
+    # (logout removes only that browser's session).
+    sid = payload.get("sid")
+    if not sid or sid not in _session_ids(doc):
+        raise HTTPException(status_code=401, detail=SESSION_ENDED_DETAIL, headers={"X-Session-Ended": "1"})
+    doc[SESSION_ID_KEY] = sid
     set_usage_user(doc)
     return doc
 

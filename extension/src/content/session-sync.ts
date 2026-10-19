@@ -1,5 +1,5 @@
 /**
- * One browser per account: the extension shares the JobBot website's session
+ * The extension shares the JobBot website's session
  * instead of signing in separately. On the JobBot site (top frame only) this
  * reads the site's session token and hands it to the background — on load, when
  * another tab changes it, and on a short poll for same-tab sign-in/sign-out.

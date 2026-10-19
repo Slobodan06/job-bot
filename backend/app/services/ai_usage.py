@@ -58,6 +58,7 @@ FEATURES: tuple[tuple[str, str], ...] = (
     ("/api/qualification-analysis", "Qualification check"),
     ("/api/parse-sections", "Resume parsing"),
     ("/api/resume", "Resume parsing"),
+    ("/api/applications/email-signals", "Email tracking (Gmail)"),
 )
 
 

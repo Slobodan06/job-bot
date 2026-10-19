@@ -6,7 +6,7 @@
  * lives in an iframe, so no single frame can be assumed to own everything.
  */
 import { API_ORIGIN, TOKEN_KEY, WEB_ORIGIN } from "../lib/env";
-import type { BgRequest, BgResponse } from "../lib/messaging";
+import type { BgRequest, BgResponse, EmailSignal, EmailStatusUpdate } from "../lib/messaging";
 import type { BgToFrame, FrameToBg } from "../lib/frames";
 import type { Application, DetectedJob } from "../lib/types";
 
@@ -75,6 +75,36 @@ async function trackJob(job: DetectedJob, status?: string) {
       status: status || "detected",
     }),
   });
+}
+
+// ---------------------------------------------------------------------------
+// Gmail status tracking (see ../content/gmail.ts): forward job emails once each.
+// ---------------------------------------------------------------------------
+const GMAIL_ENABLED_KEY = "jobbot_gmail_tracking";
+const GMAIL_SEEN_KEY = "jobbot_gmail_seen";
+const GMAIL_SEEN_MAX = 5000;
+
+async function gmailTrackingEnabled(): Promise<boolean> {
+  const s = await chrome.storage.local.get(GMAIL_ENABLED_KEY);
+  return s[GMAIL_ENABLED_KEY] !== false; // on unless switched off in the popup
+}
+
+async function sendGmailSignals(emails: EmailSignal[]): Promise<{ updated: EmailStatusUpdate[] }> {
+  if (!(await gmailTrackingEnabled())) throw new HttpError(403, "Gmail tracking is switched off.");
+  if (!(await getToken())) throw new HttpError(401, "Not signed in to JobBot.");
+  const s = await chrome.storage.local.get(GMAIL_SEEN_KEY);
+  const seen: string[] = Array.isArray(s[GMAIL_SEEN_KEY]) ? s[GMAIL_SEEN_KEY] : [];
+  const seenSet = new Set(seen);
+  const fresh = emails.filter((e) => !seenSet.has(e.key));
+  if (!fresh.length) return { updated: [] };
+  const res = await api<{ processed_keys: string[]; updated: EmailStatusUpdate[] }>("/api/applications/email-signals", {
+    method: "POST",
+    body: JSON.stringify({ emails: fresh }),
+  });
+  // Only what the server handled; anything it deferred is sent again on a later Gmail visit.
+  const next = [...seen, ...res.processed_keys.filter((k) => !seenSet.has(k))].slice(-GMAIL_SEEN_MAX);
+  await chrome.storage.local.set({ [GMAIL_SEEN_KEY]: next });
+  return { updated: res.updated };
 }
 
 async function blobToDataUrl(blob: Blob): Promise<string> {
@@ -405,7 +435,7 @@ async function handle(req: BgRequest, sender: chrome.runtime.MessageSender): Pro
         return { ok: true, data: { token: s[TOKEN_KEY] || null, email: s.jobbot_email || null } };
       }
       case "auth:sync": {
-        // One browser per account: the extension never signs in on its own — it uses
+        // The extension never signs in on its own — it uses
         // the JobBot website's session in this same browser. Only that site may set it.
         let origin = "";
         try {
@@ -499,6 +529,13 @@ async function handle(req: BgRequest, sender: chrome.runtime.MessageSender): Pro
             body: JSON.stringify({ status: req.status }),
           }),
         };
+      case "gmail:signals":
+        return { ok: true, data: await sendGmailSignals(req.emails) };
+      case "gmail:get-enabled":
+        return { ok: true, data: await gmailTrackingEnabled() };
+      case "gmail:set-enabled":
+        await chrome.storage.local.set({ [GMAIL_ENABLED_KEY]: req.enabled });
+        return { ok: true, data: req.enabled };
       default:
         return { ok: false, error: "Unknown request." };
     }

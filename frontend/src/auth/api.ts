@@ -68,7 +68,7 @@ export function setStoredToken(token: string | null): void {
   else localStorage.removeItem(TOKEN_KEY);
 }
 
-/** Fired when the server says this browser's session was replaced by a sign-in elsewhere. */
+/** Fired when the server says this browser's session has ended. */
 export const SESSION_ENDED_EVENT = "jobbot:session-ended";
 
 function notifySessionEnded(message: string) {
@@ -78,7 +78,7 @@ function notifySessionEnded(message: string) {
 
 export async function parseError(res: Response): Promise<string> {
   if (res.status === 401 && res.headers.get("X-Session-Ended")) {
-    let message = "You were signed out because this account signed in on another browser.";
+    let message = "You were signed out. Please sign in again.";
     try {
       const data = await res.clone().json();
       if (typeof data?.detail === "string") message = data.detail;
@@ -208,6 +208,7 @@ export const APPLICATION_STATUSES = [
   "drafting",
   "ready",
   "submitted",
+  "assessment",
   "interviewing",
   "offer",
   "rejected",

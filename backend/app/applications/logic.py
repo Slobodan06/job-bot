@@ -8,12 +8,14 @@ from typing import Any
 from urllib.parse import urlparse, urlunparse
 
 # Ordered application pipeline. `detected` is created by the extension the moment
-# a posting is recognised; the rest are user/observed transitions.
+# a posting is recognised; the rest are user/observed transitions (the Gmail
+# tracker in email_tracking.py moves submitted → assessment/interviewing/offer/rejected).
 APPLICATION_STATUSES: tuple[str, ...] = (
     "detected",
     "drafting",
     "ready",
     "submitted",
+    "assessment",
     "interviewing",
     "offer",
     "rejected",

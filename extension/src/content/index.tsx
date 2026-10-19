@@ -5,6 +5,7 @@ import { watchForJob } from "../detectors";
 import type { BgToFrame, FrameToBg } from "../lib/frames";
 import type { DetectedJob } from "../lib/types";
 import { runFillInThisFrame } from "./fill-runner";
+import { initGmailTracking } from "./gmail";
 import { Overlay } from "./Overlay";
 import { initSessionSync } from "./session-sync";
 import { initSubmissionTracking } from "./submission";
@@ -36,8 +37,11 @@ chrome.runtime.onMessage.addListener((msg: BgToFrame) => {
 // confirmation can appear in any frame (see ./submission.ts).
 initSubmissionTracking();
 
-// The extension uses the JobBot website's session (one browser per account).
+// The extension uses the JobBot website's session in this browser.
 initSessionSync();
+
+// On Gmail: application / assessment / interview / offer / rejection emails update the tracker.
+initGmailTracking();
 
 if (isTopFrame) {
   let host: HTMLDivElement | null = null;

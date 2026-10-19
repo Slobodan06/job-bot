@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from app.auth.dependencies import get_current_user, public_user
+from app.auth.dependencies import SESSION_ID_KEY, get_current_user, public_user
 from app.auth.schemas import (
     AuthResponse,
     AuthResultResponse,
@@ -23,23 +23,32 @@ from app.services.email import send_verification_email
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
-async def _start_session(doc: dict, request: Request | None) -> str:
-    """One session per account: a new sign-in replaces (signs out) any other browser.
+# Most recent sign-ins kept per account; older ones are dropped (their tokens stop working).
+MAX_SESSIONS = 50
 
-    The session id lives on the user and inside the token; get_current_user only
-    accepts a token whose session is still the account's current one.
+
+async def _start_session(doc: dict, request: Request | None) -> str:
+    """Start a new session for this sign-in; other browsers stay signed in.
+
+    The session id lives in the user's `sessions` list and inside the token;
+    get_current_user accepts a token whose session is still in that list.
     """
     sid = new_session_id()
     headers = request.headers if request else {}
     await get_db().users.update_one(
         {"_id": doc["_id"]},
         {
-            "$set": {
-                "session": {
-                    "id": sid,
-                    "started_at": datetime.now(UTC),
-                    "user_agent": (headers.get("user-agent") or "")[:300],
-                    "ip": (request.client.host if request and request.client else "")[:64],
+            "$push": {
+                "sessions": {
+                    "$each": [
+                        {
+                            "id": sid,
+                            "started_at": datetime.now(UTC),
+                            "user_agent": (headers.get("user-agent") or "")[:300],
+                            "ip": (request.client.host if request and request.client else "")[:64],
+                        }
+                    ],
+                    "$slice": -MAX_SESSIONS,
                 }
             }
         },
@@ -199,8 +208,12 @@ async def resend_verification(body: ResendVerificationRequest) -> MessageRespons
 
 @router.post("/logout", status_code=204)
 async def logout(user: dict = Depends(get_current_user)) -> None:
-    """End this account's session on the server (the token stops working everywhere)."""
-    await get_db().users.update_one({"_id": user["_id"]}, {"$unset": {"session": ""}})
+    """End this browser's session on the server; other browsers stay signed in."""
+    sid = user.get(SESSION_ID_KEY)
+    update: dict = {"$pull": {"sessions": {"id": sid}}}
+    if (user.get("session") or {}).get("id") == sid:
+        update["$unset"] = {"session": ""}  # legacy single-session field
+    await get_db().users.update_one({"_id": user["_id"]}, update)
 
 
 @router.get("/me", response_model=UserPublic)

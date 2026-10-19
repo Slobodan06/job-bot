@@ -7,12 +7,15 @@ from fastapi.responses import Response
 from pydantic import ValidationError
 
 from app.applications import service
+from app.applications.email_tracking import process_email_signals
 from app.applications.schemas import (
     ApplicationListResponse,
     ApplicationPublic,
     ApplicationStatsResponse,
     ApplicationUpdateRequest,
     ApplicationUpsertRequest,
+    EmailSignalsRequest,
+    EmailSignalsResponse,
 )
 from app.auth.dependencies import get_builder_user
 from app.resume.store import read_resume_variant
@@ -77,6 +80,22 @@ async def record_submitted_application(
             doc, data=data, filename=filename, content_type=content_type, source=source
         )
     return service.to_public(doc)
+
+
+@router.post("/email-signals", response_model=EmailSignalsResponse)
+async def record_email_signals(
+    body: EmailSignalsRequest,
+    user: dict = Depends(get_builder_user),
+) -> EmailSignalsResponse:
+    """Called by the extension with job emails from the member's open Gmail tab.
+
+    Each email is classified (application received / assessment / interview /
+    offer / rejection) and moves the matching tracked application forward.
+    """
+    result = await process_email_signals(
+        user["_id"], [e.model_dump() for e in body.emails], datetime.now(UTC)
+    )
+    return EmailSignalsResponse(**result)
 
 
 @router.get("", response_model=ApplicationListResponse)

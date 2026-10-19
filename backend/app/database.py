@@ -100,6 +100,7 @@ async def ensure_indexes() -> None:
 
     await db.applications.create_index([("user_id", 1), ("created_at", -1)])
     await db.applications.create_index([("user_id", 1), ("job_hash", 1)], unique=True)
+    await db.email_signals.create_index([("user_id", 1), ("key", 1)], unique=True)
     await db["resume_variants.files"].create_index(
         [("metadata.user_id", 1), ("metadata.job_hash", 1)]
     )

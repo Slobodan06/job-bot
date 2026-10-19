@@ -28,9 +28,10 @@ import { ApplicationsPerDayChart, formatDay } from "../components/ApplicationsPe
 import { TrackerTab } from "./applications/TrackerTab";
 
 // Pipeline stages worth a column in the overview (everything else is in "Total").
-const SUMMARY_STATUSES = ["submitted", "interviewing", "offer", "rejected"] as const;
+const SUMMARY_STATUSES = ["submitted", "assessment", "interviewing", "offer", "rejected"] as const;
 const STATUS_COLOR: Record<string, string> = {
   submitted: "teal",
+  assessment: "orange",
   interviewing: "grape",
   offer: "green",
   rejected: "red",

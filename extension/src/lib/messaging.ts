@@ -8,6 +8,26 @@ import type {
   TailorForJobResponse,
 } from "./types";
 
+/** A Gmail message the extension saw (see content/gmail.ts). */
+export type EmailSignal = {
+  key: string;
+  from_name: string;
+  from_email: string;
+  subject: string;
+  snippet: string;
+  body: string;
+  received_at: string | null;
+};
+
+export type EmailStatusUpdate = {
+  application_id: string;
+  company: string;
+  job_title: string;
+  previous_status: string;
+  status: string;
+  subject: string;
+};
+
 export type BgRequest =
   | { type: "auth:get" }
   // Sent by the content script on the JobBot website: its current session token (or null).
@@ -28,7 +48,10 @@ export type BgRequest =
   | { type: "tracking:state" }
   | { type: "applications:list"; limit?: number }
   | { type: "applications:stats" }
-  | { type: "applications:update"; id: string; status: string };
+  | { type: "applications:update"; id: string; status: string }
+  | { type: "gmail:signals"; emails: EmailSignal[] }
+  | { type: "gmail:get-enabled" }
+  | { type: "gmail:set-enabled"; enabled: boolean };
 
 export type BgResponse<T = unknown> = { ok: true; data: T } | { ok: false; error: string; status?: number };
 
@@ -75,4 +98,8 @@ export const bg = {
   stats: () => sendToBackground<ApplicationStats>({ type: "applications:stats" }),
   updateApplication: (id: string, status: string) =>
     sendToBackground<Application>({ type: "applications:update", id, status }),
+  gmailSignals: (emails: EmailSignal[]) =>
+    sendToBackground<{ updated: EmailStatusUpdate[] }>({ type: "gmail:signals", emails }),
+  gmailEnabled: () => sendToBackground<boolean>({ type: "gmail:get-enabled" }),
+  setGmailEnabled: (enabled: boolean) => sendToBackground<boolean>({ type: "gmail:set-enabled", enabled }),
 };

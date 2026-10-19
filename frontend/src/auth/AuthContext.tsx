@@ -70,8 +70,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     })();
   }, [refreshUser]);
 
-  // One browser per account: if this account signs in somewhere else, the server
-  // rejects this browser's token. Drop to the sign-in page with an explanation.
+  // If the server ends this browser's session, it rejects the token.
+  // Drop to the sign-in page with an explanation.
   useEffect(() => {
     const onEnded = (e: Event) => {
       const message = (e as CustomEvent<string>).detail;
@@ -86,7 +86,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener(SESSION_ENDED_EVENT, onEnded);
   }, []);
 
-  // Notice a replaced session promptly even when idle: re-check on focus and every minute.
+  // Notice an ended session (e.g. account removed) promptly even when idle: re-check on focus and every minute.
   useEffect(() => {
     if (!user) return;
     const check = () => {
