@@ -149,9 +149,15 @@ def _is_contact_detail_part(part: str) -> bool:
         return True
     if re.search(r"\+?\d[\d\s().-]{7,}", cleaned):
         return True
-    if re.search(r",\s*[A-Za-zÀ-ÿ]", cleaned) and len(cleaned) < 72:
+    # "City, Region" -- but not a job title like "Senior Software Engineer, AI".
+    if re.search(r",\s*[A-Za-zÀ-ÿ]", cleaned) and len(cleaned) < 72 and not looks_like_job_title(cleaned):
         return True
     return False
+
+
+def looks_like_job_title(text: str) -> bool:
+    """True when a header fragment names a role ("Engineer", "Developer", ...), not a place."""
+    return bool(_ROLE_HEADER_TITLE_RE.search(text or ""))
 
 
 def _ingest_contact_part(parsed: ParsedContact, part: str) -> None:
@@ -440,7 +446,7 @@ def parse_contact_identity(contact: str) -> ContactIdentity:
         if not phone and 8 <= len(digits) <= 15 and not re.search(r"[A-Za-z]", clean):
             phone = clean
             continue
-        if not location and "@" not in clean and not _extract_url(clean):
+        if not location and "@" not in clean and not _extract_url(clean) and not looks_like_job_title(clean):
             location = clean
 
     # Darren Byrne's updated Word resume supplies the source-faithful location

@@ -17,6 +17,7 @@ from app.services.pdf_resume import (
     extract_labeled_pdf_links,
     has_experience_date_range,
     is_experience_role_header_line,
+    looks_like_job_title,
     parse_contact_identity,
 )
 from app.services.rendercv_resume import _education_entries
@@ -178,6 +179,8 @@ def _contact_and_identity(contact_block: str, raw_text: str) -> tuple[str, str, 
         location = guessed
     else:
         location = identity_loc or guessed
+    if looks_like_job_title(location):
+        location = ""
 
     title = (identity.headline or "").strip()
     if _looks_like_bare_location(title, location):
