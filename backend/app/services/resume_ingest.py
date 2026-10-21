@@ -54,6 +54,8 @@ _LOCATION_STOPWORDS = re.compile(
     r"engineer|developer|manager|architect|university|college|institute|inc|llc|ltd|corp)\b",
     re.I,
 )
+_CATEGORY_LINE_RE = re.compile(r"^[^:|@]{2,40}:\s*\S")
+_ADDRESS_LABEL_RE = re.compile(r"^\s*(location|address|based in|city)\s*:", re.I)
 _COUNTRY_HINT_RE = re.compile(
     r"(united states|usa|u\.s\.a?\.?|canada|united kingdom|uk|australia|germany|india|"
     r"\b[A-Z]{2}\b)$",
@@ -109,13 +111,21 @@ def detect_source_format(data: bytes, filename: str) -> str:
 def guess_candidate_location(raw_text: str) -> str:
     """Recover the candidate's own city/region from the resume header block."""
     lines = [line.strip() for line in (raw_text or "").splitlines() if line.strip()]
-    header = lines[:18]
+    # The header ends at the first section heading (SUMMARY, SKILLS, ...): skill lists
+    # like "Claude Code, Cursor, GitHub Copilot" look just like "City, Region, Country".
+    header_end = next(
+        (i for i, line in enumerate(lines[1:18], start=1) if is_pure_section_header(line)),
+        min(len(lines), 18),
+    )
+    header = lines[:header_end]
     name = lines[0] if lines else ""
 
     # 1) A multi-part "City, Region[, Country]" anywhere in the header.
     for line in header:
         if is_experience_role_header_line(line) or has_experience_date_range(line):
             continue
+        if _CATEGORY_LINE_RE.match(line) and not _ADDRESS_LABEL_RE.match(line):
+            continue  # "AI/LLM: Claude Code, Cursor, ..." is a skills line
         for segment in re.split(r"[|•·]|\s{2,}", line):
             segment = segment.strip(" ,-")
             if not segment or "@" in segment or re.search(r"https?://|\d{5,}", segment):

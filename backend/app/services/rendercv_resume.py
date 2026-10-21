@@ -19,7 +19,6 @@ from app.services.pdf_resume import (
     _looks_like_education_location,
     _looks_like_institution_line,
     _split_education_entries,
-    looks_like_job_title,
     parse_contact_identity,
     primary_role_header_from_block,
     sanitize_for_pdf,
@@ -447,9 +446,8 @@ def _contact_cv_fields_from_model(model: Any) -> dict[str, Any]:
         cv["email"] = contact.email.strip()
     if getattr(contact, "phone", ""):
         cv["phone"] = _format_phone_with_plus(contact.phone)
-    location = sanitize_for_pdf(getattr(model, "location", "") or "").strip()
-    # Resumes stored before the parser fix can hold the title line as the location.
-    if location and not looks_like_job_title(location):
+    location = sanitize_for_pdf(model.display_location()).strip()
+    if location:
         cv["location"] = location
 
     website = _normalize_url(getattr(contact, "website", "") or "")

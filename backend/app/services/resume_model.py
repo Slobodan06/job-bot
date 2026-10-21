@@ -79,6 +79,23 @@ class ResumeModel(BaseModel):
     additional_info: list[str] = Field(default_factory=list)
     meta: ResumeMeta = Field(default_factory=ResumeMeta)
 
+    def display_location(self) -> str:
+        """``location`` unless it is really a misparsed title or skills fragment.
+
+        Resumes ingested before the header-parsing fixes can hold e.g.
+        "Senior Software Engineer, AI" or "Claude Code, Cursor, GitHub Copilot".
+        """
+        from app.services.pdf_resume import looks_like_job_title
+
+        location = (self.location or "").strip()
+        if not location or looks_like_job_title(location):
+            return ""
+        skills = {s.strip().casefold() for items in self.technical_skills.values() for s in items}
+        parts = [p.strip().casefold() for p in location.split(",") if p.strip()]
+        if any(p in skills for p in parts):
+            return ""
+        return location
+
     # ---- string adapters (for the text-oriented evidence/tailor machinery) ----
 
     def contact_block(self) -> str:
@@ -87,7 +104,9 @@ class ResumeModel(BaseModel):
             lines.append(self.name)
         if self.title:
             lines.append(self.title)
-        detail = " | ".join(v for v in (self.contact.email, self.contact.phone, self.location) if v)
+        detail = " | ".join(
+            v for v in (self.contact.email, self.contact.phone, self.display_location()) if v
+        )
         if detail:
             lines.append(detail)
         for url in (self.contact.linkedin, self.contact.github, self.contact.website):
