@@ -183,10 +183,10 @@ def _separate_misplaced_jobs_from_education(education: str, experience: str) -> 
                 i += 2
             else:
                 i += 1
-        elif _EDU_DATE_RE.search(line) or _is_education_location_line(line):
-            edu_meta.append(line)
-            i += 1
         else:
+            # Institution names ("Nanyang Technological University"), dates and
+            # locations above the degree line all stay in education.
+            edu_meta.append(line)
             i += 1
 
     clean_education = "\n".join([*edu_meta, *suffix]).strip()
@@ -296,6 +296,7 @@ def parse_resume_sections(text: str) -> ParsedResume:
     }
     current = "contact"
     contact_ready = False
+    seen_contact_detail = False
     for line in lines:
         stripped = line.strip()
         if stripped:
@@ -312,8 +313,18 @@ def parse_resume_sections(text: str) -> ParsedResume:
             if current == "contact":
                 if re.search(r"@|\+\d|https?://|linkedin\.com|github\.com", stripped, re.I):
                     contact_ready = True
+                    seen_contact_detail = True
                 elif not contact_ready and len(stripped) < 80:
                     contact_ready = True
+                elif (
+                    not seen_contact_detail
+                    and "|" in stripped
+                    and not _BULLET_RE.match(stripped)
+                    and not _EDU_DATE_RE.search(stripped)
+                ):
+                    # "Senior AI Engineer | Agentic AI | FastAPI" under the name is the
+                    # headline, not a job: jobs carry dates, and email/phone come later.
+                    pass
                 else:
                     implicit = implicit_section_after_contact(stripped)
                     if implicit:

@@ -267,8 +267,13 @@ def _education_entries(education: str) -> list[dict[str, object]]:
     entries: list[dict[str, object]] = []
     for block in blocks:
         expanded: list[str] = []
+        # Parts that shared a pipe line with the dates ("Singapore | 08/2010 – 05/2014").
+        dated_siblings: set[str] = set()
         for line in block:
-            expanded.extend(_split_pipe_education_line(_normalize_education_line(line)))
+            parts = _split_pipe_education_line(_normalize_education_line(line))
+            if len(parts) > 1 and any(_extract_date_parts(part)[0] for part in parts):
+                dated_siblings.update(parts)
+            expanded.extend(parts)
         lines = [line for line in expanded if line]
         if not lines:
             continue
@@ -292,6 +297,14 @@ def _education_entries(education: str) -> list[dict[str, object]]:
                     degree_line = candidate
                 elif not location and _looks_like_location_text(candidate):
                     location = candidate
+                elif (
+                    not location
+                    and (date_part or line in dated_siblings)
+                    and len(candidate.split()) <= 3
+                    and not re.search(r"\d", candidate)
+                    and not _looks_like_institution_line(candidate)
+                ):
+                    location = candidate  # "Singapore | 08/2010 – 05/2014"
                 elif not institution and _looks_like_institution_line(candidate):
                     institution = candidate
                 elif not degree_line:

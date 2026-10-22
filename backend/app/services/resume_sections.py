@@ -286,6 +286,54 @@ def _role_from_block(header: str, bullets: list[str]) -> WorkExperienceRole:
     )
 
 
+def _split_company_comma_title(line: str) -> str:
+    """'Patients Know Best, Senior AI Engineer' -> 'Patients Know Best | Senior AI Engineer'."""
+    if "|" in line or "," not in line:
+        return line
+    company, title = (part.strip() for part in line.rsplit(",", 1))
+    if company and title and _ROLE_TITLE_RE.search(title) and not _ROLE_TITLE_RE.search(company):
+        return f"{company} | {title}"
+    return line
+
+
+def reflow_pdf_experience_text(experience: str) -> str:
+    """Undo PDF text-extraction line breaks inside the experience section.
+
+    PDF extraction hard-wraps every visual line, so a bullet that wraps becomes a
+    bullet plus an orphan line (which the role splitter then reads as a new role),
+    and a two-line header ("Company, Title" / "Location | dates") becomes two roles.
+    """
+    lines = [
+        line.replace("\xa0", " ").strip()
+        for line in (experience or "").replace("\r\n", "\n").split("\n")
+    ]
+    lines = [line for line in lines if line]
+    out: list[str] = []
+    in_bullet = False
+    for i, line in enumerate(lines):
+        next_line = lines[i + 1] if i + 1 < len(lines) else ""
+        if _BULLET_LINE_RE.match(line):
+            out.append("• " + _strip_bullet_prefix(line))
+            in_bullet = True
+            continue
+        if has_experience_date_range(line):
+            prev = out[-1] if out else ""
+            if prev and not prev.startswith("• ") and not has_experience_date_range(prev):
+                out[-1] = f"{_split_company_comma_title(prev)} | {line}"
+            else:
+                out.append(line)
+            in_bullet = False
+            continue
+        if in_bullet and not has_experience_date_range(next_line):
+            prev = out[-1]
+            if not re.search(r"[.!?]$", prev) or line[:1].islower():
+                out[-1] = f"{prev} {line}"
+                continue
+        out.append(line)
+        in_bullet = False
+    return "\n".join(out)
+
+
 def _roles_from_experience_text(experience: str) -> tuple[WorkExperienceRole, ...]:
     roles: list[WorkExperienceRole] = []
     for block in split_experience_line_blocks(experience or ""):
@@ -914,6 +962,7 @@ def analyze_resume_sections_from_pdf(pdf_bytes: bytes) -> ResumeSectionAnalysis:
         text,
         pdf_bytes=pdf_bytes,
     )
+    parsed.professional_experience = reflow_pdf_experience_text(parsed.professional_experience)
     roles = _roles_from_experience_text(parsed.professional_experience)
     return _analysis_from_parsed(
         parsed,

@@ -308,7 +308,16 @@ def _register_link(parsed: ParsedContact, label: str, url: str) -> None:
 
 
 def parse_contact(contact: str) -> ParsedContact:
-    lines = [line.strip() for line in sanitize_for_pdf(contact or "").strip().split("\n") if line.strip()]
+    lines: list[str] = []
+    for raw_line in sanitize_for_pdf(contact or "").strip().split("\n"):
+        line = raw_line.strip()
+        if not line:
+            continue
+        # A wrapped "Role | Skill | ... |" headline continues on the next line.
+        if lines and lines[-1].endswith("|"):
+            lines[-1] = f"{lines[-1]} {line}"
+        else:
+            lines.append(line)
     if not lines:
         return ParsedContact("", None, None)
     name, title_from_name = _split_name_and_title(lines[0])
@@ -332,7 +341,7 @@ def parse_contact(contact: str) -> ParsedContact:
                     if cleaned:
                         headline_bits.append(cleaned)
             if headline_bits:
-                headline_parts.append(" · ".join(headline_bits))
+                headline_parts.append(" | ".join(headline_bits))
             i += 1
             continue
 
@@ -1067,9 +1076,13 @@ def _split_education_entries(text: str) -> list[list[str]]:
     blocks: list[list[str]] = []
     current: list[str] = []
     for line in lines:
-        if _looks_like_degree_line(line) and current:
-            blocks.append(current)
-            current = [line]
+        # Split only when the open entry already has its degree: "University /
+        # Degree / dates" (institution first) is one entry, not two.
+        if _looks_like_degree_line(line) and any(_looks_like_degree_line(prev) for prev in current):
+            carried = [current.pop()] if current and _looks_like_institution_line(current[-1]) else []
+            if current:
+                blocks.append(current)
+            current = carried + [line]
         else:
             current.append(line)
     if current:
