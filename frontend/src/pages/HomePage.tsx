@@ -49,6 +49,8 @@ import {
   tailorApi,
   coverLetterApi,
   resumeApi,
+  jobFilterBlockFrom,
+  type JobFilterBlock,
   type ResumeAccess,
   type TailorResponse,
   type CoverLetterResponse,
@@ -69,6 +71,8 @@ const ACCEPT = [
   ".doc",
   ".pdf",
 ];
+
+const REMOTE_FILTER_KEY = "jobbot.remoteNonFederalOnly";
 
 /** "Insufficient Balance" (DeepSeek 402) / "insufficient_quota" (OpenAI 429) → the account needs a top-up. */
 function isOutOfCredit(error: string | null | undefined): boolean {
@@ -96,6 +100,21 @@ export default function HomePage() {
   const [jobDescription, setJobDescription] = useState("");
   const [companyName, setCompanyName] = useState("");
   const [enableBold, setEnableBold] = useState(true);
+  const [remoteNonFederalOnly, setRemoteNonFederalOnly] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(REMOTE_FILTER_KEY) === "true";
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(REMOTE_FILTER_KEY, String(remoteNonFederalOnly));
+    } catch {
+      /* preference just won't persist */
+    }
+  }, [remoteNonFederalOnly]);
+  const [jobFilterBlock, setJobFilterBlock] = useState<JobFilterBlock | null>(null);
   const [loading, setLoading] = useState(false);
   const [coverLetterLoading, setCoverLetterLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -189,17 +208,24 @@ export default function HomePage() {
     if (!hasResumeSource) return;
     setLoading(true);
     setError(null);
+    setJobFilterBlock(null);
     setResult(null);
     try {
       const data = await tailorApi.tailor(
         file,
         jobDescription,
         enableBold,
+        [],
+        "",
+        "",
+        remoteNonFederalOnly,
       );
       setResult(data);
       if (isNarrow) openResultPanel();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Something went wrong.");
+      const block = jobFilterBlockFrom(e);
+      if (block) setJobFilterBlock(block);
+      else setError(e instanceof Error ? e.message : "Something went wrong.");
     } finally {
       setLoading(false);
     }
@@ -208,6 +234,7 @@ export default function HomePage() {
     hasResumeSource,
     jobDescription,
     enableBold,
+    remoteNonFederalOnly,
     isNarrow,
     openResultPanel,
   ]);
@@ -541,6 +568,7 @@ export default function HomePage() {
           onChange={(e) => {
             setJobDescription(e.target.value);
             setError(null);
+            setJobFilterBlock(null);
             setCoverLetterError(null);
             resetQualificationReview();
           }}
@@ -568,6 +596,15 @@ export default function HomePage() {
           label="Bold important job keywords in the Word download"
           checked={enableBold}
           onChange={(e) => setEnableBold(e.currentTarget.checked)}
+        />
+        <Checkbox
+          label="Only fully remote, non-federal jobs"
+          description="Block generation when the posting is hybrid, on-site, or a federal / security-clearance job."
+          checked={remoteNonFederalOnly}
+          onChange={(e) => {
+            setRemoteNonFederalOnly(e.currentTarget.checked);
+            setJobFilterBlock(null);
+          }}
         />
         <Button
           fullWidth
@@ -842,6 +879,30 @@ export default function HomePage() {
               ? "Add a job description (20+ characters)."
               : "Add a .docx or .pdf resume and a job description (20+ characters)."}
           </Text>
+        ) : null}
+        {jobFilterBlock ? (
+          <Alert
+            variant="light"
+            color="orange"
+            title="Blocked: not a fully remote, non-federal job"
+            icon={<IconAlertCircle size={18} />}
+          >
+            <Stack gap="xs">
+              <Text size="sm">{jobFilterBlock.message}</Text>
+              <List size="sm" spacing={6}>
+                {jobFilterBlock.reasons.map((reason, i) => (
+                  <List.Item key={`${reason.category}-${i}`}>
+                    <Text span fw={600} size="sm">
+                      {reason.label}:
+                    </Text>{" "}
+                    <Text span size="sm" c="dimmed" fs="italic">
+                      “{reason.evidence}”
+                    </Text>
+                  </List.Item>
+                ))}
+              </List>
+            </Stack>
+          </Alert>
         ) : null}
         {error ? (
           <Alert variant="light" color="red" title="Could not tailor resume" icon={<IconAlertCircle size={18} />}>

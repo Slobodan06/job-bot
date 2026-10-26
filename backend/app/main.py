@@ -51,6 +51,7 @@ from app.services.extract_text import extract_text_from_bytes
 from app.services.email import log_email_config
 from app.services.resume_ingest import ingest_resume
 from app.services.fresh_resume_builder import build_fresh_tailored_resume
+from app.services.job_filter import enforce_job_filter
 from app.services.qualification_questions import analyze_resume_qualification_gaps
 from app.services.tailor import tailor_resume
 
@@ -223,10 +224,13 @@ async def tailor(
     sample_mode: str = Form("true"),
     enable_bold: str = Form("true"),
     export_mode: str = Form("fresh_pdf"),
+    remote_nonfederal_only: str = Form("false"),
     user: dict = Depends(get_builder_user),
 ) -> TailorResponse:
     if not job_description or not job_description.strip():
         raise HTTPException(status_code=400, detail="Job description is required.")
+    # Checked before any AI call, so a blocked posting spends no credits.
+    enforce_job_filter(remote_nonfederal_only, job_description)
     mode = (export_mode or "fresh_pdf").strip().lower()
 
     if resume is None or not (resume.filename or "").strip():

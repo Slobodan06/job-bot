@@ -91,6 +91,7 @@ export async function parseError(res: Response): Promise<string> {
   try {
     const data = await res.json();
     if (typeof data?.detail === "string") return data.detail;
+    if (typeof data?.detail?.message === "string") return data.detail.message;
     if (Array.isArray(data?.detail)) {
       return data.detail.map((d: { msg?: string }) => d.msg).filter(Boolean).join(", ") || res.statusText;
     }
@@ -113,9 +114,46 @@ export async function apiFetch<T>(
   if (authToken) headers.set("Authorization", `Bearer ${authToken}`);
 
   const res = await fetch(path, { ...options, headers });
-  if (!res.ok) throw new Error(await parseError(res));
+  if (!res.ok) {
+    const detail = await res
+      .clone()
+      .json()
+      .then((data) => data?.detail)
+      .catch(() => undefined);
+    throw new ApiError(await parseError(res), res.status, detail);
+  }
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
+}
+
+/** An HTTP error that keeps the server's structured `detail` (e.g. job-filter block reasons). */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly detail: unknown,
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
+export type JobFilterReason = {
+  category: "hybrid" | "onsite" | "federal";
+  label: string;
+  evidence: string;
+};
+
+export type JobFilterBlock = {
+  code: "job_filter_blocked";
+  message: string;
+  reasons: JobFilterReason[];
+};
+
+export function jobFilterBlockFrom(error: unknown): JobFilterBlock | null {
+  if (!(error instanceof ApiError)) return null;
+  const detail = error.detail as Partial<JobFilterBlock> | undefined;
+  return detail?.code === "job_filter_blocked" ? (detail as JobFilterBlock) : null;
 }
 
 export function userHasTemplate(user: User | null): boolean {
@@ -674,10 +712,12 @@ export const tailorApi = {
     candidateAnswers: CandidateQualificationAnswer[] = [],
     confirmedSkills = "",
     confirmedExperience = "",
+    remoteNonFederalOnly = false,
   ) {
     const body = new FormData();
     if (resume) body.append("resume", resume);
     body.append("job_description", jobDescription);
+    body.append("remote_nonfederal_only", remoteNonFederalOnly ? "true" : "false");
     const verifiedAnswers = ([
       ...candidateAnswers,
       confirmedSkills.trim()
