@@ -6,7 +6,7 @@ from app.services.resume_prompts import CANONICAL_TAILORING_POLICY, PROMPT_VERSI
 
 class ResumePromptPolicyTests(unittest.TestCase):
     def test_policy_is_versioned_and_wired_into_both_writers(self) -> None:
-        self.assertEqual("resume_pipeline_v5_2026_07_13", PROMPT_VERSION)
+        self.assertEqual("resume_pipeline_v6_2026_10_26", PROMPT_VERSION)
         self.assertIn("EVIDENCE CLASSIFICATIONS", CANONICAL_TAILORING_POLICY)
         services = Path(__file__).resolve().parents[1] / "app" / "services"
         fresh_source = (services / "fresh_resume_builder.py").read_text(encoding="utf-8")

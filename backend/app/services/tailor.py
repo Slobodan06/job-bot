@@ -4058,6 +4058,7 @@ HUMAN WRITING RULES (mandatory):
 - Each bullet has an assigned INTENT (Architecture, Ownership, Reliability, etc.) — vary structure; not Verb→Tech→Metric every line.
 - No more than 40% of bullets may END with a quantified metric.
 - Build an engineering narrative (career story), not a keyword cloud.
+- TECHNOLOGY TIMELINE: never name a technology in an employer's bullets if it was released after that role ended (e.g. no Claude Code, released 2025, in a 2019-2021 role; no ChatGPT/LangChain before 2022). Never claim more years with a tool than it has existed.
 - Do NOT repeat the same JD keyword in summary, skills, AND experience. Max 2 mentions per tool/phrase total.
 - Every core competency in summary must appear in at least one experience bullet.
 - Prioritize evidence over keyword density — reason about each JD tool before using it.

@@ -6,7 +6,7 @@ kept versioned so model behavior can be audited and changed deliberately.
 from __future__ import annotations
 
 
-PROMPT_VERSION = "resume_pipeline_v5_2026_07_13"
+PROMPT_VERSION = "resume_pipeline_v6_2026_10_26"
 
 # Shared policy injected into every resume-writing system prompt. The application
 # still enforces these boundaries deterministically after generation.
@@ -64,6 +64,10 @@ FACTUAL BOUNDARIES
 - Never invent or alter companies, official titles, dates, degrees,
   certifications, projects, clients, tools, industries, metrics, scale,
   responsibilities, production status, or accomplishments.
+- Never place a technology, tool, model, or framework in a role that ended
+  before that technology was publicly released (no Claude Code in a 2020 role,
+  no ChatGPT before 2022), and never claim more years with a tool than it has
+  existed.
 - Preserve source metrics exactly; never create or extrapolate a number.
 - Candidate-confirmed skills without enough project detail may appear in Skills,
   but must not be expanded into an accomplishment bullet.

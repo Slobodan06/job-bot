@@ -53,6 +53,14 @@ from app.services.rendercv_resume import (
 from app.services.render_docx_resume import build_docx_resume_from_model
 from app.services.template_catalog import build_template_pdf, get_template_meta
 from app.services.sectionize import ParsedResume
+from app.services.tech_timeline import (
+    TECHNOLOGY_TIMELINE_RULES,
+    anachronistic_mentions,
+    find_tech_mentions,
+    role_year_span,
+    strip_impossible_tenure_claims,
+    unavailable_technologies,
+)
 from app.services.tailor import (
     TailoredSections,
     _openai_client,
@@ -625,7 +633,7 @@ TAILORING RULES:
 EVIDENCE RULE:
 For every generated bullet, return source_fact_ids from VERIFIED_CANDIDATE_DATA.
 Every generated bullet must keep the same experienceId as its input role and use source_fact_ids from that same role.
-If unsupported_terms is not empty, the application will remove that bullet from the final resume.""" + "\n\n" + CANONICAL_TAILORING_POLICY
+If unsupported_terms is not empty, the application will remove that bullet from the final resume.""" + "\n\n" + TECHNOLOGY_TIMELINE_RULES + "\n\n" + CANONICAL_TAILORING_POLICY
 
 
 SAMPLE_RESUME_SYSTEM = """You generate an idealized SAMPLE resume for software developers testing a resume-building application.
@@ -652,7 +660,8 @@ SAMPLE CONTENT AUTHORIZATION:
 - Use varied action verbs and concise 20-34 word bullets. Avoid repetition, filler, placeholders, and copied job-description sentences.
 - Invent realistic sample metrics where useful and keep each metric attached to the accomplishment it measures.
 - Generate a comprehensive 45-60 item technical-skills inventory ordered by target-job priority. Cover programming, AI/LLMs, document processing, backend/APIs, data engineering, databases, cloud/DevOps, testing/quality, security/compliance, observability, architecture, and relevant domain knowledge.
-- Do not include disclaimers or editorial notes inside the resume content."""
+- Do not include disclaimers or editorial notes inside the resume content.
+- Invented content must still respect each role's dates: never put a technology in a role that ended before the technology was released.""" + "\n\n" + TECHNOLOGY_TIMELINE_RULES
 
 
 async def _llm_generate_fresh_content(
@@ -673,9 +682,13 @@ async def _llm_generate_fresh_content(
     sample_mode: bool = False,
 ) -> tuple[str, str, list[list[str]], str]:
     """Returns (summary, skills, bullets per role, headline)."""
+    timeline_candidates = find_tech_mentions(
+        "\n".join([job_description, source_skills, *(fact.text for fact in verified_facts)])
+    )
     roles_payload = []
     for i, role in enumerate(roles):
         experience_id = f"exp_{i + 1:03d}"
+        start_year, end_year = role_year_span(role.period)
         confirmed_role_evidence = [
             {"fact_id": fact.fact_id, "text": fact.text}
             for fact in verified_facts
@@ -689,6 +702,8 @@ async def _llm_generate_fresh_content(
                 "company": role.company,
                 "period": role.period,
                 "location": role.location,
+                "employment_years": {"start": start_year, "end": end_year},
+                "technologies_unavailable_during_role": unavailable_technologies(timeline_candidates, end_year),
                 "bullet_count": bullets_per_role[i] if i < len(bullets_per_role) else 3,
                 "source_bullets": list(role.bullets)[:20],
                 "candidate_confirmed_role_evidence": confirmed_role_evidence,
@@ -858,7 +873,34 @@ def _bind_verified_answers_to_roles(
                     ))
         else:
             bound.append(fact)
-    return bound
+    return [_rebind_to_timeline(fact, roles) for fact in bound]
+
+
+def _rebind_to_timeline(fact: SourceFact, roles: list[WorkExperienceRole]) -> SourceFact:
+    """Move confirmed work off a role that ended before a tool it names was released."""
+    match = re.fullmatch(r"exp_(\d+)", fact.experience_id or "")
+    if not match:
+        return fact
+    index = int(match.group(1)) - 1
+    if not (0 <= index < len(roles)):
+        return fact
+    if not anachronistic_mentions(fact.text, role_year_span(roles[index].period)[1]):
+        return fact
+    # Roles are oldest first: prefer the newest role whose dates fit every named tool.
+    for i in range(len(roles) - 1, -1, -1):
+        if not anachronistic_mentions(fact.text, role_year_span(roles[i].period)[1]):
+            role = roles[i]
+            return SourceFact(
+                fact.fact_id,
+                fact.text,
+                fact.source,
+                role.company,
+                fact.verified,
+                experience_id=f"exp_{i + 1:03d}",
+                title=role.title,
+            )
+    # No role is recent enough: keep it for summary/skills positioning only.
+    return SourceFact(fact.fact_id, fact.text, fact.source, verified=fact.verified)
 
 
 def _candidate_confirmation_report(facts: list[SourceFact]) -> tuple[list[str], list[str]]:
@@ -1016,6 +1058,30 @@ def _has_practical_ai_evidence(facts: list[SourceFact]) -> bool:
         ):
             return True
     return False
+
+
+def drop_anachronistic_bullets(
+    roles: list[WorkExperienceRole], bullets_by_role: list[list[object]]
+) -> list[list[object]]:
+    """Remove bullets naming a technology released after the role ended (e.g. Claude Code in 2020)."""
+    out: list[list[object]] = []
+    for i, role in enumerate(roles):
+        _start_year, end_year = role_year_span(role.period)
+        kept: list[object] = []
+        for bullet in bullets_by_role[i] if i < len(bullets_by_role) else []:
+            stale = anachronistic_mentions(_clean_bullet(bullet), end_year)
+            if stale:
+                logger.warning(
+                    "Dropped anachronistic bullet under %s (%s, ended %s): %s",
+                    role.company or role.title,
+                    role.period,
+                    end_year,
+                    ", ".join(f"{m.name} {m.year}" for m in stale),
+                )
+                continue
+            kept.append(bullet)
+        out.append(kept)
+    return out
 
 
 _HEADLINE_MAX = 110
@@ -1298,6 +1364,7 @@ async def build_fresh_tailored_resume(
                 want = max(3, bullets_per_role[i] if i < len(bullets_per_role) else 3)
                 bullets_by_role.append(list(role.bullets)[:want])
 
+    summary = strip_impossible_tenure_claims(summary)
     contact_block = smart_contact_block or contact.format_block()
     if sample_mode:
         bullets_by_role = _sample_provenance_bullets(roles, bullets_by_role, bullets_per_role)
@@ -1350,6 +1417,7 @@ async def build_fresh_tailored_resume(
             verified_facts,
             max_total=int(os.getenv("RESUME_MAX_EXPERIENCE_BULLETS", "32") or "32"),
         )
+    bullets_by_role = drop_anachronistic_bullets(roles, bullets_by_role)
     assert_render_provenance(roles, bullets_by_role)
     display_roles = list(reversed(roles))
     display_bullets_by_role = list(reversed(bullets_by_role))
@@ -1462,6 +1530,7 @@ async def build_fresh_tailored_resume(
             verified_facts,
             max_total=int(os.getenv("RESUME_MAX_EXPERIENCE_BULLETS", "32") or "32"),
         )
+        bullets_by_role = drop_anachronistic_bullets(roles, bullets_by_role)
         display_roles = list(reversed(roles))
         display_bullets_by_role = list(reversed(bullets_by_role))
         experience_block = format_experience_section(display_roles, display_bullets_by_role)
