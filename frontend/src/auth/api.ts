@@ -713,6 +713,7 @@ export const tailorApi = {
     confirmedSkills = "",
     confirmedExperience = "",
     remoteNonFederalOnly = false,
+    signal?: AbortSignal,
   ) {
     const body = new FormData();
     if (resume) body.append("resume", resume);
@@ -732,7 +733,8 @@ export const tailorApi = {
     if (verifiedAnswers.length) body.append("candidate_answers", JSON.stringify(verifiedAnswers));
     body.append("sample_mode", "true");
     body.append("enable_bold", enableBold ? "true" : "false");
-    return apiFetch<TailorResponse>("/api/tailor", { method: "POST", body });
+    // Aborting closes the connection, which makes the server cancel its remaining AI calls.
+    return apiFetch<TailorResponse>("/api/tailor", { method: "POST", body, signal });
   },
   analyzeQualifications(resume: File | null, jobDescription: string) {
     const body = new FormData();

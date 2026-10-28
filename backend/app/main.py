@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -52,6 +52,7 @@ from app.services.email import log_email_config
 from app.services.resume_ingest import ingest_resume
 from app.services.fresh_resume_builder import build_fresh_tailored_resume
 from app.services.job_filter import enforce_job_filter
+from app.services.request_cancel import run_until_disconnect
 from app.services.qualification_questions import analyze_resume_qualification_gaps
 from app.services.tailor import tailor_resume
 
@@ -217,6 +218,7 @@ async def parse_sections(
 
 @app.post("/api/tailor", response_model=TailorResponse)
 async def tailor(
+    request: Request,
     resume: UploadFile | None = File(None),
     job_description: str = Form(...),
     target_job_role: str = Form(""),
@@ -231,6 +233,33 @@ async def tailor(
         raise HTTPException(status_code=400, detail="Job description is required.")
     # Checked before any AI call, so a blocked posting spends no credits.
     enforce_job_filter(remote_nonfederal_only, job_description)
+    # The Stop button aborts the fetch; cancel the remaining AI calls with it.
+    return await run_until_disconnect(
+        request,
+        _tailor(
+            resume=resume,
+            job_description=job_description,
+            target_job_role=target_job_role,
+            candidate_answers=candidate_answers,
+            sample_mode=sample_mode,
+            enable_bold=enable_bold,
+            export_mode=export_mode,
+            user=user,
+        ),
+    )
+
+
+async def _tailor(
+    *,
+    resume: UploadFile | None,
+    job_description: str,
+    target_job_role: str,
+    candidate_answers: str,
+    sample_mode: str,
+    enable_bold: str,
+    export_mode: str,
+    user: dict,
+) -> TailorResponse:
     mode = (export_mode or "fresh_pdf").strip().lower()
 
     if resume is None or not (resume.filename or "").strip():

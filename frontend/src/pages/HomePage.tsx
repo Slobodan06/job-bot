@@ -37,13 +37,14 @@ import {
   IconFileCv,
   IconMail,
   IconMessageQuestion,
+  IconPlayerStop,
   IconSparkles,
   IconUpload,
   IconUser,
   IconWriting,
   IconX,
 } from "@tabler/icons-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   tailorApi,
@@ -116,6 +117,7 @@ export default function HomePage() {
   }, [remoteNonFederalOnly]);
   const [jobFilterBlock, setJobFilterBlock] = useState<JobFilterBlock | null>(null);
   const [loading, setLoading] = useState(false);
+  const tailorAbortRef = useRef<AbortController | null>(null);
   const [coverLetterLoading, setCoverLetterLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [coverLetterError, setCoverLetterError] = useState<string | null>(null);
@@ -206,6 +208,8 @@ export default function HomePage() {
 
   const onSubmit = useCallback(async () => {
     if (!hasResumeSource) return;
+    const controller = new AbortController();
+    tailorAbortRef.current = controller;
     setLoading(true);
     setError(null);
     setJobFilterBlock(null);
@@ -219,14 +223,24 @@ export default function HomePage() {
         "",
         "",
         remoteNonFederalOnly,
+        controller.signal,
       );
       setResult(data);
       if (isNarrow) openResultPanel();
     } catch (e) {
+      if (controller.signal.aborted) {
+        notifications.show({
+          title: "Generation stopped",
+          message: "No résumé was generated. Fix the inputs and generate again.",
+          color: "gray",
+        });
+        return;
+      }
       const block = jobFilterBlockFrom(e);
       if (block) setJobFilterBlock(block);
       else setError(e instanceof Error ? e.message : "Something went wrong.");
     } finally {
+      if (tailorAbortRef.current === controller) tailorAbortRef.current = null;
       setLoading(false);
     }
   }, [
@@ -238,6 +252,10 @@ export default function HomePage() {
     isNarrow,
     openResultPanel,
   ]);
+
+  const stopTailoring = useCallback(() => tailorAbortRef.current?.abort(), []);
+  // Leaving the page shouldn't keep paying for a résumé nobody will see.
+  useEffect(() => () => tailorAbortRef.current?.abort(), []);
 
   const onCoverLetterSubmit = useCallback(async () => {
     if (!hasResumeSource) return;
@@ -618,6 +636,18 @@ export default function HomePage() {
         >
           {loading ? "Generating ideal sample..." : "Generate perfect-match sample résumé"}
         </Button>
+        {loading ? (
+          <Button
+            fullWidth
+            size="md"
+            color="red"
+            variant="light"
+            leftSection={<IconPlayerStop size={20} />}
+            onClick={stopTailoring}
+          >
+            Stop generating
+          </Button>
+        ) : null}
         {/* Legacy qualification questionnaire intentionally removed from the visible sample-generation flow.
         {!qualificationAnalysis ? (
           <>
