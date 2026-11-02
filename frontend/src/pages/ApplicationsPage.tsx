@@ -77,7 +77,7 @@ function generatePassword(): string {
 }
 
 const PROFILE_FIELDS = {
-  first_name: "", last_name: "", phone: "", phone_country_code: "", phone_device_type: "",
+  first_name: "", last_name: "", email: "", phone: "", phone_country_code: "", phone_device_type: "",
   address: "", address_line2: "", city: "", state: "", postal_code: "", country: "",
   linkedin: "", github: "", portfolio: "",
   work_authorized: "", requires_sponsorship: "", currently_employed: "",
@@ -109,6 +109,7 @@ function AutofillSetupTab() {
       form.setValues({
         first_name: String(ap.first_name || ""),
         last_name: String(ap.last_name || ""),
+        email: String(ap.email || ""),
         phone: String(ap.phone || ""),
         phone_country_code: String(ap.phone_country_code || ""),
         phone_device_type: String(ap.phone_device_type || ""),
@@ -195,6 +196,12 @@ function AutofillSetupTab() {
               <TextInput label="First name" {...form.getInputProps("first_name")} />
               <TextInput label="Last name" {...form.getInputProps("last_name")} />
             </Group>
+            <TextInput
+              label="Email for applications"
+              description="Leave blank to apply with your JobBot sign-in email."
+              type="email"
+              {...form.getInputProps("email")}
+            />
             <Group grow align="flex-end">
               <TextInput
                 label="Phone"

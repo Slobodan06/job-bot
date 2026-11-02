@@ -9,7 +9,13 @@ import type { ApplicationQuestion, DetectedJob } from "./types";
 
 /** Sent by every frame's content script to the background, fire-and-forget. */
 export type FrameToBg =
-  | { type: "frame:report-job"; job: DetectedJob | null }
+  | {
+      type: "frame:report-job";
+      job: DetectedJob | null;
+      // An application form is on this frame, even if it shows no job posting.
+      hasForm: boolean;
+      page: { url: string; title: string };
+    }
   | { type: "frame:fill-progress"; label: string; index: number; total: number }
   | {
       type: "frame:fill-result";
@@ -17,6 +23,8 @@ export type FrameToBg =
       skipped: number;
       attachedResume: boolean;
       questions: ApplicationQuestion[];
+      // Label of a "Next"/"Continue" control after filling, for the Proceed prompt.
+      nextLabel?: string;
       error?: string;
     }
   // The user clicked what looks like the form's final submit control in this
@@ -46,6 +54,8 @@ export type BgToFrame =
       skipped: number;
       attachedResume: boolean;
       questions: ApplicationQuestion[];
+      // Label of a "Next"/"Continue" control after filling, for the Proceed prompt.
+      nextLabel?: string;
       error?: string;
     }
   // "Is there an application form in this frame?" Answered via sendResponse.
@@ -59,4 +69,8 @@ export type BgToFrame =
       job: DetectedJob;
       variant: "quick" | "tailored";
       resumeVariantId?: string;
-    };
+      // A later step after Next: leave fields the member or the site already filled.
+      onlyBlank?: boolean;
+    }
+  // The member pressed Proceed: click this frame's Next control. Answered via sendResponse.
+  | { type: "do-next" };

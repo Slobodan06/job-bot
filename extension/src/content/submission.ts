@@ -238,7 +238,8 @@ export function reportAttachedResume(variantId: string, filename: string): void 
 
 function showToast(text: string, ok: boolean): void {
   const host = document.createElement("div");
-  host.style.cssText = "position:fixed;z-index:2147483647;right:16px;bottom:16px;";
+  // Above the JobBot launcher button, which sits in the same corner.
+  host.style.cssText = "position:fixed;z-index:2147483647;right:16px;bottom:80px;";
   const shadow = host.attachShadow({ mode: "open" });
   const box = document.createElement("div");
   box.textContent = text;

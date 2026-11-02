@@ -14,7 +14,7 @@ from app.services.resume_model import ResumeModel, split_date_range
 # Keys the autofill profile may carry. EEO / demographic keys are opt-in and only
 # emitted when the user explicitly set a value.
 PROFILE_TEXT_FIELDS: tuple[str, ...] = (
-    "first_name", "last_name", "phone", "phone_country_code", "phone_device_type",
+    "first_name", "last_name", "email", "phone", "phone_country_code", "phone_device_type",
     "address", "address_line2", "city", "state", "postal_code",
     "country", "linkedin", "github", "portfolio", "website", "pronouns",
     "desired_salary", "notice_period_days", "start_date",
@@ -87,6 +87,19 @@ _FIELD_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("linkedin_headline", re.compile(r"headline", re.I)),
     ("cover_letter", re.compile(r"cover\s*letter", re.I)),
     ("resume", re.compile(r"\b(resume|cv|upload)\b", re.I)),
+)
+
+# A checkbox accepting the site's privacy / application terms ("I agree"), which gates
+# the form. Opt-ins to messages are not agreement to apply and stay unticked.
+_CONSENT_RE = re.compile(
+    r"\bi\s+(agree|accept|acknowledge|consent|certify|confirm)\b|\bagree\s+to\b|\bi\s+have\s+read\b|"
+    r"privacy\s+(policy|notice|statement)|terms\s+(and|&)\s+conditions",
+    re.I,
+)
+_OPT_IN_RE = re.compile(
+    r"\b(sms|text\s+messages?|newsletters?|marketing|promotional|job\s+alerts?|talent\s+(community|network)|"
+    r"future\s+(opportunities|openings|roles)|updates|offers)\b",
+    re.I,
 )
 
 # Free-text prompts we hand to the LLM rather than the profile.
@@ -186,6 +199,10 @@ def classify_field(field: dict[str, Any]) -> str:
     text = _haystack(field)
     if not text.strip():
         return ""
+    if (field.get("type") or "").lower() == "checkbox":
+        label = str(field.get("label") or "")
+        if _CONSENT_RE.search(label) and not _OPT_IN_RE.search(label):
+            return "consent"
     # A long question in a text box wants a written answer, whatever words it
     # happens to mention ("disability", "state", "email", ...).
     if (field.get("type") or "").lower() == "textarea" and len(str(field.get("label") or "")) > 40:
@@ -344,7 +361,10 @@ def resolve_deterministic_values(
         if text:
             base.setdefault(key, (text, source))
 
+    # An application email in the profile wins over the JobBot sign-in email.
+    put("email", profile.get("email"), "profile")
     put("email", email, "account")
+    put("consent", _YES, "profile")
     put("first_name", first, "profile" if profile.get("first_name") else "resume")
     put("last_name", last, "profile" if profile.get("last_name") else "resume")
     put("full_name", full_name, "resume")

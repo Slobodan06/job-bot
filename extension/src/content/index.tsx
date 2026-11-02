@@ -5,6 +5,7 @@ import { watchForJob } from "../detectors";
 import type { BgToFrame, FrameToBg } from "../lib/frames";
 import type { DetectedJob } from "../lib/types";
 import { hasApplicationForm, runFillInThisFrame } from "./fill-runner";
+import { clickNextInThisFrame } from "./next-step";
 import { initGmailTracking } from "./gmail";
 import { Overlay } from "./Overlay";
 import { initSessionSync } from "./session-sync";
@@ -22,13 +23,19 @@ function report(msg: FrameToBg): void {
 // job signal, and independently fills itself when told to — a job posting or
 // its application form frequently lives in an iframe, so no frame can assume
 // it owns the whole picture.
-watchForJob((job) => report({ type: "frame:report-job", job }));
+watchForJob(
+  (job, hasForm) =>
+    report({ type: "frame:report-job", job, hasForm, page: { url: location.href, title: document.title } }),
+  hasApplicationForm,
+);
 
 chrome.runtime.onMessage.addListener((msg: BgToFrame, _sender, sendResponse) => {
   if (msg.type === "do-probe") {
     sendResponse(hasApplicationForm());
+  } else if (msg.type === "do-next") {
+    sendResponse(clickNextInThisFrame());
   } else if (msg.type === "do-fill") {
-    runFillInThisFrame(msg.job, msg.variant, msg.resumeVariantId)
+    runFillInThisFrame(msg.job, msg.variant, msg.resumeVariantId, !!msg.onlyBlank)
       .catch((e: Error) => ({ filled: 0, skipped: 0, attachedResume: false, questions: [], error: e.message }))
       .then((result) => {
         report({ type: "frame:fill-result", ...result });
@@ -50,7 +57,6 @@ initGmailTracking();
 if (isTopFrame) {
   let host: HTMLDivElement | null = null;
   let root: Root | null = null;
-  const dismissed = new Set<string>();
 
   const unmount = () => {
     root?.unmount();
@@ -60,7 +66,6 @@ if (isTopFrame) {
   };
 
   const render = (job: DetectedJob) => {
-    if (dismissed.has(job.url)) return;
     if (!host) {
       host = document.createElement("div");
       host.id = "jobbot-copilot-root";
@@ -72,13 +77,7 @@ if (isTopFrame) {
     }
     root!.render(
       <StrictMode>
-        <Overlay
-          job={job}
-          onDismiss={() => {
-            dismissed.add(job.url);
-            unmount();
-          }}
-        />
+        <Overlay job={job} />
       </StrictMode>,
     );
   };

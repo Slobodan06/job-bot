@@ -31,6 +31,8 @@ class CustomAnswer(BaseModel):
 class AutofillProfile(BaseModel):
     first_name: str = ""
     last_name: str = ""
+    # Email to apply with; blank = the JobBot sign-in email.
+    email: str = Field(default="", max_length=254)
     phone: str = ""
     phone_country_code: str = ""
     phone_device_type: str = ""

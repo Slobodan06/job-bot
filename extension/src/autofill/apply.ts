@@ -277,6 +277,22 @@ export async function applyValues(
   return { filled, skipped };
 }
 
+/** Nothing in it yet. Custom dropdowns count as blank until JobBot has filled them,
+ * since their selected value lives outside the element. */
+export function isBlankField(el: HTMLElement): boolean {
+  if (el.hasAttribute("data-jobbot-filled")) return false;
+  if (el instanceof HTMLInputElement && (el.type === "checkbox" || el.type === "radio")) {
+    const name = el.name;
+    const group = name
+      ? Array.from(rootOf(el).querySelectorAll<HTMLInputElement>(`input[name="${CSS.escape(name)}"]`))
+      : [el];
+    return !group.some((input) => input.checked);
+  }
+  if (el instanceof HTMLSelectElement) return el.selectedIndex <= 0 || !el.value;
+  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) return !el.value.trim();
+  return true;
+}
+
 /** The upload field for the resume. Most ATS forms hide the real file input behind
  * a styled button, so hidden ones count. With several uploads and no clear resume
  * field, returns null: better no attachment than a resume in the cover-letter slot. */

@@ -1,8 +1,9 @@
-import { applyValues, attachResume, findResumeInput } from "../autofill/apply";
+import { applyValues, attachResume, findResumeInput, isBlankField } from "../autofill/apply";
 import { discoverFields } from "../autofill/fields";
 import { markField } from "../autofill/highlight";
 import { bg } from "../lib/messaging";
 import type { ApplicationQuestion, DetectedJob } from "../lib/types";
+import { findNextControl } from "./next-step";
 import { reportAttachedResume } from "./submission";
 
 // Answering one question can reveal another (Greenhouse shows the race question only
@@ -20,11 +21,13 @@ export async function runFillInThisFrame(
   job: DetectedJob,
   variant: "quick" | "tailored",
   resumeVariantId: string | undefined,
+  onlyBlank = false,
 ): Promise<{
   filled: number;
   skipped: number;
   attachedResume: boolean;
   questions: ApplicationQuestion[];
+  nextLabel?: string;
   error?: string;
 }> {
   const seen = new Set<string>();
@@ -35,7 +38,9 @@ export async function runFillInThisFrame(
 
   for (let pass = 0; pass < MAX_PASSES; pass += 1) {
     if (pass > 0) await new Promise((r) => setTimeout(r, REVEAL_WAIT_MS));
-    const live = discoverFields().filter((f) => !seen.has(f.descriptor.key));
+    const live = discoverFields().filter(
+      (f) => !seen.has(f.descriptor.key) && (!onlyBlank || isBlankField(f.el)),
+    );
     if (pass > 0 && !live.length) break;
     if (!live.length && !findResumeInput()) break;
     for (const field of live) seen.add(field.descriptor.key);
@@ -71,5 +76,7 @@ export async function runFillInThisFrame(
       }
     }
   }
-  return { filled, skipped, attachedResume: attached, questions };
+  const next = findNextControl();
+  const nextLabel = next ? (next.innerText || (next as HTMLInputElement).value || "Next").trim() : undefined;
+  return { filled, skipped, attachedResume: attached, questions, nextLabel };
 }

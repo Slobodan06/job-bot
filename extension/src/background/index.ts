@@ -119,6 +119,8 @@ async function blobToDataUrl(blob: Blob): Promise<string> {
 // one to show/act on (longest description text wins; frame 0 breaks ties).
 // ---------------------------------------------------------------------------
 const framesByTab = new Map<number, Map<number, DetectedJob | null>>();
+// Frames showing an application form but no posting (sign-in, consent, later steps).
+const formFramesByTab = new Map<number, Map<number, { url: string; title: string }>>();
 const lastPushedSignature = new Map<number, string>();
 
 function bestJobForTab(tabId: number): DetectedJob | null {
@@ -148,12 +150,28 @@ async function pruneDeadFrames(tabId: number): Promise<void> {
   for (const frameId of Array.from(frames.keys())) {
     if (!alive.has(frameId)) frames.delete(frameId);
   }
+  const forms = formFramesByTab.get(tabId);
+  for (const frameId of Array.from(forms?.keys() ?? [])) {
+    if (!alive.has(frameId)) forms?.delete(frameId);
+  }
+}
+
+/** What to show on a form step that has no posting of its own: the job this tab was
+ * just on (posting on a careers site, form on the ATS), else the form page itself. */
+async function standInJob(tabId: number): Promise<DetectedJob | null> {
+  const forms = formFramesByTab.get(tabId);
+  if (!forms?.size) return null;
+  const st = await getTracking(tabId);
+  if (st.lastJob && st.lastJobAt && Date.now() - st.lastJobAt < LAST_JOB_TTL_MS) return st.lastJob;
+  const page = forms.get(0) ?? forms.values().next().value!;
+  return fallbackJob(page.url, page.title);
 }
 
 // A new top-level document means every previously reported frame is gone.
 chrome.webNavigation.onCommitted.addListener(({ tabId, frameId }) => {
   if (frameId !== 0) return;
   framesByTab.delete(tabId);
+  formFramesByTab.delete(tabId);
   lastPushedSignature.delete(tabId);
 });
 // SPA navigation keeps the document but may swap the job's iframe.
@@ -347,14 +365,22 @@ function handleFrameMessage(req: FrameToBg, sender: chrome.runtime.MessageSender
       framesByTab.set(tabId, frames);
     }
     frames.set(frameId, req.job);
-    void pruneDeadFrames(tabId).then(() => {
+    let forms = formFramesByTab.get(tabId);
+    if (!forms) {
+      forms = new Map();
+      formFramesByTab.set(tabId, forms);
+    }
+    if (req.hasForm) forms.set(frameId, req.page);
+    else forms.delete(frameId);
+    void pruneDeadFrames(tabId).then(async () => {
       const best = bestJobForTab(tabId);
       // Remembered past navigation: the confirmation page rarely looks like a job.
       if (best) void updateTracking(tabId, () => ({ lastJob: best, lastJobAt: Date.now() }));
-      const sig = best ? `${best.url}|${best.job_title}|${best.text.length}` : "";
+      const shown = best ?? (await standInJob(tabId));
+      const sig = shown ? `${shown.url}|${shown.job_title}|${shown.text.length}` : "";
       if (sig !== lastPushedSignature.get(tabId)) {
         lastPushedSignature.set(tabId, sig);
-        pushToTopFrame(tabId, { type: "job:update", job: best });
+        pushToTopFrame(tabId, { type: "job:update", job: shown });
       }
     });
     return;
@@ -375,6 +401,7 @@ function handleFrameMessage(req: FrameToBg, sender: chrome.runtime.MessageSender
       skipped: req.skipped,
       attachedResume: req.attachedResume,
       questions: req.questions,
+      nextLabel: req.nextLabel,
       error: req.error,
     });
     return;
@@ -422,11 +449,12 @@ async function broadcastFill(
   job: DetectedJob,
   variant: "quick" | "tailored",
   resumeVariantId: string | undefined,
+  onlyBlank: boolean,
 ): Promise<number> {
   const frameIds = await formFrames(tabId);
   for (const frameId of frameIds) {
     chrome.tabs
-      .sendMessage(tabId, { type: "do-fill", job, variant, resumeVariantId }, { frameId })
+      .sendMessage(tabId, { type: "do-fill", job, variant, resumeVariantId, onlyBlank }, { frameId })
       .catch(() => {
         /* the frame navigated away since the probe — ignore */
       });
@@ -434,8 +462,26 @@ async function broadcastFill(
   return frameIds.length;
 }
 
+// Proceed was pressed: the next step (same page or a new one) carries on filling.
+const CONTINUATION_TTL_MS = 2 * 60 * 1000;
+const continuationKey = (tabId: number) => `continue:${tabId}`;
+type Continuation = { job: DetectedJob; resume_variant_id?: string; at: number };
+
+async function clickNext(tabId: number): Promise<{ clicked: boolean; reason?: "disabled" | "none" }> {
+  const frames = (await chrome.webNavigation.getAllFrames({ tabId })) ?? [];
+  const results = await Promise.all(
+    frames.map(({ frameId }) =>
+      chrome.tabs.sendMessage(tabId, { type: "do-next" }, { frameId }).catch(() => "none"),
+    ),
+  );
+  if (results.includes("clicked")) return { clicked: true };
+  return { clicked: false, reason: results.includes("disabled") ? "disabled" : "none" };
+}
+
 chrome.tabs.onRemoved.addListener((tabId) => {
   framesByTab.delete(tabId);
+  formFramesByTab.delete(tabId);
+  void chrome.storage.session.remove(continuationKey(tabId));
   lastPushedSignature.delete(tabId);
   trackingQueues.delete(tabId);
   void chrome.storage.session.remove(trackingKey(tabId));
@@ -524,8 +570,28 @@ async function handle(req: BgRequest, sender: chrome.runtime.MessageSender): Pro
       case "job:fill-request": {
         const tabId = sender.tab?.id;
         if (tabId == null) return { ok: false, error: "No active tab." };
-        const targets = await broadcastFill(tabId, req.job, req.variant, req.resume_variant_id);
+        const targets = await broadcastFill(tabId, req.job, req.variant, req.resume_variant_id, !!req.only_blank);
         return { ok: true, data: { targets } };
+      }
+      case "job:continue": {
+        const tabId = sender.tab?.id;
+        if (tabId == null) return { ok: false, error: "No active tab." };
+        // Saved first: clicking Next may unload the page that asked.
+        const pending: Continuation = { job: req.job, resume_variant_id: req.resume_variant_id, at: Date.now() };
+        await chrome.storage.session.set({ [continuationKey(tabId)]: pending });
+        const result = await clickNext(tabId);
+        if (!result.clicked) await chrome.storage.session.remove(continuationKey(tabId));
+        return { ok: true, data: result };
+      }
+      case "job:take-continuation": {
+        const tabId = sender.tab?.id;
+        if (tabId == null) return { ok: true, data: null };
+        const key = continuationKey(tabId);
+        const s = await chrome.storage.session.get(key);
+        await chrome.storage.session.remove(key);
+        const pending = s[key] as Continuation | undefined;
+        const fresh = pending && Date.now() - pending.at < CONTINUATION_TTL_MS;
+        return { ok: true, data: fresh ? { job: pending.job, resume_variant_id: pending.resume_variant_id } : null };
       }
       case "resume:fetch": {
         const token = await getToken();

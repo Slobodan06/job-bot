@@ -44,7 +44,10 @@ export type BgRequest =
       job: DetectedJob;
       variant: "quick" | "tailored";
       resume_variant_id?: string;
+      only_blank?: boolean;
     }
+  | { type: "job:continue"; job: DetectedJob; resume_variant_id?: string }
+  | { type: "job:take-continuation" }
   | { type: "resume:fetch"; download_path: string }
   | { type: "tracking:state" }
   | { type: "applications:list"; limit?: number }
@@ -86,13 +89,22 @@ export const bg = {
   tailor: (job: DetectedJob, target_job_role?: string) =>
     sendToBackground<TailorForJobResponse>({ type: "job:tailor", job, target_job_role }),
   probeForm: () => sendToBackground<{ targets: number }>({ type: "job:probe-form" }),
-  requestFill: (job: DetectedJob, variant: "quick" | "tailored", resume_variant_id?: string) =>
+  requestFill: (job: DetectedJob, variant: "quick" | "tailored", resume_variant_id?: string, only_blank = false) =>
     sendToBackground<{ targets: number }>({
       type: "job:fill-request",
       job,
       variant,
       resume_variant_id,
+      only_blank,
     }),
+  continueToNext: (job: DetectedJob, resume_variant_id?: string) =>
+    sendToBackground<{ clicked: boolean; reason?: "disabled" | "none" }>({
+      type: "job:continue",
+      job,
+      resume_variant_id,
+    }),
+  takeContinuation: () =>
+    sendToBackground<{ job: DetectedJob; resume_variant_id?: string } | null>({ type: "job:take-continuation" }),
   fetchResume: (download_path: string) =>
     sendToBackground<{ dataUrl: string; filename: string }>({ type: "resume:fetch", download_path }),
   applications: (limit = 20) =>

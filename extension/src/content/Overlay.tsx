@@ -6,9 +6,17 @@ import { bg } from "../lib/messaging";
 import type { ApplicationQuestion, DetectedJob } from "../lib/types";
 
 type Phase = "idle" | "working" | "done" | "error";
-type Props = { job: DetectedJob; onDismiss: () => void };
+type Props = { job: DetectedJob };
 
 const HUMANIZER_URL = "https://cleverhumanizer.ai/";
+// After clicking Next, a step that loads in place (no new page) is filled from here;
+// a step on a new page is picked up by that page's overlay (see takeContinuation).
+const SAME_PAGE_STEP_WAIT_MS = 2500;
+// A new step can take a moment to render its form.
+const FORM_WAIT_TRIES = 6;
+const FORM_WAIT_MS = 1000;
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 async function copyText(text: string): Promise<void> {
   try {
@@ -32,14 +40,32 @@ const btn: React.CSSProperties = {
   cursor: "pointer",
 };
 
-export function Overlay({ job, onDismiss }: Props) {
+const emptyTotals = () => ({
+  filled: 0,
+  skipped: 0,
+  resume: false,
+  frames: 0,
+  expected: 0,
+  error: "",
+  notes: "",
+  questions: 0,
+  nextLabel: "",
+  continuing: false,
+});
+
+export function Overlay({ job }: Props) {
+  // Collapsed to a round button in the corner until the member opens it.
+  const [open, setOpen] = useState(false);
   const [authed, setAuthed] = useState<boolean | null>(null);
   const [phase, setPhase] = useState<Phase>("idle");
   const [msg, setMsg] = useState("");
   const [questions, setQuestions] = useState<ApplicationQuestion[]>([]);
   const [copiedKey, setCopiedKey] = useState("");
-  const totals = useRef({ filled: 0, skipped: 0, resume: false, frames: 0, expected: 0, error: "", notes: "", questions: 0 });
+  const [nextLabel, setNextLabel] = useState("");
+  const totals = useRef(emptyTotals());
   const settleTimer = useRef<number | undefined>(undefined);
+  const variantRef = useRef<string | undefined>(undefined);
+  const checkedContinuation = useRef(false);
 
   useEffect(() => {
     bg.authGet().then((r) => setAuthed(r.ok && !!r.data.token));
@@ -53,7 +79,13 @@ export function Overlay({ job, onDismiss }: Props) {
   const settle = useCallback(() => {
     window.clearTimeout(settleTimer.current);
     const t = totals.current;
+    setNextLabel(t.nextLabel);
     if (t.filled === 0 && !t.resume && t.questions === 0) {
+      if (t.nextLabel && !t.error) {
+        setPhase("done");
+        setMsg("Nothing left to fill on this step.");
+        return;
+      }
       setPhase("error");
       setMsg(t.error || "No fillable fields found yet — open the application form, then try again.");
       return;
@@ -63,8 +95,9 @@ export function Overlay({ job, onDismiss }: Props) {
       `Filled ${t.filled} field${t.filled === 1 ? "" : "s"}${t.resume ? " and attached your tailored resume" : ""}.` +
         (t.skipped ? ` ${t.skipped} need a manual check.` : "") +
         (t.questions ? ` Copy the ${t.questions === 1 ? "answer" : "answers"} below into the written question${t.questions === 1 ? "" : "s"}.` : "") +
-        (t.resume ? "" : ` Resume not attached: ${t.notes || "no resume upload field found"} — add it by hand.`) +
-        " Review everything, then submit it yourself. JobBot tracks it once the site confirms.",
+        // A later step rarely has its own upload: only mention a missing resume on the first.
+        (t.resume || t.continuing ? "" : ` Resume not attached: ${t.notes || "no resume upload field found"} — add it by hand.`) +
+        " Review everything before moving on. JobBot never submits for you.",
     );
   }, []);
 
@@ -89,6 +122,7 @@ export function Overlay({ job, onDismiss }: Props) {
       t.skipped += raw.skipped;
       t.resume = t.resume || raw.attachedResume;
       t.error = t.error || raw.error || "";
+      t.nextLabel = t.nextLabel || raw.nextLabel || "";
       t.questions += raw.questions.length;
       if (raw.questions.length) setQuestions((prev) => [...prev, ...raw.questions]);
       t.frames += 1;
@@ -99,43 +133,130 @@ export function Overlay({ job, onDismiss }: Props) {
     return () => chrome.runtime.onMessage.removeListener(listener);
   }, [settle, settleAfterQuiet]);
 
-  const run = useCallback(async () => {
+  /** Fill this step. `continuing`: a later step after Next — keep the resume, fill only blanks. */
+  const fill = useCallback(
+    async (continuing: boolean) => {
+      setOpen(true);
+      setPhase("working");
+      setNextLabel("");
+      setMsg(continuing ? "Waiting for the next step to load…" : "Looking for the application form…");
+      totals.current = { ...emptyTotals(), continuing };
+      if (!continuing) setQuestions([]);
+
+      // Check before tailoring: on a posting page with no form yet, spend nothing.
+      let targets = 0;
+      for (let attempt = 0; attempt < (continuing ? FORM_WAIT_TRIES : 1); attempt += 1) {
+        if (attempt) await sleep(FORM_WAIT_MS);
+        const probe = await bg.probeForm();
+        if (!probe.ok) {
+          setPhase("error");
+          setMsg(probe.error);
+          return;
+        }
+        targets = probe.data.targets;
+        if (targets) break;
+      }
+      if (!targets) {
+        setPhase(continuing ? "done" : "error");
+        setMsg(
+          continuing
+            ? "No form on this step. Check the page and continue yourself."
+            : "No application form on this page yet — open it, then click Auto-fill.",
+        );
+        return;
+      }
+
+      if (!continuing) {
+        const profile = await bg.profile();
+        if (profile.ok && !profile.data.has_base_resume) {
+          setPhase("error");
+          setMsg("Save a base resume on your JobBot Profile page first.");
+          return;
+        }
+        setMsg("Tailoring your resume for this job — this can take a minute…");
+        const t = await bg.tailor(job, job.job_title);
+        variantRef.current = t.ok ? t.data.resume.variant_id : undefined;
+        // Tailoring failing shouldn't lose the rest of the form: fill it and say so.
+        if (!t.ok) totals.current.notes = t.error;
+      }
+
+      setMsg("Filling the form…");
+      const r = await bg.requestFill(job, "tailored", variantRef.current, continuing);
+      if (!r.ok || !r.data.targets) {
+        setPhase("error");
+        setMsg(r.ok ? "The application form is gone — reopen it, then click Auto-fill." : r.error);
+        return;
+      }
+      totals.current.expected = r.data.targets;
+      settleAfterQuiet();
+    },
+    [job, settleAfterQuiet],
+  );
+
+  // A Next clicked on the previous page leads here: carry on filling this step.
+  useEffect(() => {
+    if (checkedContinuation.current || !authed) return;
+    checkedContinuation.current = true;
+    void bg.takeContinuation().then((r) => {
+      if (!r.ok || !r.data) return;
+      variantRef.current = r.data.resume_variant_id;
+      void fill(true);
+    });
+  }, [authed, fill]);
+
+  const proceed = useCallback(async () => {
+    setNextLabel("");
     setPhase("working");
-    setMsg("Looking for the application form…");
-    totals.current = { filled: 0, skipped: 0, resume: false, frames: 0, expected: 0, error: "", notes: "", questions: 0 };
-    setQuestions([]);
-
-    // Check before tailoring: on a posting page with no form yet, spend nothing.
-    const probe = await bg.probeForm();
-    if (!probe.ok || !probe.data.targets) {
+    setMsg("Going to the next step…");
+    // A slow page load must leave the continuation for the new page, not fill this one.
+    let leaving = false;
+    window.addEventListener("beforeunload", () => (leaving = true), { once: true });
+    const r = await bg.continueToNext(job, variantRef.current);
+    if (!r.ok || !r.data.clicked) {
       setPhase("error");
-      setMsg(probe.ok ? "No application form on this page yet — open it, then click Auto-fill." : probe.error);
+      setMsg(
+        !r.ok
+          ? r.error
+          : r.data.reason === "disabled"
+            ? "The Next button is still disabled — a required field is probably empty. Fill it, then try again."
+            : "Couldn't find the Next button any more. Click it yourself.",
+      );
       return;
     }
-    const profile = await bg.profile();
-    if (profile.ok && !profile.data.has_base_resume) {
-      setPhase("error");
-      setMsg("Save a base resume on your JobBot Profile page first.");
-      return;
-    }
+    // Same-page steps: still here after the wait, so fill this step ourselves.
+    window.setTimeout(() => {
+      if (leaving) return;
+      void bg.takeContinuation().then((c) => {
+        if (c.ok && c.data) void fill(true);
+      });
+    }, SAME_PAGE_STEP_WAIT_MS);
+  }, [job, fill]);
 
-    setMsg("Tailoring your resume for this job — this can take a minute…");
-    let resumeVariantId: string | undefined;
-    const t = await bg.tailor(job, job.job_title);
-    if (t.ok) resumeVariantId = t.data.resume.variant_id;
-    // Tailoring failing shouldn't lose the rest of the form: fill it and say so.
-    else totals.current.notes = t.error;
-
-    setMsg("Filling the form…");
-    const r = await bg.requestFill(job, "tailored", resumeVariantId);
-    if (!r.ok || !r.data.targets) {
-      setPhase("error");
-      setMsg(r.ok ? "The application form is gone — reopen it, then click Auto-fill." : r.error);
-      return;
-    }
-    totals.current.expected = r.data.targets;
-    settleAfterQuiet();
-  }, [job, settleAfterQuiet]);
+  if (!open) {
+    return (
+      <button
+        title="JobBot Copilot"
+        onClick={() => setOpen(true)}
+        style={{
+          position: "fixed",
+          right: 16,
+          bottom: 16,
+          width: 52,
+          height: 52,
+          borderRadius: "50%",
+          border: "none",
+          background: "#20c997",
+          color: "#04211a",
+          font: "800 15px/1 system-ui, sans-serif",
+          boxShadow: "0 6px 20px rgba(0,0,0,.35)",
+          cursor: "pointer",
+          zIndex: 2147483647,
+        }}
+      >
+        JB
+      </button>
+    );
+  }
 
   return (
     <div
@@ -158,14 +279,15 @@ export function Overlay({ job, onDismiss }: Props) {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <strong style={{ color: "#20c997" }}>JobBot Copilot</strong>
         <button
-          onClick={onDismiss}
+          title="Minimize"
+          onClick={() => setOpen(false)}
           style={{ ...btn, background: "transparent", color: "#868e96", padding: 4 }}
         >
           ✕
         </button>
       </div>
       <div style={{ margin: "6px 0 10px", color: "#adb5bd" }}>
-        {job.job_title || "Job"} {job.company ? `· ${job.company}` : ""}
+        {job.job_title || "Job application"} {job.company ? `· ${job.company}` : ""}
       </div>
 
       {authed === false && (
@@ -195,7 +317,7 @@ export function Overlay({ job, onDismiss }: Props) {
               <button
                 style={{ ...btn, background: "#20c997", color: "#04211a" }}
                 disabled={phase === "working"}
-                onClick={run}
+                onClick={() => void fill(false)}
               >
                 {phase === "working" ? "Working…" : "Auto-fill"}
               </button>
@@ -218,6 +340,25 @@ export function Overlay({ job, onDismiss }: Props) {
             >
               {msg}
             </p>
+          )}
+          {nextLabel && phase === "done" && (
+            <div style={{ marginTop: 10, padding: 10, background: "#25262b", borderRadius: 8 }}>
+              <div style={{ marginBottom: 8 }}>
+                Go to the next step? JobBot will click “{nextLabel}” and fill the blank fields on the next page.
+                Check this page first.
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button style={{ ...btn, background: "#20c997", color: "#04211a" }} onClick={() => void proceed()}>
+                  Proceed
+                </button>
+                <button
+                  style={{ ...btn, background: "#2c2e33", color: "#e9ecef" }}
+                  onClick={() => setNextLabel("")}
+                >
+                  Not now
+                </button>
+              </div>
+            </div>
           )}
           {questions.length > 0 && (
             <div style={{ marginTop: 12, borderTop: "1px solid #2c2e33", paddingTop: 10 }}>

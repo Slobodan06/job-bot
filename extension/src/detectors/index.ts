@@ -6,12 +6,13 @@ const clip = (s: string, n: number) => (s || "").replace(/\s+\n/g, "\n").trim().
 // Cheap signals checked on every page before doing any real DOM scraping, since
 // the content script now runs on <all_urls> (like BidHub) and must stay inert
 // and inexpensive on the other 99% of pages a user visits.
-const JOB_URL_HINT_RE = /\/(jobs?|careers?|positions?|openings?|vacanc\w*|postings?|apply)(?:[/?#]|$)/i;
-const JOB_TITLE_HINT_RE = /\b(job|career|hiring|position|opening|vacancy|apply)\b/i;
+const JOB_URL_HINT_RE =
+  /\/(jobs?|careers?|positions?|openings?|vacanc\w*|postings?|apply|candidates?|talent|recruit\w*|applicants?)(?:[/?#]|$)/i;
+const JOB_TITLE_HINT_RE = /\b(job|career|hiring|position|opening|vacancy|apply|candidate|recruit\w*)\b/i;
 const KNOWN_ATS_HOST_RE =
-  /greenhouse\.io$|lever\.co$|myworkdayjobs\.com$|ashbyhq\.com$|smartrecruiters\.com$|workable\.com$|icims\.com$|bamboohr\.com$|jobvite\.com$|breezy\.hr$/i;
+  /greenhouse\.io$|lever\.co$|myworkdayjobs\.com$|ashbyhq\.com$|smartrecruiters\.com$|workable\.com$|icims\.com$|bamboohr\.com$|jobvite\.com$|breezy\.hr$|taleo\.net$|successfactors\.(com|eu)$|avature\.net$|ultipro\.com$|ukg\.net$|paylocity\.com$|dayforcehcm\.com$|oraclecloud\.com$|recruitee\.com$|teamtailor\.com$|jazzhr\.com$|applytojob\.com$|rippling\.com$|pinpointhq\.com$/i;
 
-function looksLikeJobPage(): boolean {
+export function looksLikeJobPage(): boolean {
   return (
     KNOWN_ATS_HOST_RE.test(location.hostname) ||
     JOB_URL_HINT_RE.test(location.pathname) ||
@@ -196,8 +197,13 @@ export function detectJob(): DetectedJob | null {
   return job;
 }
 
-/** Fire `cb` on first load and on SPA navigations (history + DOM), debounced. */
-export function watchForJob(cb: (job: DetectedJob | null) => void): () => void {
+/** Fire `cb` on first load and on SPA navigations (history + DOM), debounced.
+ * `hasForm` also reports application-form steps that show no job posting (sign-in,
+ * consent, "Enter your information"), so the launcher appears there too. */
+export function watchForJob(
+  cb: (job: DetectedJob | null, hasForm: boolean) => void,
+  hasForm: () => boolean = () => false,
+): () => void {
   let last = "";
   let timer: number | undefined;
   const run = () => {
@@ -208,15 +214,16 @@ export function watchForJob(cb: (job: DetectedJob | null) => void): () => void {
       if (!looksLikeJobPage()) {
         if (last) {
           last = "";
-          cb(null);
+          cb(null, false);
         }
         return;
       }
       const job = detectJob();
-      const sig = job ? job.url + "|" + job.job_title : "";
+      const form = hasForm();
+      const sig = job || form ? `${job ? job.url + "|" + job.job_title : ""}|${form}` : "";
       if (sig !== last) {
         last = sig;
-        cb(job);
+        cb(job, form);
       }
     }, 700);
   };
