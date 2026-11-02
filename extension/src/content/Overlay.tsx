@@ -3,10 +3,26 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AUTOFILL_ENABLED, WEB_ORIGIN } from "../lib/env";
 import type { BgToFrame } from "../lib/frames";
 import { bg } from "../lib/messaging";
-import type { DetectedJob } from "../lib/types";
+import type { ApplicationQuestion, DetectedJob } from "../lib/types";
 
 type Phase = "idle" | "working" | "done" | "error";
 type Props = { job: DetectedJob; onDismiss: () => void };
+
+const HUMANIZER_URL = "https://cleverhumanizer.ai/";
+
+async function copyText(text: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    // Pages can block the clipboard API (an iframe policy, say).
+    const area = document.createElement("textarea");
+    area.value = text;
+    document.body.appendChild(area);
+    area.select();
+    document.execCommand("copy");
+    area.remove();
+  }
+}
 
 const btn: React.CSSProperties = {
   border: "none",
@@ -20,7 +36,9 @@ export function Overlay({ job, onDismiss }: Props) {
   const [authed, setAuthed] = useState<boolean | null>(null);
   const [phase, setPhase] = useState<Phase>("idle");
   const [msg, setMsg] = useState("");
-  const totals = useRef({ filled: 0, skipped: 0, resume: false, frames: 0, expected: 0, error: "", notes: "" });
+  const [questions, setQuestions] = useState<ApplicationQuestion[]>([]);
+  const [copiedKey, setCopiedKey] = useState("");
+  const totals = useRef({ filled: 0, skipped: 0, resume: false, frames: 0, expected: 0, error: "", notes: "", questions: 0 });
   const settleTimer = useRef<number | undefined>(undefined);
 
   useEffect(() => {
@@ -35,7 +53,7 @@ export function Overlay({ job, onDismiss }: Props) {
   const settle = useCallback(() => {
     window.clearTimeout(settleTimer.current);
     const t = totals.current;
-    if (t.filled === 0 && !t.resume) {
+    if (t.filled === 0 && !t.resume && t.questions === 0) {
       setPhase("error");
       setMsg(t.error || "No fillable fields found yet — open the application form, then try again.");
       return;
@@ -44,6 +62,7 @@ export function Overlay({ job, onDismiss }: Props) {
     setMsg(
       `Filled ${t.filled} field${t.filled === 1 ? "" : "s"}${t.resume ? " and attached your tailored resume" : ""}.` +
         (t.skipped ? ` ${t.skipped} need a manual check.` : "") +
+        (t.questions ? ` Copy the ${t.questions === 1 ? "answer" : "answers"} below into the written question${t.questions === 1 ? "" : "s"}.` : "") +
         (t.resume ? "" : ` Resume not attached: ${t.notes || "no resume upload field found"} — add it by hand.`) +
         " Review everything, then submit it yourself. JobBot tracks it once the site confirms.",
     );
@@ -70,6 +89,8 @@ export function Overlay({ job, onDismiss }: Props) {
       t.skipped += raw.skipped;
       t.resume = t.resume || raw.attachedResume;
       t.error = t.error || raw.error || "";
+      t.questions += raw.questions.length;
+      if (raw.questions.length) setQuestions((prev) => [...prev, ...raw.questions]);
       t.frames += 1;
       if (t.frames >= t.expected) settle();
       else settleAfterQuiet();
@@ -81,7 +102,8 @@ export function Overlay({ job, onDismiss }: Props) {
   const run = useCallback(async () => {
     setPhase("working");
     setMsg("Looking for the application form…");
-    totals.current = { filled: 0, skipped: 0, resume: false, frames: 0, expected: 0, error: "", notes: "" };
+    totals.current = { filled: 0, skipped: 0, resume: false, frames: 0, expected: 0, error: "", notes: "", questions: 0 };
+    setQuestions([]);
 
     // Check before tailoring: on a posting page with no form yet, spend nothing.
     const probe = await bg.probeForm();
@@ -121,7 +143,9 @@ export function Overlay({ job, onDismiss }: Props) {
         position: "fixed",
         right: 16,
         bottom: 16,
-        width: 320,
+        width: questions.length ? 400 : 320,
+        maxHeight: "85vh",
+        overflowY: "auto",
         background: "#1a1b1e",
         color: "#e9ecef",
         borderRadius: 12,
@@ -195,9 +219,45 @@ export function Overlay({ job, onDismiss }: Props) {
               {msg}
             </p>
           )}
+          {questions.length > 0 && (
+            <div style={{ marginTop: 12, borderTop: "1px solid #2c2e33", paddingTop: 10 }}>
+              <strong style={{ color: "#e9ecef" }}>Application questions</strong>
+              {questions.map((q) => (
+                <div key={q.key} style={{ marginTop: 10 }}>
+                  <div style={{ fontWeight: 600, color: "#ced4da" }}>{q.label}</div>
+                  {q.answer ? (
+                    <>
+                      <div style={{ margin: "4px 0 6px", whiteSpace: "pre-wrap", color: "#adb5bd" }}>{q.answer}</div>
+                      <button
+                        style={{ ...btn, background: "#2c2e33", color: "#e9ecef", padding: "6px 10px" }}
+                        onClick={() => {
+                          void copyText(q.answer).then(() => setCopiedKey(q.key));
+                        }}
+                      >
+                        {copiedKey === q.key ? "Copied" : "Copy"}
+                      </button>
+                    </>
+                  ) : (
+                    <div style={{ marginTop: 4, color: "#868e96" }}>
+                      JobBot can't answer this from your resume. Please answer it yourself.
+                    </div>
+                  )}
+                </div>
+              ))}
+              {questions.some((q) => q.answer) && (
+                <p style={{ margin: "12px 0 0", color: "#ffd43b" }}>
+                  You need to humanize the text via this platform{" "}
+                  <a href={HUMANIZER_URL} target="_blank" rel="noreferrer" style={{ color: "#ffd43b" }}>
+                    {HUMANIZER_URL}
+                  </a>{" "}
+                  since this is AI generated text.
+                </p>
+              )}
+            </div>
+          )}
           {AUTOFILL_ENABLED && (
             <p style={{ margin: "8px 0 0", fontSize: 11, color: "#868e96" }}>
-              JobBot never submits for you. Always review AI-drafted answers.
+              JobBot never submits for you. Always review what it filled.
             </p>
           )}
         </>

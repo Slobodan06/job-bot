@@ -121,9 +121,20 @@ class ResumeAttachment(BaseModel):
     kind: str = "pdf"
 
 
+class ApplicationQuestion(BaseModel):
+    """A written question for the member to copy an answer into. `answer` is AI-drafted,
+    or empty when the resume and job description can't support one."""
+
+    key: str
+    label: str
+    answer: str = ""
+
+
 class AutofillResponse(BaseModel):
     values: dict[str, AutofillValue] = Field(default_factory=dict)
+    # The member's own saved answers, safe to type in. AI drafts go in `questions`.
     answers: dict[str, str] = Field(default_factory=dict)
+    questions: list[ApplicationQuestion] = Field(default_factory=list)
     resume: ResumeAttachment | None = None
     application_id: str | None = None
     unfilled: list[str] = Field(default_factory=list)

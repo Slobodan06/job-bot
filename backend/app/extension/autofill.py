@@ -33,6 +33,8 @@ _NO = "no"
 
 # (canonical_key, pattern tested against "label name placeholder autocomplete")
 _FIELD_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    # About the interview, not a survey answer, even when it mentions a disability.
+    ("free_text", re.compile(r"accommodat|special\s+(support|assistance|arrangement)", re.I)),
     # Demographic questions come first: their long wording often contains words the
     # generic rules below look for ("...United States", "state", "contact", ...).
     ("gender", re.compile(r"\bgender\b", re.I)),
@@ -184,6 +186,10 @@ def classify_field(field: dict[str, Any]) -> str:
     text = _haystack(field)
     if not text.strip():
         return ""
+    # A long question in a text box wants a written answer, whatever words it
+    # happens to mention ("disability", "state", "email", ...).
+    if (field.get("type") or "").lower() == "textarea" and len(str(field.get("label") or "")) > 40:
+        return "free_text"
     for key, pattern in _FIELD_RULES:
         if pattern.search(text):
             return key
@@ -253,7 +259,13 @@ def _pick_demographic_option(canonical: str, value: str, options: list[str]) -> 
         o = opt.strip().lower()
         if o and (re.search(rf"\b{re.escape(v)}\b", o) or re.search(rf"\b{re.escape(o)}\b", v)):
             return opt
-    return ""
+    # Same answer, slightly different spelling: "Alaska Native" / "Alaskan Native".
+    words = [w for w in re.findall(r"[a-z0-9]+", v) if w not in ("or", "and", "other", "the", "a")]
+    close = [
+        opt for opt in candidates
+        if words and all(any(t.startswith(w) for t in re.findall(r"[a-z0-9]+", opt.lower())) for w in words)
+    ]
+    return close[0] if len(close) == 1 else ""
 
 
 def resume_file_stem(profile: dict[str, Any], model: ResumeModel | None) -> str:

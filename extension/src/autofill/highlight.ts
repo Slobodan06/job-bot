@@ -2,7 +2,7 @@ const SOURCE_COLORS: Record<string, string> = {
   account: "#0b5e75",
   profile: "#0b5e75",
   resume: "#7c3aed",
-  ai: "#b45309",
+  question: "#b45309",
 };
 
 export function markField(el: HTMLElement, source: string): void {
@@ -17,7 +17,7 @@ export function markField(el: HTMLElement, source: string): void {
     host.querySelectorAll(":scope > .jobbot-chip").forEach((c) => c.remove());
     const chip = document.createElement("span");
     chip.className = "jobbot-chip";
-    chip.textContent = source === "ai" ? "JobBot · AI — review" : "JobBot";
+    chip.textContent = source === "question" ? "JobBot · paste your answer" : "JobBot";
     Object.assign(chip.style, {
       position: "absolute",
       transform: "translateY(-100%)",

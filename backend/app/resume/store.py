@@ -84,18 +84,34 @@ async def store_resume_variant(
 
 
 async def find_resume_variant(
-    *, user_id: ObjectId, job_hash: str, not_before: datetime | None = None
+    *,
+    user_id: ObjectId,
+    job_hash: str,
+    not_before: datetime | None = None,
+    with_text: bool = False,
 ) -> tuple[str, str] | None:
     """(file id, filename) of the variant stored for this job, if any.
 
-    `not_before` skips variants older than that moment (built from a previous base resume)."""
+    `not_before` skips variants older than that moment (built from a previous base resume).
+    `with_text` skips variants saved without their text, which question answers are drafted from."""
     query: dict[str, Any] = {"metadata.user_id": user_id, "metadata.job_hash": job_hash}
     if not_before is not None:
         query["metadata.created_at"] = {"$gte": not_before}
+    if with_text:
+        query["metadata.tailored_text"] = {"$exists": True}
     doc = await get_db()[f"{_VARIANT_BUCKET}.files"].find_one(query, sort=[("_id", -1)])
     if not doc:
         return None
     return str(doc["_id"]), doc.get("filename") or "resume.pdf"
+
+
+async def read_variant_tailored_text(*, user_id: ObjectId, variant_id: str) -> str:
+    if not ObjectId.is_valid(variant_id):
+        return ""
+    doc = await get_db()[f"{_VARIANT_BUCKET}.files"].find_one({"_id": ObjectId(variant_id)})
+    if not doc or doc.get("metadata", {}).get("user_id") != user_id:
+        return ""
+    return str(doc["metadata"].get("tailored_text") or "")
 
 
 async def rename_resume_variant(variant_id: str, filename: str) -> None:

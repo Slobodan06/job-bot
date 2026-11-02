@@ -40,9 +40,13 @@ export type ResumeAttachment = {
   kind?: string;
 };
 
+/** A written question for the member to copy an answer into; empty = answer it yourself. */
+export type ApplicationQuestion = { key: string; label: string; answer: string };
+
 export type AutofillResponse = {
   values: Record<string, AutofillValue>;
   answers: Record<string, string>;
+  questions: ApplicationQuestion[];
   resume: ResumeAttachment | null;
   application_id: string | null;
   unfilled: string[];

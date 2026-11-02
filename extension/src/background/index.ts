@@ -374,6 +374,7 @@ function handleFrameMessage(req: FrameToBg, sender: chrome.runtime.MessageSender
       filled: req.filled,
       skipped: req.skipped,
       attachedResume: req.attachedResume,
+      questions: req.questions,
       error: req.error,
     });
     return;

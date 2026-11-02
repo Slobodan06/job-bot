@@ -22,6 +22,7 @@ from app.extension.autofill import (
 )
 from app.extension.crypto import decrypt_secret, encrypt_secret
 from app.extension.schemas import (
+    ApplicationQuestion,
     AnalyzeJobResponse,
     AutofillRequest,
     AutofillResponse,
@@ -37,6 +38,7 @@ from app.resume.store import (
     find_resume_variant,
     get_base_resume_model,
     read_resume_variant,
+    read_variant_tailored_text,
     rename_resume_variant,
     store_resume_variant,
 )
@@ -167,14 +169,6 @@ async def autofill(
         email=owner.get("email") or "",
     )
     free_text = unresolved_free_text_fields(fields, resolved)
-    answers = await draft_free_text_answers(
-        fields=free_text,
-        model=model,
-        profile=profile,
-        job_text=_job_text(body.job),
-        job_title=body.job.job_title,
-        company=body.job.company,
-    )
 
     # Attach a resume: an explicit variant, else one already tailored for THIS job,
     # else nothing. Never another job's resume: it would go out to the wrong employer.
@@ -193,6 +187,29 @@ async def autofill(
                 download_path=f"/api/extension/resume/{variant_id}",
             )
 
+    answers, drafts = await draft_free_text_answers(
+        fields=free_text,
+        model=model,
+        profile=profile,
+        job_text=_job_text(body.job),
+        job_title=body.job.job_title,
+        company=body.job.company,
+        tailored_text=(
+            await read_variant_tailored_text(user_id=user["_id"], variant_id=variant_id)
+            if free_text and attachment
+            else ""
+        ),
+    )
+    questions = [
+        ApplicationQuestion(
+            key=str(f.get("key")),
+            label=str(f.get("label") or f.get("name") or "Application question"),
+            answer=drafts.get(str(f.get("key")), ""),
+        )
+        for f in free_text
+        if str(f.get("key")) not in answers
+    ]
+
     values = {
         key: AutofillValue(**payload) for key, payload in resolved.items()
     }
@@ -204,6 +221,7 @@ async def autofill(
     return AutofillResponse(
         values=values,
         answers=answers,
+        questions=questions,
         resume=attachment,
         application_id=None,
         unfilled=unfilled,
@@ -227,6 +245,7 @@ async def tailor_for_job(
         user_id=user["_id"],
         job_hash=jh,
         not_before=owner.get("base_resume_updated_at"),
+        with_text=True,
     )
     if existing:
         variant_id, filename = existing
@@ -270,7 +289,7 @@ async def tailor_for_job(
         filename=pdf_filename,
         content_type="application/pdf",
         data=base64.b64decode(result.pdf_base64),
-        meta={"kind": "pdf", "job_url": body.job.url},
+        meta={"kind": "pdf", "job_url": body.job.url, "tailored_text": result.tailored_resume},
     )
     docx_id = await store_resume_variant(
         user_id=user["_id"],

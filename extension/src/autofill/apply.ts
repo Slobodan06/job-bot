@@ -137,24 +137,43 @@ function dispatchClick(el: HTMLElement): void {
   }
 }
 
+const normalize = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+const DECLINE_RE = /decline|prefer not|(do not|don'?t) (wish|want)|choose not/i;
+const FILLER_WORDS = new Set(["or", "and", "other", "the", "a"]);
+
 function findOption(value: string): HTMLElement | null {
-  const want = value.trim().toLowerCase();
+  const want = normalize(value);
   if (!want) return null;
   const candidates = deepQueryAll<HTMLElement>(
     '[role="option"], li[role="option"], [role="listbox"] li, [class*="option" i]',
   );
   let exact: HTMLElement | null = null;
   let partial: HTMLElement | null = null;
+  let decline: HTMLElement | null = null;
+  const close: HTMLElement[] = [];
+  const wantWords = want.split(" ").filter((w) => !FILLER_WORDS.has(w));
   for (const opt of candidates) {
-    const text = (opt.innerText || opt.textContent || "").trim().toLowerCase();
+    const raw = opt.innerText || opt.textContent || "";
+    const text = normalize(raw);
     if (!text) continue;
+    // Length guard: a wrapper around the whole list would match anything.
+    const optionSized = text.length <= want.length + 20;
+    if (!decline && optionSized && DECLINE_RE.test(raw)) decline = opt;
+    if (optionSized) {
+      // Same answer, slightly different spelling: "Alaska Native" / "Alaskan Native".
+      const words = text.split(" ");
+      if (wantWords.every((w) => words.some((t) => t.startsWith(w)))) close.push(opt);
+    }
     if (text === want) {
       exact = opt;
       break;
     }
     if (!partial && (hasWords(text, want) || hasWords(want, text))) partial = opt;
   }
-  return exact || partial;
+  if (exact || partial) return exact || partial;
+  // Every form words "decline to answer" differently.
+  if (DECLINE_RE.test(value)) return decline;
+  return close.length === 1 ? close[0] : null;
 }
 
 /** Open a custom combobox/listbox widget and click the option matching `value`. */
@@ -249,7 +268,7 @@ export async function applyValues(
     }
     if (ok) {
       filled += 1;
-      markField(lf.el, values[key]?.source || "ai");
+      markField(lf.el, values[key]?.source || "profile");
     } else {
       skipped.push(lf.descriptor.label || lf.descriptor.name || key);
     }

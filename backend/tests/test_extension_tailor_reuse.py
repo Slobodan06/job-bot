@@ -73,7 +73,7 @@ class AutofillAttachmentTests(unittest.IsolatedAsyncioTestCase):
         find = AsyncMock(return_value=None)
         with patch.object(routes, "profile_owner", AsyncMock(return_value=USER)), \
                 patch.object(routes, "get_base_resume_model", return_value=None), \
-                patch.object(routes, "draft_free_text_answers", AsyncMock(return_value={})), \
+                patch.object(routes, "draft_free_text_answers", AsyncMock(return_value=({}, {}))), \
                 patch.object(routes, "find_resume_variant", find):
             out = await routes.autofill(AutofillRequest(job=JOB, fields=[]), user=USER)
         self.assertIsNone(out.resume)

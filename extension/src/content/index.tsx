@@ -29,7 +29,7 @@ chrome.runtime.onMessage.addListener((msg: BgToFrame, _sender, sendResponse) => 
     sendResponse(hasApplicationForm());
   } else if (msg.type === "do-fill") {
     runFillInThisFrame(msg.job, msg.variant, msg.resumeVariantId)
-      .catch((e: Error) => ({ filled: 0, skipped: 0, attachedResume: false, error: e.message }))
+      .catch((e: Error) => ({ filled: 0, skipped: 0, attachedResume: false, questions: [], error: e.message }))
       .then((result) => {
         report({ type: "frame:fill-result", ...result });
       });

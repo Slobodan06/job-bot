@@ -5,13 +5,20 @@
  * every frame independently detects and can independently fill itself. The
  * background service worker is the relay between frames of the same tab.
  */
-import type { DetectedJob } from "./types";
+import type { ApplicationQuestion, DetectedJob } from "./types";
 
 /** Sent by every frame's content script to the background, fire-and-forget. */
 export type FrameToBg =
   | { type: "frame:report-job"; job: DetectedJob | null }
   | { type: "frame:fill-progress"; label: string; index: number; total: number }
-  | { type: "frame:fill-result"; filled: number; skipped: number; attachedResume: boolean; error?: string }
+  | {
+      type: "frame:fill-result";
+      filled: number;
+      skipped: number;
+      attachedResume: boolean;
+      questions: ApplicationQuestion[];
+      error?: string;
+    }
   // The user clicked what looks like the form's final submit control in this
   // frame. Only *arms* tracking — nothing is recorded until a confirmation
   // follows (see content/submission.ts).
@@ -33,7 +40,14 @@ export type FrameToBg =
 export type BgToFrame =
   | { type: "job:update"; job: DetectedJob | null }
   | { type: "job:fill-progress"; label: string; index: number; total: number }
-  | { type: "job:fill-status"; filled: number; skipped: number; attachedResume: boolean; error?: string }
+  | {
+      type: "job:fill-status";
+      filled: number;
+      skipped: number;
+      attachedResume: boolean;
+      questions: ApplicationQuestion[];
+      error?: string;
+    }
   // "Is there an application form in this frame?" Answered via sendResponse.
   | { type: "do-probe" }
   // Tracking armed for this tab: watch for a confirmation until `until` (epoch ms).
