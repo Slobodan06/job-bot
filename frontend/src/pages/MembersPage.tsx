@@ -192,6 +192,28 @@ export default function MembersPage() {
     }
   };
 
+  const toggleAutofill = async (member: User, enabled: boolean) => {
+    if (member.role === "owner") return;
+    setUpdatingId(member.id);
+    try {
+      const updated = await adminApi.setAutofill(member.id, enabled);
+      setMembers((prev) => prev.map((m) => (m.id === updated.id ? updated : m)));
+      notifications.show({
+        title: enabled ? "Auto-fill on" : "Auto-fill off",
+        message: `${member.email} ${enabled ? "can now" : "can no longer"} use Auto-fill in the extension.`,
+        color: "teal",
+      });
+    } catch (e) {
+      notifications.show({
+        title: "Update failed",
+        message: e instanceof Error ? e.message : "Try again.",
+        color: "red",
+      });
+    } finally {
+      setUpdatingId(null);
+    }
+  };
+
   const toggleQuestions = async (member: User, enabled: boolean) => {
     if (member.role === "owner") return;
     setUpdatingId(member.id);
@@ -356,6 +378,16 @@ export default function MembersPage() {
                       <span>Q&amp;A tab</span>
                     </Tooltip>
                   </Table.Th>
+                  <Table.Th>
+                    <Tooltip
+                      label="Lets this member use Auto-fill in the browser extension (uses AI credits)"
+                      withArrow
+                      multiline
+                      w={240}
+                    >
+                      <span>Auto-fill</span>
+                    </Tooltip>
+                  </Table.Th>
                   <Table.Th>Applications</Table.Th>
                   <Table.Th w={48} />
                 </Table.Tr>
@@ -502,6 +534,22 @@ export default function MembersPage() {
                           onChange={(e) => void toggleQuestions(member, e.currentTarget.checked)}
                           color="teal"
                           label={member.can_use_application_questions ? "On" : "Off"}
+                          size="sm"
+                        />
+                      )}
+                    </Table.Td>
+                    <Table.Td>
+                      {member.role === "owner" ? (
+                        <Text size="sm" c="dimmed">
+                          Always on
+                        </Text>
+                      ) : (
+                        <Switch
+                          checked={member.can_use_autofill}
+                          disabled={updatingId === member.id}
+                          onChange={(e) => void toggleAutofill(member, e.currentTarget.checked)}
+                          color="teal"
+                          label={member.can_use_autofill ? "On" : "Off"}
                           size="sm"
                         />
                       )}

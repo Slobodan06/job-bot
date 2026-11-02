@@ -78,7 +78,8 @@ export function discoverFields(root: ParentNode = document): LiveField[] {
     seen.add(el);
     const isFormEl = el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement;
     const type = isFormEl ? (el.getAttribute("type") || el.tagName).toLowerCase() : "combobox";
-    if (["hidden", "submit", "button", "reset", "image", "search"].includes(type)) continue;
+    // File inputs aren't text to fill: the resume goes in via attachResume.
+    if (["hidden", "submit", "button", "reset", "image", "search", "file"].includes(type)) continue;
     if (el instanceof HTMLInputElement && el.disabled) continue;
     if (!isFormEl && el.getAttribute("aria-disabled") === "true") continue;
     if (!isVisible(el)) continue;

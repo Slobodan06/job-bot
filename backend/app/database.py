@@ -10,6 +10,7 @@ from app.auth.roles import (
     member_type,
     user_can_manage_applications,
     user_can_use_application_questions,
+    user_can_use_autofill,
     user_can_view_team,
 )
 from app.services.template_catalog import get_template_meta
@@ -163,6 +164,7 @@ def user_doc_to_public(doc: dict[str, Any]) -> dict[str, Any]:
         "member_type": member_type(doc),
         "can_view_team_applications": user_can_view_team(doc),
         "can_use_application_questions": user_can_use_application_questions(doc),
+        "can_use_autofill": user_can_use_autofill(doc),
         "has_base_resume": isinstance(doc.get("base_resume_model"), dict),
         "assigned_team_member_id": (
             str(doc["assigned_team_member_id"]) if doc.get("assigned_team_member_id") else None

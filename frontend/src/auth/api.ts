@@ -18,6 +18,8 @@ export type User = {
   can_view_team_applications: boolean;
   /** Owner-controlled per member: may use the Resume builder's "Application questions" tab. */
   can_use_application_questions: boolean;
+  /** Owner-controlled per member: may use the browser extension's Auto-fill button. */
+  can_use_autofill: boolean;
   /** Whether this member saved a base resume (team members' bidders work from it). */
   has_base_resume: boolean;
   /** Bidders: the team member they work under. */
@@ -621,6 +623,12 @@ export const adminApi = {
     return apiFetch<User>(`/api/admin/members/${memberId}/features`, {
       method: "PATCH",
       body: JSON.stringify({ application_questions: enabled }),
+    });
+  },
+  setAutofill(memberId: string, enabled: boolean) {
+    return apiFetch<User>(`/api/admin/members/${memberId}/features`, {
+      method: "PATCH",
+      body: JSON.stringify({ autofill: enabled }),
     });
   },
   setAssignment(memberId: string, teamMemberId: string | null) {

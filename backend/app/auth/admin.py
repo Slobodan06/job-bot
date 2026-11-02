@@ -140,7 +140,7 @@ async def update_member_features(
     body: MemberFeaturesUpdate,
     owner: dict = Depends(get_owner_user),
 ) -> UserPublic:
-    """Owner switches optional features on/off per member (e.g. the Application questions tab)."""
+    """Owner switches optional features on/off per member (Application questions tab, extension Auto-fill)."""
     if not ObjectId.is_valid(member_id):
         raise HTTPException(status_code=400, detail="Invalid member id.")
     db = get_db()
@@ -149,9 +149,16 @@ async def update_member_features(
         raise HTTPException(status_code=404, detail="Member not found.")
     if user_is_owner(doc):
         raise HTTPException(status_code=400, detail="The owner always has every feature.")
+    changes: dict = {}
+    if body.application_questions is not None:
+        changes["can_use_application_questions"] = body.application_questions
+    if body.autofill is not None:
+        changes["can_use_autofill"] = body.autofill
+    if not changes:
+        raise HTTPException(status_code=400, detail="No feature to change.")
     await db.users.update_one(
         {"_id": doc["_id"]},
-        {"$set": {"can_use_application_questions": body.application_questions, "updated_at": datetime.now(UTC)}},
+        {"$set": {**changes, "updated_at": datetime.now(UTC)}},
     )
     return UserPublic(**public_user(await db.users.find_one({"_id": doc["_id"]})))
 

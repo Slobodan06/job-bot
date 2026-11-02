@@ -69,3 +69,9 @@ def user_can_use_application_questions(doc: dict) -> bool:
     """The Resume builder's "Application questions" tab: the owner always; members only
     when the owner switched it on for them (Members page)."""
     return user_is_owner(doc) or bool(doc.get("can_use_application_questions"))
+
+
+def user_can_use_autofill(doc: dict) -> bool:
+    """The extension's Auto-fill button (spends AI credits): the owner always; members
+    only when the owner switched it on for them (Members page)."""
+    return user_is_owner(doc) or bool(doc.get("can_use_autofill"))

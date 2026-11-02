@@ -83,6 +83,21 @@ async def store_resume_variant(
     return str(file_id)
 
 
+async def find_resume_variant(
+    *, user_id: ObjectId, job_hash: str, not_before: datetime | None = None
+) -> tuple[str, str] | None:
+    """(file id, filename) of the variant stored for this job, if any.
+
+    `not_before` skips variants older than that moment (built from a previous base resume)."""
+    query: dict[str, Any] = {"metadata.user_id": user_id, "metadata.job_hash": job_hash}
+    if not_before is not None:
+        query["metadata.created_at"] = {"$gte": not_before}
+    doc = await get_db()[f"{_VARIANT_BUCKET}.files"].find_one(query, sort=[("_id", -1)])
+    if not doc:
+        return None
+    return str(doc["_id"]), doc.get("filename") or "resume.pdf"
+
+
 async def read_resume_variant(
     *, user_id: ObjectId, variant_id: str
 ) -> tuple[bytes, str, str] | None:

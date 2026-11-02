@@ -374,6 +374,7 @@ function handleFrameMessage(req: FrameToBg, sender: chrome.runtime.MessageSender
       filled: req.filled,
       skipped: req.skipped,
       attachedResume: req.attachedResume,
+      error: req.error,
     });
     return;
   }
@@ -398,19 +399,35 @@ function handleFrameMessage(req: FrameToBg, sender: chrome.runtime.MessageSender
   }
 }
 
-function broadcastFill(
+/** Frames of the tab holding an application form. Asks every live frame, not only
+ * those that detected a job: a form iframe often has no job signal of its own. */
+async function formFrames(tabId: number): Promise<number[]> {
+  const frames = (await chrome.webNavigation.getAllFrames({ tabId })) ?? [];
+  const checks = await Promise.all(
+    frames.map(async ({ frameId }) => {
+      try {
+        const hasForm = await chrome.tabs.sendMessage(tabId, { type: "do-probe" }, { frameId });
+        return hasForm === true ? frameId : null;
+      } catch {
+        return null; // a frame that never loaded the content script (e.g. about:blank)
+      }
+    }),
+  );
+  return checks.filter((id): id is number => id !== null);
+}
+
+async function broadcastFill(
   tabId: number,
   job: DetectedJob,
   variant: "quick" | "tailored",
   resumeVariantId: string | undefined,
-): number {
-  const frames = framesByTab.get(tabId);
-  const frameIds = frames && frames.size ? Array.from(frames.keys()) : [0];
+): Promise<number> {
+  const frameIds = await formFrames(tabId);
   for (const frameId of frameIds) {
     chrome.tabs
       .sendMessage(tabId, { type: "do-fill", job, variant, resumeVariantId }, { frameId })
       .catch(() => {
-        /* a frame that never loaded the content script (e.g. about:blank) — ignore */
+        /* the frame navigated away since the probe — ignore */
       });
   }
   return frameIds.length;
@@ -479,7 +496,8 @@ async function handle(req: BgRequest, sender: chrome.runtime.MessageSender): Pro
           data: await api("/api/extension/autofill", {
             method: "POST",
             body: JSON.stringify({
-              job: req.job,
+              // Same key as the tracker: an /apply page belongs to its posting.
+              job: { ...req.job, url: postingUrl(req.job.url) },
               fields: req.fields,
               variant: req.variant,
               resume_variant_id: req.resume_variant_id,
@@ -491,13 +509,21 @@ async function handle(req: BgRequest, sender: chrome.runtime.MessageSender): Pro
           ok: true,
           data: await api("/api/extension/tailor", {
             method: "POST",
-            body: JSON.stringify({ job: req.job, target_job_role: req.target_job_role || "" }),
+            body: JSON.stringify({
+              job: { ...req.job, url: postingUrl(req.job.url) },
+              target_job_role: req.target_job_role || "",
+            }),
           }),
         };
+      case "job:probe-form": {
+        const tabId = sender.tab?.id;
+        if (tabId == null) return { ok: false, error: "No active tab." };
+        return { ok: true, data: { targets: (await formFrames(tabId)).length } };
+      }
       case "job:fill-request": {
         const tabId = sender.tab?.id;
         if (tabId == null) return { ok: false, error: "No active tab." };
-        const targets = broadcastFill(tabId, req.job, req.variant, req.resume_variant_id);
+        const targets = await broadcastFill(tabId, req.job, req.variant, req.resume_variant_id);
         return { ok: true, data: { targets } };
       }
       case "resume:fetch": {

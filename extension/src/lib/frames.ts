@@ -11,7 +11,7 @@ import type { DetectedJob } from "./types";
 export type FrameToBg =
   | { type: "frame:report-job"; job: DetectedJob | null }
   | { type: "frame:fill-progress"; label: string; index: number; total: number }
-  | { type: "frame:fill-result"; filled: number; skipped: number; attachedResume: boolean }
+  | { type: "frame:fill-result"; filled: number; skipped: number; attachedResume: boolean; error?: string }
   // The user clicked what looks like the form's final submit control in this
   // frame. Only *arms* tracking — nothing is recorded until a confirmation
   // follows (see content/submission.ts).
@@ -33,7 +33,9 @@ export type FrameToBg =
 export type BgToFrame =
   | { type: "job:update"; job: DetectedJob | null }
   | { type: "job:fill-progress"; label: string; index: number; total: number }
-  | { type: "job:fill-status"; filled: number; skipped: number; attachedResume: boolean }
+  | { type: "job:fill-status"; filled: number; skipped: number; attachedResume: boolean; error?: string }
+  // "Is there an application form in this frame?" Answered via sendResponse.
+  | { type: "do-probe" }
   // Tracking armed for this tab: watch for a confirmation until `until` (epoch ms).
   | { type: "track:armed"; until: number }
   // Outcome of recording a confirmed application (top frame shows a toast).

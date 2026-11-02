@@ -1,5 +1,4 @@
 import base64
-import os
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -12,6 +11,7 @@ from app.auth.resume_access import (
     profile_owner,
     works_from_team_member,
 )
+from app.auth.roles import user_can_use_autofill
 from app.database import get_db
 from app.extension.answers import draft_free_text_answers
 from app.extension.autofill import (
@@ -32,7 +32,12 @@ from app.extension.schemas import (
     TailorForJobRequest,
     TailorForJobResponse,
 )
-from app.resume.store import get_base_resume_model, read_resume_variant, store_resume_variant
+from app.resume.store import (
+    find_resume_variant,
+    get_base_resume_model,
+    read_resume_variant,
+    store_resume_variant,
+)
 from app.services.fresh_resume_builder import build_fresh_tailored_resume
 from app.services.pdf_resume import extract_jd_target_role_title
 from app.services.resume_evidence import analyze_job_description
@@ -41,12 +46,15 @@ from app.services.tailor import extract_keywords
 router = APIRouter(prefix="/api/extension", tags=["extension"])
 
 
-def _require_autofill_enabled() -> None:
-    """Quick fill / Tailor & fill spend OpenAI credits; they're off unless
-    EXTENSION_AUTOFILL_ENABLED=1. Job detection and application tracking don't
-    use OpenAI and keep working either way."""
-    if os.getenv("EXTENSION_AUTOFILL_ENABLED", "").strip().lower() not in ("1", "true", "yes", "on"):
-        raise HTTPException(status_code=403, detail="Quick fill and Tailor & fill are turned off by the site owner.")
+def _require_autofill_allowed(user: dict) -> None:
+    """Auto-fill spends AI credits, so the owner grants it per member (Members page).
+    A bidder needs their own grant, not their team member's. Job detection and
+    application tracking don't use AI and keep working either way."""
+    if not user_can_use_autofill(user):
+        raise HTTPException(
+            status_code=403,
+            detail="Auto-fill isn't turned on for your account. Ask the site owner to enable it on the Members page.",
+        )
 
 
 def _job_text(job: DetectedJob) -> str:
@@ -138,7 +146,7 @@ async def autofill(
     body: AutofillRequest,
     user: dict = Depends(get_builder_user),
 ) -> AutofillResponse:
-    _require_autofill_enabled()
+    _require_autofill_allowed(user)
     # Bidders fill applications as their team member: that member's resume + profile.
     owner = await profile_owner(user)
     model = get_base_resume_model(owner)
@@ -166,16 +174,13 @@ async def autofill(
         company=body.job.company,
     )
 
-    # Attach a resume: reuse an explicit variant, else the most recent stored one,
-    # else nothing (the user can hit "Tailor for this job").
+    # Attach a resume: an explicit variant, else one already tailored for THIS job,
+    # else nothing. Never another job's resume: it would go out to the wrong employer.
     attachment: ResumeAttachment | None = None
     variant_id = body.resume_variant_id
     if not variant_id:
-        db = get_db()
-        latest = await db["resume_variants.files"].find_one(
-            {"metadata.user_id": user["_id"]}, sort=[("_id", -1)]
-        )
-        variant_id = str(latest["_id"]) if latest else None
+        existing = await find_resume_variant(user_id=user["_id"], job_hash=job_hash(body.job.url))
+        variant_id = existing[0] if existing else None
     if variant_id:
         found = await read_resume_variant(user_id=user["_id"], variant_id=variant_id)
         if found:
@@ -208,9 +213,32 @@ async def tailor_for_job(
     body: TailorForJobRequest,
     user: dict = Depends(get_builder_user),
 ) -> TailorForJobResponse:
-    _require_autofill_enabled()
+    _require_autofill_allowed(user)
     # Own base resume, or (bidders) the assigned team member's — lock-checked.
     model = await base_resume_for(user)
+    jh = job_hash(body.job.url)
+    # Multi-step forms and repeat clicks reach here again: don't pay to re-tailor
+    # the same job unless the base resume has changed since.
+    owner = await profile_owner(user)
+    existing = await find_resume_variant(
+        user_id=user["_id"],
+        job_hash=jh,
+        not_before=owner.get("base_resume_updated_at"),
+    )
+    if existing:
+        variant_id, filename = existing
+        docx = await find_resume_variant(user_id=user["_id"], job_hash=jh + ":docx")
+        return TailorForJobResponse(
+            resume=ResumeAttachment(
+                variant_id=variant_id,
+                filename=filename,
+                download_path=f"/api/extension/resume/{variant_id}",
+            ),
+            docx_variant_id=docx[0] if docx else "",
+            match_scores={},
+            application_id=None,
+        )
+
     text = _job_text(body.job)
     if len(text) < 40:
         raise HTTPException(status_code=400, detail="Not enough job text to tailor against.")
@@ -226,7 +254,6 @@ async def tailor_for_job(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    jh = job_hash(body.job.url)
     pdf_id = await store_resume_variant(
         user_id=user["_id"],
         job_hash=jh,

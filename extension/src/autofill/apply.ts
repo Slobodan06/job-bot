@@ -1,4 +1,5 @@
 import { deepQueryAll, rootOf } from "../detectors/dom";
+import { isResumeUploadTarget } from "../content/submission";
 import type { LiveField } from "./fields";
 import { markField } from "./highlight";
 
@@ -211,28 +212,33 @@ export async function applyValues(
     await sleep(120);
 
     let ok = false;
-    if (el instanceof HTMLSelectElement) {
-      ok = fillSelect(el, value);
-    } else if (el instanceof HTMLInputElement && el.type === "checkbox") {
-      ok = fillCheckbox(el, value);
-    } else if (el instanceof HTMLInputElement && el.type === "radio") {
-      ok = fillGroupByLabel(el, value);
-    } else if (isComboboxTrigger(el)) {
-      ok = await fillCombobox(el, value);
-    } else if (el instanceof HTMLTextAreaElement) {
-      setNativeValueRaw(el, value);
-      el.dispatchEvent(new Event("change", { bubbles: true }));
-      el.dispatchEvent(new Event("blur", { bubbles: true }));
-      ok = true;
-    } else if (el instanceof HTMLInputElement) {
-      if (looksMasked(lf.descriptor.label, value)) {
-        await typeIntoInput(el, value);
-      } else {
+    try {
+      if (el instanceof HTMLSelectElement) {
+        ok = fillSelect(el, value);
+      } else if (el instanceof HTMLInputElement && el.type === "checkbox") {
+        ok = fillCheckbox(el, value);
+      } else if (el instanceof HTMLInputElement && el.type === "radio") {
+        ok = fillGroupByLabel(el, value);
+      } else if (isComboboxTrigger(el)) {
+        ok = await fillCombobox(el, value);
+      } else if (el instanceof HTMLTextAreaElement) {
         setNativeValueRaw(el, value);
         el.dispatchEvent(new Event("change", { bubbles: true }));
         el.dispatchEvent(new Event("blur", { bubbles: true }));
+        ok = true;
+      } else if (el instanceof HTMLInputElement) {
+        if (looksMasked(lf.descriptor.label, value)) {
+          await typeIntoInput(el, value);
+        } else {
+          setNativeValueRaw(el, value);
+          el.dispatchEvent(new Event("change", { bubbles: true }));
+          el.dispatchEvent(new Event("blur", { bubbles: true }));
+        }
+        ok = true;
       }
-      ok = true;
+    } catch {
+      // One awkward widget must not abandon the rest of the form.
+      ok = false;
     }
     if (ok) {
       filled += 1;
@@ -245,22 +251,18 @@ export async function applyValues(
   return { filled, skipped };
 }
 
-/** Attach a resume file (as data URL) to the first file input that wants a resume/CV. */
-export async function attachResume(
-  fields: LiveField[],
-  dataUrl: string,
-  filename: string,
-): Promise<boolean> {
-  const target = fields.find(
-    (f) =>
-      f.el instanceof HTMLInputElement &&
-      f.el.type === "file" &&
-      /resume|cv|attach|upload/i.test(
-        `${f.descriptor.label} ${f.descriptor.name} ${f.descriptor.id}`,
-      ),
-  );
-  const input = (target?.el as HTMLInputElement) ??
-    (document.querySelector('input[type="file"]') as HTMLInputElement | null);
+/** The upload field for the resume. Most ATS forms hide the real file input behind
+ * a styled button, so hidden ones count. With several uploads and no clear resume
+ * field, returns null: better no attachment than a resume in the cover-letter slot. */
+export function findResumeInput(): HTMLInputElement | null {
+  const inputs = deepQueryAll<HTMLInputElement>('input[type="file"]').filter((el) => !el.disabled);
+  if (inputs.length === 1) return inputs[0];
+  return inputs.find((el) => isResumeUploadTarget(el)) ?? null;
+}
+
+/** Attach a resume file (as data URL) to this frame's resume upload field. */
+export async function attachResume(dataUrl: string, filename: string): Promise<boolean> {
+  const input = findResumeInput();
   if (!input) return false;
   const res = await fetch(dataUrl);
   const blob = await res.blob();
@@ -272,6 +274,6 @@ export async function attachResume(
   input.files = dt.files;
   input.dispatchEvent(new Event("input", { bubbles: true }));
   input.dispatchEvent(new Event("change", { bubbles: true }));
-  if (target) markField(target.el, "resume");
+  markField(input, "resume");
   return true;
 }

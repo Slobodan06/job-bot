@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { watchForJob } from "../detectors";
 import type { BgToFrame, FrameToBg } from "../lib/frames";
 import type { DetectedJob } from "../lib/types";
-import { runFillInThisFrame } from "./fill-runner";
+import { hasApplicationForm, runFillInThisFrame } from "./fill-runner";
 import { initGmailTracking } from "./gmail";
 import { Overlay } from "./Overlay";
 import { initSessionSync } from "./session-sync";
@@ -24,11 +24,15 @@ function report(msg: FrameToBg): void {
 // it owns the whole picture.
 watchForJob((job) => report({ type: "frame:report-job", job }));
 
-chrome.runtime.onMessage.addListener((msg: BgToFrame) => {
-  if (msg.type === "do-fill") {
-    runFillInThisFrame(msg.job, msg.variant, msg.resumeVariantId).then((result) => {
-      report({ type: "frame:fill-result", ...result });
-    });
+chrome.runtime.onMessage.addListener((msg: BgToFrame, _sender, sendResponse) => {
+  if (msg.type === "do-probe") {
+    sendResponse(hasApplicationForm());
+  } else if (msg.type === "do-fill") {
+    runFillInThisFrame(msg.job, msg.variant, msg.resumeVariantId)
+      .catch((e: Error) => ({ filled: 0, skipped: 0, attachedResume: false, error: e.message }))
+      .then((result) => {
+        report({ type: "frame:fill-result", ...result });
+      });
   }
 });
 

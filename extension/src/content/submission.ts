@@ -187,7 +187,7 @@ function contextText(el: Element, depth: number): string {
   return parts.filter(Boolean).join(" ");
 }
 
-function isResumeUploadTarget(el: Element): boolean {
+export function isResumeUploadTarget(el: Element): boolean {
   // Nearest context first: wider ancestors often span the whole form, where
   // "Resume" and "Cover letter" both appear.
   for (const depth of [1, 2, 4]) {

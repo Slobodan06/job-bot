@@ -50,7 +50,10 @@ class MemberTypeUpdate(BaseModel):
 
 
 class MemberFeaturesUpdate(BaseModel):
-    application_questions: bool
+    """Only the features sent are changed."""
+
+    application_questions: bool | None = None
+    autofill: bool | None = None
 
 
 class MemberAssignmentUpdate(BaseModel):
@@ -84,6 +87,8 @@ class UserPublic(BaseModel):
     can_view_team_applications: bool = False
     # Owner-controlled: may this member use the "Application questions" tab?
     can_use_application_questions: bool = False
+    # Owner-controlled: may this member use the extension's Auto-fill button?
+    can_use_autofill: bool = False
     # Team members: whether they've saved the base resume their bidders work from.
     has_base_resume: bool = False
     # Bidders: the team member whose profile they work under.

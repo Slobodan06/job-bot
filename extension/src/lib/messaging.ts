@@ -38,6 +38,7 @@ export type BgRequest =
   | { type: "job:analyze"; job: DetectedJob }
   | { type: "job:autofill"; job: DetectedJob; fields: FormField[]; variant: "quick" | "tailored"; resume_variant_id?: string }
   | { type: "job:tailor"; job: DetectedJob; target_job_role?: string }
+  | { type: "job:probe-form" }
   | {
       type: "job:fill-request";
       job: DetectedJob;
@@ -84,6 +85,7 @@ export const bg = {
   ) => sendToBackground<AutofillResponse>({ type: "job:autofill", job, fields, variant, resume_variant_id }),
   tailor: (job: DetectedJob, target_job_role?: string) =>
     sendToBackground<TailorForJobResponse>({ type: "job:tailor", job, target_job_role }),
+  probeForm: () => sendToBackground<{ targets: number }>({ type: "job:probe-form" }),
   requestFill: (job: DetectedJob, variant: "quick" | "tailored", resume_variant_id?: string) =>
     sendToBackground<{ targets: number }>({
       type: "job:fill-request",

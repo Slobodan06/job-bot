@@ -6,8 +6,7 @@ export const WEB_ORIGIN = __JOBBOT_WEB_ORIGIN__;
 export const TOKEN_KEY = "jobbot_token";
 
 /**
- * "Quick fill" / "Tailor & fill" use OpenAI credits and are switched off for now.
- * To bring them back: set this to true, rebuild the extension, and set
- * EXTENSION_AUTOFILL_ENABLED=1 on the server (it refuses these calls otherwise).
+ * "Auto-fill" tailors a resume per job, which uses AI credits. The server refuses it
+ * unless the owner switched it on for that member (Members page).
  */
-export const AUTOFILL_ENABLED = false;
+export const AUTOFILL_ENABLED = true;
