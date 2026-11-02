@@ -59,6 +59,7 @@ class AutofillProfile(BaseModel):
     highest_education: str = ""
     how_heard_about_us: str = ""
     gender: str = ""
+    hispanic_latino: str = ""
     race_ethnicity: str = ""
     veteran_status: str = ""
     disability_status: str = ""

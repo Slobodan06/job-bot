@@ -16,6 +16,7 @@ from app.database import get_db
 from app.extension.answers import draft_free_text_answers
 from app.extension.autofill import (
     normalize_autofill_profile,
+    resume_file_stem,
     resolve_deterministic_values,
     unresolved_free_text_fields,
 )
@@ -36,6 +37,7 @@ from app.resume.store import (
     find_resume_variant,
     get_base_resume_model,
     read_resume_variant,
+    rename_resume_variant,
     store_resume_variant,
 )
 from app.services.fresh_resume_builder import build_fresh_tailored_resume
@@ -220,6 +222,7 @@ async def tailor_for_job(
     # Multi-step forms and repeat clicks reach here again: don't pay to re-tailor
     # the same job unless the base resume has changed since.
     owner = await profile_owner(user)
+    file_stem = resume_file_stem(owner.get("autofill_profile") or {}, model)
     existing = await find_resume_variant(
         user_id=user["_id"],
         job_hash=jh,
@@ -227,7 +230,13 @@ async def tailor_for_job(
     )
     if existing:
         variant_id, filename = existing
+        # Stored under an older name, or the profile name has changed since.
+        if filename != f"{file_stem}.pdf":
+            filename = f"{file_stem}.pdf"
+            await rename_resume_variant(variant_id, filename)
         docx = await find_resume_variant(user_id=user["_id"], job_hash=jh + ":docx")
+        if docx and docx[1] != f"{file_stem}.docx":
+            await rename_resume_variant(docx[0], f"{file_stem}.docx")
         return TailorForJobResponse(
             resume=ResumeAttachment(
                 variant_id=variant_id,
@@ -254,10 +263,11 @@ async def tailor_for_job(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    pdf_filename = f"{file_stem}.pdf"
     pdf_id = await store_resume_variant(
         user_id=user["_id"],
         job_hash=jh,
-        filename=result.pdf_download_filename or "resume-tailored.pdf",
+        filename=pdf_filename,
         content_type="application/pdf",
         data=base64.b64decode(result.pdf_base64),
         meta={"kind": "pdf", "job_url": body.job.url},
@@ -265,7 +275,7 @@ async def tailor_for_job(
     docx_id = await store_resume_variant(
         user_id=user["_id"],
         job_hash=jh + ":docx",
-        filename=result.download_filename or "resume-tailored.docx",
+        filename=f"{file_stem}.docx",
         content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         data=base64.b64decode(result.docx_base64),
         meta={"kind": "docx", "job_url": body.job.url},
@@ -284,7 +294,7 @@ async def tailor_for_job(
     return TailorForJobResponse(
         resume=ResumeAttachment(
             variant_id=pdf_id,
-            filename=result.pdf_download_filename or "resume-tailored.pdf",
+            filename=pdf_filename,
             download_path=f"/api/extension/resume/{pdf_id}",
         ),
         docx_variant_id=docx_id,

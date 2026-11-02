@@ -5,6 +5,13 @@ import { markField } from "./highlight";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** Whole-word containment, so "male" never matches the option "Female". */
+function hasWords(text: string, words: string): boolean {
+  if (!words) return false;
+  const escaped = words.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(^|[^\\p{L}\\p{N}])${escaped}($|[^\\p{L}\\p{N}])`, "u").test(text);
+}
+
 /** Low-level: set .value via the native setter (bypasses React's shadowed
  * value property) and fire one input/change/blur — used for bulk (non-typed)
  * writes: textareas, and as the final commit after char-by-char typing. */
@@ -54,7 +61,7 @@ function fillGroupByLabel(el: HTMLInputElement, value: string): boolean {
     )
       .trim()
       .toLowerCase();
-    if (lbl === want || (want && (lbl.includes(want) || want.includes(lbl)))) {
+    if (lbl === want || hasWords(lbl, want) || hasWords(want, lbl)) {
       radio.checked = true;
       radio.dispatchEvent(new Event("input", { bubbles: true }));
       radio.dispatchEvent(new Event("change", { bubbles: true }));
@@ -98,7 +105,7 @@ function fillSelect(el: HTMLSelectElement, value: string): boolean {
   }
   for (const opt of Array.from(el.options)) {
     const t = opt.text.trim().toLowerCase();
-    if (want && (t.includes(want) || want.includes(t))) {
+    if (hasWords(t, want) || hasWords(want, t)) {
       el.value = opt.value;
       el.dispatchEvent(new Event("change", { bubbles: true }));
       return true;
@@ -145,7 +152,7 @@ function findOption(value: string): HTMLElement | null {
       exact = opt;
       break;
     }
-    if (!partial && (text.includes(want) || want.includes(text))) partial = opt;
+    if (!partial && (hasWords(text, want) || hasWords(want, text))) partial = opt;
   }
   return exact || partial;
 }

@@ -1,5 +1,6 @@
 """Auto-fill never attaches another job's resume and never pays twice for the same job."""
 import unittest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from bson import ObjectId
@@ -14,6 +15,7 @@ USER = {
     "email": "a@example.com",
     "base_resume_updated_at": "resume-saved-at",
     "can_use_autofill": True,
+    "autofill_profile": {"first_name": "Cory", "last_name": "Stagg"},
 }
 JOB = DetectedJob(url="https://jobs.example.com/acme/123", text="Backend engineer. " * 10, job_title="Backend")
 
@@ -35,14 +37,14 @@ class PermissionTests(unittest.IsolatedAsyncioTestCase):
 class TailorReuseTests(unittest.IsolatedAsyncioTestCase):
     def _patches(self, found):
         return (
-            patch.object(routes, "base_resume_for", AsyncMock(return_value=object())),
+            patch.object(routes, "base_resume_for", AsyncMock(return_value=SimpleNamespace(name="Cory Stagg"))),
             patch.object(routes, "profile_owner", AsyncMock(return_value=USER)),
             patch.object(routes, "find_resume_variant", AsyncMock(side_effect=found)),
             patch.object(routes, "build_fresh_tailored_resume", AsyncMock()),
         )
 
     async def test_same_job_reuses_the_resume_without_an_ai_call(self) -> None:
-        a, b, find, build = self._patches([("pdf1", "r.pdf"), ("docx1", "r.docx")])
+        a, b, find, build = self._patches([("pdf1", "cory-stagg.pdf"), ("docx1", "cory-stagg.docx")])
         with a, b, find as find_mock, build as build_mock:
             out = await routes.tailor_for_job(TailorForJobRequest(job=JOB), user=USER)
         build_mock.assert_not_awaited()
@@ -50,8 +52,16 @@ class TailorReuseTests(unittest.IsolatedAsyncioTestCase):
         # Only a variant built since the base resume last changed counts.
         self.assertEqual("resume-saved-at", find_mock.await_args_list[0].kwargs["not_before"])
 
+    async def test_reused_resume_is_renamed_to_the_profile_name(self) -> None:
+        a, b, find, build = self._patches([("pdf1", "Cory-resume-tailored.pdf"), ("docx1", "cory-stagg.docx")])
+        rename = AsyncMock()
+        with a, b, find, build, patch.object(routes, "rename_resume_variant", rename):
+            out = await routes.tailor_for_job(TailorForJobRequest(job=JOB), user=USER)
+        self.assertEqual("cory-stagg.pdf", out.resume.filename)
+        rename.assert_awaited_once_with("pdf1", "cory-stagg.pdf")
+
     async def test_reuse_works_on_a_form_page_with_no_job_text(self) -> None:
-        a, b, find, build = self._patches([("pdf1", "r.pdf"), None])
+        a, b, find, build = self._patches([("pdf1", "cory-stagg.pdf"), None])
         job = DetectedJob(url=JOB.url, text="")
         with a, b, find, build:
             out = await routes.tailor_for_job(TailorForJobRequest(job=job), user=USER)

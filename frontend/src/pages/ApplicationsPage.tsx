@@ -44,6 +44,31 @@ const EDUCATION_OPTS = [
   "Other",
 ].map((v) => ({ value: v, label: v }));
 
+const toOpts = (values: string[]) => values.map((v) => ({ value: v, label: v }));
+const DECLINE = "Decline to self-identify";
+const GENDER_OPTS = toOpts(["Male", "Female", "Non-binary", DECLINE]);
+const HISPANIC_OPTS = toOpts(["Yes", "No", DECLINE]);
+const RACE_OPTS = toOpts([
+  "American Indian or Alaska Native",
+  "Asian",
+  "Black or African American",
+  "Hispanic or Latino",
+  "Native Hawaiian or Other Pacific Islander",
+  "White",
+  "Two or More Races",
+  DECLINE,
+]);
+const VETERAN_OPTS = toOpts([
+  "I am not a protected veteran",
+  "I identify as one or more of the classifications of a protected veteran",
+  "I don't wish to answer",
+]);
+const DISABILITY_OPTS = toOpts([
+  "Yes, I have a disability",
+  "No, I do not have a disability",
+  "I do not want to answer",
+]);
+
 function generatePassword(): string {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#$%";
   const bytes = new Uint32Array(16);
@@ -59,6 +84,7 @@ const PROFILE_FIELDS = {
   willing_to_relocate: "", over_18: "", worked_here_before: "", has_drivers_license: "",
   desired_salary: "", notice_period_days: "", start_date: "",
   years_of_experience: "", highest_education: "", how_heard_about_us: "",
+  gender: "", hispanic_latino: "", race_ethnicity: "", veteran_status: "", disability_status: "",
   application_password: "",
 };
 
@@ -108,6 +134,11 @@ function AutofillSetupTab() {
         years_of_experience: String(ap.years_of_experience || ""),
         highest_education: String(ap.highest_education || ""),
         how_heard_about_us: String(ap.how_heard_about_us || ""),
+        gender: String(ap.gender || ""),
+        hispanic_latino: String(ap.hispanic_latino || ""),
+        race_ethnicity: String(ap.race_ethnicity || ""),
+        veteran_status: String(ap.veteran_status || ""),
+        disability_status: String(ap.disability_status || ""),
         application_password: "",
       });
       setHasSavedPassword(Boolean(ap.has_application_password));
@@ -270,9 +301,32 @@ function AutofillSetupTab() {
 
             <Divider label="EEO / demographic (optional)" labelPosition="left" mt="sm" />
             <Text size="xs" c="dimmed">
-              Left blank unless you set them — the extension defaults these to "decline to
-              self-identify" rather than guessing.
+              Anything left blank stays blank on the form: the extension never guesses these. If a
+              form words its options too differently, the question is left for you to answer.
             </Text>
+            <Group grow>
+              <Select label="Gender" data={GENDER_OPTS} {...form.getInputProps("gender")} />
+              <Select
+                label="Are you Hispanic / Latino?"
+                data={HISPANIC_OPTS}
+                {...form.getInputProps("hispanic_latino")}
+              />
+            </Group>
+            <Select
+              label="Please identify your race"
+              data={RACE_OPTS}
+              {...form.getInputProps("race_ethnicity")}
+            />
+            <Select
+              label="Veteran status"
+              data={VETERAN_OPTS}
+              {...form.getInputProps("veteran_status")}
+            />
+            <Select
+              label="Disability status"
+              data={DISABILITY_OPTS}
+              {...form.getInputProps("disability_status")}
+            />
 
             <Divider label="Custom questions & answers" labelPosition="left" mt="sm" />
             <Text size="xs" c="dimmed">

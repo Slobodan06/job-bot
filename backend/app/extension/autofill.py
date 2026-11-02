@@ -6,6 +6,7 @@ adds the OpenAI call for genuine free-text screener questions.
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Any
 
 from app.services.resume_model import ResumeModel, split_date_range
@@ -18,7 +19,7 @@ PROFILE_TEXT_FIELDS: tuple[str, ...] = (
     "country", "linkedin", "github", "portfolio", "website", "pronouns",
     "desired_salary", "notice_period_days", "start_date",
     "years_of_experience", "highest_education", "how_heard_about_us",
-    "gender", "race_ethnicity", "veteran_status", "disability_status",
+    "gender", "hispanic_latino", "race_ethnicity", "veteran_status", "disability_status",
     "application_password",
 )
 PROFILE_BOOL_FIELDS: tuple[str, ...] = (
@@ -32,6 +33,14 @@ _NO = "no"
 
 # (canonical_key, pattern tested against "label name placeholder autocomplete")
 _FIELD_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    # Demographic questions come first: their long wording often contains words the
+    # generic rules below look for ("...United States", "state", "contact", ...).
+    ("gender", re.compile(r"\bgender\b", re.I)),
+    # A combined "Race / Hispanic" question is the race question.
+    ("hispanic_latino", re.compile(r"(?s)^(?!.*\brace\b).*(hispanic|latin[oax]\b)", re.I)),
+    ("race_ethnicity", re.compile(r"\brace\b|\bracial\b|ethnicit", re.I)),
+    ("veteran_status", re.compile(r"veteran|military\s*service", re.I)),
+    ("disability_status", re.compile(r"disabilit|form\s*cc-?305", re.I)),
     ("email", re.compile(r"\be-?mail\b", re.I)),
     ("first_name", re.compile(r"\bfirst[\s_-]*name\b|\bgiven[\s_-]*name\b|\bfname\b", re.I)),
     ("last_name", re.compile(r"\blast[\s_-]*name\b|\bfamily[\s_-]*name\b|\bsurname\b|\blname\b", re.I)),
@@ -73,10 +82,6 @@ _FIELD_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("requires_sponsorship", re.compile(
         r"sponsor|visa\s*(status|sponsor)|require\s*sponsorship|need\s*sponsorship", re.I)),
     ("pronouns", re.compile(r"pronoun", re.I)),
-    ("gender", re.compile(r"\bgender\b", re.I)),
-    ("race_ethnicity", re.compile(r"race|ethnicit|hispanic|latino", re.I)),
-    ("veteran_status", re.compile(r"veteran|protected\s*veteran|military\s*service", re.I)),
-    ("disability_status", re.compile(r"disabilit|form\s*cc-?305", re.I)),
     ("linkedin_headline", re.compile(r"headline", re.I)),
     ("cover_letter", re.compile(r"cover\s*letter", re.I)),
     ("resume", re.compile(r"\b(resume|cv|upload)\b", re.I)),
@@ -222,6 +227,45 @@ def _pick_option(value: str, options: list[str]) -> str:
     return ""
 
 
+_DEMOGRAPHIC_KEYS = frozenset({"gender", "hispanic_latino", "race_ethnicity", "veteran_status", "disability_status"})
+# Answered by meaning, since every form words these differently.
+_YES_NO_DEMOGRAPHICS = frozenset({"hispanic_latino", "veteran_status", "disability_status"})
+_DECLINE_RE = re.compile(
+    r"decline|prefer not|(do not|don'?t)\s+(wish|want)|choose not|not (wish|want) to", re.I
+)
+_NEGATIVE_RE = re.compile(r"\b(no|not|non)\b", re.I)
+
+
+def _pick_demographic_option(canonical: str, value: str, options: list[str]) -> str:
+    """Stricter than _pick_option: a wrong demographic answer is worse than a blank one,
+    and plain substring matching would answer "Male" with "Female"."""
+    v = value.strip().lower()
+    for opt in options:
+        if opt.strip().lower() == v:
+            return opt
+    if _DECLINE_RE.search(v):
+        return next((opt for opt in options if _DECLINE_RE.search(opt)), "")
+    candidates = [opt for opt in options if not _DECLINE_RE.search(opt)]
+    if canonical in _YES_NO_DEMOGRAPHICS:
+        negative = bool(_NEGATIVE_RE.search(v))
+        return next((opt for opt in candidates if bool(_NEGATIVE_RE.search(opt)) == negative), "")
+    for opt in candidates:
+        o = opt.strip().lower()
+        if o and (re.search(rf"\b{re.escape(v)}\b", o) or re.search(rf"\b{re.escape(o)}\b", v)):
+            return opt
+    return ""
+
+
+def resume_file_stem(profile: dict[str, Any], model: ResumeModel | None) -> str:
+    """Upload name for a tailored resume: "Cory Stagg" -> "cory-stagg". ASCII only, since
+    it goes in a Content-Disposition header."""
+    name = f"{profile.get('first_name') or ''} {profile.get('last_name') or ''}".strip()
+    if not name and model:
+        name = model.name or ""
+    ascii_name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii")
+    return re.sub(r"[^a-z0-9]+", "-", ascii_name.lower()).strip("-") or "resume"
+
+
 def _group_field_value(
     model: ResumeModel | None, canonical: str, group_index: int | None
 ) -> tuple[str, str]:
@@ -298,7 +342,7 @@ def resolve_deterministic_values(
               "address", "address_line2", "city", "state", "postal_code", "country", "pronouns",
               "desired_salary", "notice_period_days", "start_date",
               "years_of_experience", "highest_education", "how_heard_about_us",
-              "gender", "race_ethnicity", "veteran_status", "disability_status"):
+              "gender", "hispanic_latino", "race_ethnicity", "veteran_status", "disability_status"):
         put(k, profile.get(k), "profile")
     put("linkedin", profile.get("linkedin") or (contact.linkedin if contact else ""), "profile")
     put("github", profile.get("github") or (contact.github if contact else ""), "profile")
@@ -335,7 +379,10 @@ def resolve_deterministic_values(
             continue
         options = [str(o) for o in (field.get("options") or []) if str(o).strip()]
         if options:
-            value = _pick_option(value, options)
+            if canonical in _DEMOGRAPHIC_KEYS:
+                value = _pick_demographic_option(canonical, value, options)
+            else:
+                value = _pick_option(value, options)
             if not value:
                 continue
         out[str(field.get("key"))] = {

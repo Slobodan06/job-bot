@@ -98,6 +98,10 @@ async def find_resume_variant(
     return str(doc["_id"]), doc.get("filename") or "resume.pdf"
 
 
+async def rename_resume_variant(variant_id: str, filename: str) -> None:
+    await _bucket().rename(ObjectId(variant_id), filename)
+
+
 async def read_resume_variant(
     *, user_id: ObjectId, variant_id: str
 ) -> tuple[bytes, str, str] | None:
