@@ -44,6 +44,7 @@ const emptyTotals = () => ({
   filled: 0,
   skipped: 0,
   resume: false,
+  keptResume: false,
   frames: 0,
   expected: 0,
   error: "",
@@ -93,10 +94,11 @@ export function Overlay({ job }: Props) {
     setPhase("done");
     setMsg(
       `Filled ${t.filled} field${t.filled === 1 ? "" : "s"}${t.resume ? " and attached your tailored resume" : ""}.` +
+        (t.keptResume && !t.resume ? " A resume was already uploaded, so JobBot left it as it is." : "") +
         (t.skipped ? ` ${t.skipped} need a manual check.` : "") +
         (t.questions ? ` Copy the ${t.questions === 1 ? "answer" : "answers"} below into the written question${t.questions === 1 ? "" : "s"}.` : "") +
         // A later step rarely has its own upload: only mention a missing resume on the first.
-        (t.resume || t.continuing ? "" : ` Resume not attached: ${t.notes || "no resume upload field found"} — add it by hand.`) +
+        (t.resume || t.keptResume || t.continuing ? "" : ` Resume not attached: ${t.notes || "no resume upload field found"} — add it by hand.`) +
         " Review everything before moving on. JobBot never submits for you.",
     );
   }, []);
@@ -121,6 +123,7 @@ export function Overlay({ job }: Props) {
       t.filled += raw.filled;
       t.skipped += raw.skipped;
       t.resume = t.resume || raw.attachedResume;
+      t.keptResume = t.keptResume || !!raw.keptResume;
       t.error = t.error || raw.error || "";
       t.nextLabel = t.nextLabel || raw.nextLabel || "";
       t.questions += raw.questions.length;

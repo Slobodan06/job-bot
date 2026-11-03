@@ -1,16 +1,10 @@
 import { deepQueryAll, rootOf } from "../detectors/dom";
 import { isResumeUploadTarget } from "../content/submission";
-import type { LiveField } from "./fields";
+import { choiceItems, isChoiceGroup, isChoiceSelected, type LiveField } from "./fields";
 import { markField } from "./highlight";
+import { pickOption } from "./match";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-/** Whole-word containment, so "male" never matches the option "Female". */
-function hasWords(text: string, words: string): boolean {
-  if (!words) return false;
-  const escaped = words.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(^|[^\\p{L}\\p{N}])${escaped}($|[^\\p{L}\\p{N}])`, "u").test(text);
-}
 
 /** Low-level: set .value via the native setter (bypasses React's shadowed
  * value property) and fire one input/change/blur — used for bulk (non-typed)
@@ -32,16 +26,42 @@ async function typeIntoInput(
   el: HTMLInputElement | HTMLTextAreaElement,
   value: string,
   perCharDelayMs = 18,
+  commit = true,
 ): Promise<void> {
   el.focus();
   setNativeValueRaw(el, "");
   for (const ch of value) {
+    el.dispatchEvent(new KeyboardEvent("keydown", { key: ch, bubbles: true }));
     setNativeValueRaw(el, el.value + ch);
     el.dispatchEvent(new InputEvent("input", { bubbles: true, data: ch, inputType: "insertText" }));
+    el.dispatchEvent(new KeyboardEvent("keyup", { key: ch, bubbles: true }));
     if (perCharDelayMs) await sleep(perCharDelayMs);
   }
+  // A search box must keep focus while its suggestions load: blurring closes them.
+  if (!commit) return;
   el.dispatchEvent(new Event("change", { bubbles: true }));
   el.dispatchEvent(new Event("blur", { bubbles: true }));
+}
+
+function labelTextOf(input: HTMLInputElement, root: ParentNode): string {
+  return (
+    (input.id && root.querySelector(`label[for="${CSS.escape(input.id)}"]`)?.textContent) ||
+    input.closest("label")?.textContent ||
+    input.getAttribute("aria-label") ||
+    input.value ||
+    ""
+  ).trim();
+}
+
+function check(input: HTMLInputElement): void {
+  if (input.checked) return;
+  // A real click runs the site's own handlers (React/Vue listen for it, not for .checked).
+  input.click();
+  if (!input.checked) {
+    input.checked = true;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  }
 }
 
 /** Match a radio group, or a multi-checkbox group sharing a `name`, by label text. */
@@ -51,24 +71,10 @@ function fillGroupByLabel(el: HTMLInputElement, value: string): boolean {
   const group = name
     ? Array.from(root.querySelectorAll<HTMLInputElement>(`input[name="${CSS.escape(name)}"]`))
     : [el];
-  const want = value.trim().toLowerCase();
-  for (const radio of group) {
-    const lbl = (
-      root.querySelector(`label[for="${CSS.escape(radio.id)}"]`)?.textContent ||
-      radio.closest("label")?.textContent ||
-      radio.value ||
-      ""
-    )
-      .trim()
-      .toLowerCase();
-    if (lbl === want || hasWords(lbl, want) || hasWords(want, lbl)) {
-      radio.checked = true;
-      radio.dispatchEvent(new Event("input", { bubbles: true }));
-      radio.dispatchEvent(new Event("change", { bubbles: true }));
-      return true;
-    }
-  }
-  return false;
+  const i = pickOption(group.map((input) => labelTextOf(input, root)), value);
+  if (i < 0) return false;
+  check(group[i]);
+  return true;
 }
 
 const AFFIRMATIVE_RE = /^(yes|y|true|1|on|agree|confirm|accept)$/i;
@@ -85,9 +91,10 @@ function fillCheckbox(el: HTMLInputElement, value: string): boolean {
 
   const v = value.trim();
   if (!AFFIRMATIVE_RE.test(v) && !NEGATIVE_RE.test(v)) return false; // not a clear yes/no — leave for manual review
-  const shouldCheck = AFFIRMATIVE_RE.test(v);
-  if (el.checked !== shouldCheck) {
-    el.checked = shouldCheck;
+  const want = AFFIRMATIVE_RE.test(v);
+  if (el.checked !== want) el.click();
+  if (el.checked !== want) {
+    el.checked = want;
     el.dispatchEvent(new Event("input", { bubbles: true }));
     el.dispatchEvent(new Event("change", { bubbles: true }));
   }
@@ -95,23 +102,22 @@ function fillCheckbox(el: HTMLInputElement, value: string): boolean {
 }
 
 function fillSelect(el: HTMLSelectElement, value: string): boolean {
-  const want = value.trim().toLowerCase();
-  for (const opt of Array.from(el.options)) {
-    if (opt.text.trim().toLowerCase() === want || opt.value.trim().toLowerCase() === want) {
-      el.value = opt.value;
-      el.dispatchEvent(new Event("change", { bubbles: true }));
-      return true;
-    }
-  }
-  for (const opt of Array.from(el.options)) {
-    const t = opt.text.trim().toLowerCase();
-    if (hasWords(t, want) || hasWords(want, t)) {
-      el.value = opt.value;
-      el.dispatchEvent(new Event("change", { bubbles: true }));
-      return true;
-    }
-  }
-  return false;
+  const options = Array.from(el.options);
+  const exact = options.findIndex((o) => o.value.trim().toLowerCase() === value.trim().toLowerCase());
+  const i = exact >= 0 ? exact : pickOption(options.map((o) => o.text), value);
+  if (i < 0) return false;
+  setNativeValueRaw(el, options[i].value);
+  el.dispatchEvent(new Event("change", { bubbles: true }));
+  return true;
+}
+
+/** Yes/No buttons and custom radio groups (role="radio" items, no native inputs). */
+function fillChoiceGroup(group: HTMLElement, value: string): boolean {
+  const items = choiceItems(group);
+  const i = pickOption(items.map((b) => b.innerText || b.getAttribute("aria-label") || ""), value);
+  if (i < 0) return false;
+  if (!isChoiceSelected(items[i])) dispatchClick(items[i]);
+  return true;
 }
 
 // Most component-library dropdowns (React-Select, MUI Autocomplete, Radix,
@@ -127,74 +133,114 @@ function isComboboxTrigger(el: HTMLElement): boolean {
     haspopup === "listbox" ||
     haspopup === "true" ||
     el.hasAttribute("aria-autocomplete") ||
+    (el instanceof HTMLInputElement && !!el.list) ||
     !!el.closest('[role="combobox"]')
   );
 }
 
+// Text boxes that are search-as-you-type pickers without saying so (Google Places
+// location boxes, school/employer lookups): suggestions appear under them as you type.
+const LOOKUP_LABEL_RE = /\blocation\b|\bcity\b|\btown\b|where .*(live|based|located)|school|universit|college|employer/i;
+
 function dispatchClick(el: HTMLElement): void {
-  for (const type of ["pointerdown", "mousedown", "mouseup", "click"]) {
-    el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+  for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
+    const Ctor = type.startsWith("pointer") && typeof PointerEvent !== "undefined" ? PointerEvent : MouseEvent;
+    el.dispatchEvent(new Ctor(type, { bubbles: true, cancelable: true, view: window }));
   }
 }
 
-const normalize = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
-const DECLINE_RE = /decline|prefer not|(do not|don'?t) (wish|want)|choose not/i;
-const FILLER_WORDS = new Set(["or", "and", "other", "the", "a"]);
+function key(el: HTMLElement, k: string): void {
+  for (const type of ["keydown", "keyup"]) {
+    el.dispatchEvent(new KeyboardEvent(type, { key: k, code: k, bubbles: true, cancelable: true }));
+  }
+}
 
-function findOption(value: string): HTMLElement | null {
-  const want = normalize(value);
-  if (!want) return null;
-  const candidates = deepQueryAll<HTMLElement>(
-    '[role="option"], li[role="option"], [role="listbox"] li, [class*="option" i]',
+const OPTION_SELECTOR = [
+  '[role="option"]',
+  '[role="listbox"] li',
+  '[role="menuitem"]',
+  '[data-automation-id="promptOption"]',
+  '[data-automation-id="menuItem"]',
+  ".pac-item",
+  '[class*="option" i]',
+  '[class*="suggestion" i]',
+  '[class*="autocomplete" i] li',
+  '[class*="results" i] li',
+  '[class*="dropdown" i] li',
+].join(", ");
+
+const isShown = (el: HTMLElement) => {
+  const r = el.getBoundingClientRect();
+  return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== "hidden";
+};
+
+/** The open option list's best match for `value`. Only visible options count: every
+ * other dropdown on the page keeps its (hidden) list in the DOM too. */
+function findOption(value: string, exclude?: HTMLElement): HTMLElement | null {
+  const options = deepQueryAll<HTMLElement>(OPTION_SELECTOR).filter(
+    (o) => isShown(o) && o !== exclude && !o.contains(exclude ?? null) && o.getAttribute("aria-disabled") !== "true",
   );
-  let exact: HTMLElement | null = null;
-  let partial: HTMLElement | null = null;
-  let decline: HTMLElement | null = null;
-  const close: HTMLElement[] = [];
-  const wantWords = want.split(" ").filter((w) => !FILLER_WORDS.has(w));
-  for (const opt of candidates) {
-    const raw = opt.innerText || opt.textContent || "";
-    const text = normalize(raw);
-    if (!text) continue;
-    // Length guard: a wrapper around the whole list would match anything.
-    const optionSized = text.length <= want.length + 20;
-    if (!decline && optionSized && DECLINE_RE.test(raw)) decline = opt;
-    if (optionSized) {
-      // Same answer, slightly different spelling: "Alaska Native" / "Alaskan Native".
-      const words = text.split(" ");
-      if (wantWords.every((w) => words.some((t) => t.startsWith(w)))) close.push(opt);
-    }
-    if (text === want) {
-      exact = opt;
-      break;
-    }
-    if (!partial && (hasWords(text, want) || hasWords(want, text))) partial = opt;
-  }
-  if (exact || partial) return exact || partial;
-  // Every form words "decline to answer" differently.
-  if (DECLINE_RE.test(value)) return decline;
-  return close.length === 1 ? close[0] : null;
+  const i = pickOption(options.map((o) => o.innerText || o.textContent || ""), value);
+  return i >= 0 ? options[i] : null;
 }
 
-/** Open a custom combobox/listbox widget and click the option matching `value`. */
+/** Suggestions load over the network: keep looking for a while. */
+async function waitForOption(value: string, exclude: HTMLElement, ms: number): Promise<HTMLElement | null> {
+  for (let waited = 0; waited <= ms; waited += 250) {
+    const option = findOption(value, exclude);
+    if (option) return option;
+    await sleep(250);
+  }
+  return null;
+}
+
+/** What to type into a search box: the first part of an address ("Austin" for
+ * "Austin, Texas, United States") finds the place; the full answer then picks it. */
+function searchQueries(value: string): string[] {
+  const first = value.split(",")[0].trim();
+  return first && first !== value.trim() ? [first, value.trim()] : [value.trim()];
+}
+
+/** Open a custom dropdown or a search-as-you-type picker and click the option for `value`. */
 async function fillCombobox(el: HTMLElement, value: string): Promise<boolean> {
+  const typeable = el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement;
   dispatchClick(el);
-  await sleep(220);
-  let option = findOption(value);
-  if (!option && (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) {
-    // Searchable/filterable combobox: type the value to filter the option list.
-    await typeIntoInput(el, value, 15);
-    await sleep(280);
-    option = findOption(value);
+  el.focus();
+  let option = await waitForOption(value, el, typeable ? 300 : 900);
+  if (!option && typeable) {
+    for (const query of searchQueries(value)) {
+      await typeIntoInput(el, query, 25, false);
+      option = await waitForOption(value, el, 2500);
+      if (!option) {
+        // Workday's pickers search on Enter rather than as you type.
+        key(el, "Enter");
+        option = await waitForOption(value, el, 2000);
+      }
+      if (option) break;
+    }
   }
   if (option) {
+    option.scrollIntoView({ block: "nearest" });
     dispatchClick(option);
-    await sleep(60);
+    await sleep(150);
     return true;
   }
-  document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-  el.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  key(el, "Escape");
+  if (typeable) setNativeValueRaw(el, "");
   return false;
+}
+
+/** A plain text box that may still offer suggestions (Google Places): type the answer,
+ * then pick a matching suggestion if one shows up. Typed text stands if none does. */
+async function fillLookupInput(el: HTMLInputElement, value: string): Promise<void> {
+  await typeIntoInput(el, searchQueries(value)[0], 25, false);
+  const option = await waitForOption(value, el, 1500);
+  if (option) {
+    dispatchClick(option);
+    await sleep(150);
+    return;
+  }
+  await typeIntoInput(el, value, 10);
 }
 
 export type FillResult = { filled: number; skipped: string[] };
@@ -233,13 +279,16 @@ export async function applyValues(
     i += 1;
     const lf = byKey.get(key)!;
     const el: HTMLElement = lf.el;
-    onProgress?.({ label: lf.descriptor.label || lf.descriptor.name || "field", index: i, total: entries.length });
+    const label = lf.descriptor.label || lf.descriptor.name || "field";
+    onProgress?.({ label, index: i, total: entries.length });
     el.scrollIntoView({ behavior: "smooth", block: "center" });
     await sleep(120);
 
     let ok = false;
     try {
-      if (el instanceof HTMLSelectElement) {
+      if (isChoiceGroup(el)) {
+        ok = fillChoiceGroup(el, value);
+      } else if (el instanceof HTMLSelectElement) {
         ok = fillSelect(el, value);
       } else if (el instanceof HTMLInputElement && el.type === "checkbox") {
         ok = fillCheckbox(el, value);
@@ -253,7 +302,9 @@ export async function applyValues(
         el.dispatchEvent(new Event("blur", { bubbles: true }));
         ok = true;
       } else if (el instanceof HTMLInputElement) {
-        if (looksMasked(lf.descriptor.label, value)) {
+        if (LOOKUP_LABEL_RE.test(`${lf.descriptor.label} ${lf.descriptor.name} ${lf.descriptor.id}`)) {
+          await fillLookupInput(el, value);
+        } else if (looksMasked(lf.descriptor.label, value)) {
           await typeIntoInput(el, value);
         } else {
           setNativeValueRaw(el, value);
@@ -270,7 +321,7 @@ export async function applyValues(
       filled += 1;
       markField(lf.el, values[key]?.source || "profile");
     } else {
-      skipped.push(lf.descriptor.label || lf.descriptor.name || key);
+      skipped.push(label);
     }
     await sleep(90);
   }
@@ -281,6 +332,7 @@ export async function applyValues(
  * since their selected value lives outside the element. */
 export function isBlankField(el: HTMLElement): boolean {
   if (el.hasAttribute("data-jobbot-filled")) return false;
+  if (isChoiceGroup(el)) return !choiceItems(el).some(isChoiceSelected);
   if (el instanceof HTMLInputElement && (el.type === "checkbox" || el.type === "radio")) {
     const name = el.name;
     const group = name
@@ -300,6 +352,28 @@ export function findResumeInput(): HTMLInputElement | null {
   const inputs = deepQueryAll<HTMLInputElement>('input[type="file"]').filter((el) => !el.disabled);
   if (inputs.length === 1) return inputs[0];
   return inputs.find((el) => isResumeUploadTarget(el)) ?? null;
+}
+
+// A file already listed by the upload widget: Workday's uploaded-file row, or any
+// widget showing the file's name ("cory-stagg.pdf"). "(.pdf, .docx)" hints don't count.
+const UPLOADED_MARKERS =
+  '[data-automation-id*="file-upload-item" i], [data-automation-id*="file-upload-success" i], ' +
+  '[data-automation-id*="delete-file" i], [data-automation-id="fileName"]';
+const UPLOADED_FILE_RE = /[\p{L}\p{N}](?:[\p{L}\p{N}_\-() ]*[\p{L}\p{N}_\-)])?\.(pdf|docx?|rtf|odt|txt|pages)\b/iu;
+
+/** The resume slot already holds a file (uploaded by the member, or on an earlier step,
+ * e.g. Workday's "Autofill with Resume"). Uploading again would add a second copy. */
+export function resumeAlreadyUploaded(input: HTMLInputElement): boolean {
+  if (input.files?.length) return true;
+  // The upload's own section: the largest nearby ancestor holding no other upload.
+  let section: HTMLElement | null = null;
+  for (let node = input.parentElement, depth = 0; node && depth < 5; node = node.parentElement, depth += 1) {
+    if (node.querySelectorAll('input[type="file"]').length > 1) break;
+    section = node;
+  }
+  if (!section) return false;
+  if (section.querySelector(UPLOADED_MARKERS)) return true;
+  return UPLOADED_FILE_RE.test(section.innerText || "");
 }
 
 /** Attach a resume file (as data URL) to this frame's resume upload field. */

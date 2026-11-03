@@ -1,4 +1,4 @@
-import { applyValues, attachResume, findResumeInput, isBlankField } from "../autofill/apply";
+import { applyValues, attachResume, findResumeInput, isBlankField, resumeAlreadyUploaded } from "../autofill/apply";
 import { discoverFields } from "../autofill/fields";
 import { markField } from "../autofill/highlight";
 import { bg } from "../lib/messaging";
@@ -26,6 +26,7 @@ export async function runFillInThisFrame(
   filled: number;
   skipped: number;
   attachedResume: boolean;
+  keptResume: boolean;
   questions: ApplicationQuestion[];
   nextLabel?: string;
   error?: string;
@@ -35,6 +36,7 @@ export async function runFillInThisFrame(
   let filled = 0;
   let skipped = 0;
   let attached = false;
+  let kept = false;
 
   for (let pass = 0; pass < MAX_PASSES; pass += 1) {
     if (pass > 0) await new Promise((r) => setTimeout(r, REVEAL_WAIT_MS));
@@ -52,7 +54,14 @@ export async function runFillInThisFrame(
       resumeVariantId,
     );
     if (!r.ok) {
-      return { filled, skipped: skipped + live.length, attachedResume: attached, questions, error: r.error };
+      return {
+        filled,
+        skipped: skipped + live.length,
+        attachedResume: attached,
+        keptResume: kept,
+        questions,
+        error: r.error,
+      };
     }
     const result = await applyValues(live, r.data.values, r.data.answers, (p) => {
       chrome.runtime
@@ -68,7 +77,12 @@ export async function runFillInThisFrame(
       questions.push(question);
     }
 
-    if (r.data.resume && !attached) {
+    if (r.data.resume && !attached && !kept) {
+      // Workday keeps the resume from "Autofill with Resume"; members upload their own too.
+      const input = findResumeInput();
+      kept = !!input && resumeAlreadyUploaded(input);
+    }
+    if (r.data.resume && !attached && !kept) {
       const file = await bg.fetchResume(r.data.resume.download_path);
       if (file.ok) {
         attached = await attachResume(file.data.dataUrl, file.data.filename);
@@ -78,5 +92,5 @@ export async function runFillInThisFrame(
   }
   const next = findNextControl();
   const nextLabel = next ? (next.innerText || (next as HTMLInputElement).value || "Next").trim() : undefined;
-  return { filled, skipped, attachedResume: attached, questions, nextLabel };
+  return { filled, skipped, attachedResume: attached, keptResume: kept, questions, nextLabel };
 }

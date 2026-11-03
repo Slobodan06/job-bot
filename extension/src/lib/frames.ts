@@ -22,6 +22,8 @@ export type FrameToBg =
       filled: number;
       skipped: number;
       attachedResume: boolean;
+      // The upload already held a resume, so none was added.
+      keptResume?: boolean;
       questions: ApplicationQuestion[];
       // Label of a "Next"/"Continue" control after filling, for the Proceed prompt.
       nextLabel?: string;
@@ -53,6 +55,8 @@ export type BgToFrame =
       filled: number;
       skipped: number;
       attachedResume: boolean;
+      // The upload already held a resume, so none was added.
+      keptResume?: boolean;
       questions: ApplicationQuestion[];
       // Label of a "Next"/"Continue" control after filling, for the Proceed prompt.
       nextLabel?: string;

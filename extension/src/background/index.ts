@@ -123,12 +123,27 @@ const framesByTab = new Map<number, Map<number, DetectedJob | null>>();
 const formFramesByTab = new Map<number, Map<number, { url: string; title: string }>>();
 const lastPushedSignature = new Map<number, string>();
 
-function bestJobForTab(tabId: number): DetectedJob | null {
+// Apply-flow URLs (Workday's /apply/..., Lever's /apply, Ashby's /application, iCIMS
+// mode=apply, Taleo jobapply.ftl, sign-in/registration steps): the page is the form,
+// and any "description" read off it is the form's own text, not the posting.
+const APPLY_URL_RE =
+  /\/(apply|application|applymanually|autofillwithresume|usemylastapplication|oneclick-ui|jobapply(?:\.ftl)?|login|signin|sign-in|register|createaccount)(?=[/?#.]|$)|[?&](mode=apply|career_ns=job_application)/i;
+// A form page with less text than this has no posting worth tailoring against.
+const MIN_POSTING_ON_FORM_CHARS = 600;
+
+/** The job is really an application form, not a posting to tailor against. */
+function isFormPageJob(job: DetectedJob, hasForm: boolean): boolean {
+  return APPLY_URL_RE.test(job.url) || (hasForm && job.text.length < MIN_POSTING_ON_FORM_CHARS);
+}
+
+function bestJobForTab(tabId: number, postingsOnly = false): DetectedJob | null {
   const frames = framesByTab.get(tabId);
   if (!frames) return null;
+  const forms = formFramesByTab.get(tabId);
   let best: DetectedJob | null = null;
   for (const [frameId, job] of frames) {
     if (!job) continue;
+    if (postingsOnly && isFormPageJob(job, !!forms?.has(frameId))) continue;
     if (!best || job.text.length > best.text.length || (frameId === 0 && job.text.length === best.text.length)) {
       best = job;
     }
@@ -156,16 +171,35 @@ async function pruneDeadFrames(tabId: number): Promise<void> {
   }
 }
 
-/** What to show on a form step that has no posting of its own: the job this tab was
- * just on (posting on a careers site, form on the ATS), else the form page itself. */
-async function standInJob(tabId: number): Promise<DetectedJob | null> {
+/**
+ * The job this tab is about. A posting on the page wins. On an application form with
+ * no posting of its own (the description on a careers site, the form on the ATS; or
+ * Workday's /apply steps) it is the posting this tab, or the tab that opened it, was
+ * just on, so the resume is tailored to the real description, never the form's text.
+ */
+async function jobForTab(tabId: number): Promise<DetectedJob | null> {
+  const posting = bestJobForTab(tabId, true);
+  if (posting) return posting;
+  const formJob = bestJobForTab(tabId);
   const forms = formFramesByTab.get(tabId);
-  if (!forms?.size) return null;
+  if (!formJob && !forms?.size) return null;
   const st = await getTracking(tabId);
   if (st.lastJob && st.lastJobAt && Date.now() - st.lastJobAt < LAST_JOB_TTL_MS) return st.lastJob;
-  const page = forms.get(0) ?? forms.values().next().value!;
+  // No posting seen: keep the title, drop the form text, and key it by the posting URL
+  // so a resume already tailored on the posting (seen earlier) is still found.
+  if (formJob) return { ...formJob, url: postingUrl(formJob.url), text: "" };
+  const page = forms!.get(0) ?? forms!.values().next().value!;
   return fallbackJob(page.url, page.title);
 }
+
+// The application form often opens in a new tab: it inherits the posting.
+chrome.webNavigation.onCreatedNavigationTarget.addListener(({ sourceTabId, tabId }) => {
+  void getTracking(sourceTabId).then((src) => {
+    if (src.lastJob && src.lastJobAt && Date.now() - src.lastJobAt < LAST_JOB_TTL_MS) {
+      void updateTracking(tabId, () => ({ lastJob: src.lastJob, lastJobAt: src.lastJobAt }));
+    }
+  });
+});
 
 // A new top-level document means every previously reported frame is gone.
 chrome.webNavigation.onCommitted.addListener(({ tabId, frameId }) => {
@@ -216,8 +250,8 @@ const EMPTY_TRACKING: TabTracking = {
   armedAt: null,
   armedJob: null,
 };
-// A remembered job only stands in for the current page if it's this fresh and
-// from the same site — otherwise it's probably a different job seen earlier.
+// A remembered posting only stands in for a form page if it's this fresh —
+// otherwise it's probably a different job seen earlier.
 const LAST_JOB_TTL_MS = 30 * 60 * 1000;
 
 const trackingKey = (tabId: number) => `track:${tabId}`;
@@ -269,14 +303,6 @@ function notifyTopFrame(tabId: number, ok: boolean, message: string): void {
   pushToTopFrame(tabId, { type: "track:recorded", ok, message });
 }
 
-function sameSite(a: string, b: string): boolean {
-  try {
-    return new URL(a).hostname === new URL(b).hostname;
-  } catch {
-    return false;
-  }
-}
-
 async function armTracking(
   tabId: number,
   pageUrl: string,
@@ -284,19 +310,12 @@ async function armTracking(
   clickedFrameJob: DetectedJob | null,
 ): Promise<void> {
   await pruneDeadFrames(tabId);
-  const current = bestJobForTab(tabId);
-  const st = await updateTracking(tabId, (cur) => {
-    const recentLast =
-      cur.lastJob && cur.lastJobAt && Date.now() - cur.lastJobAt < LAST_JOB_TTL_MS && sameSite(cur.lastJob.url, pageUrl)
-        ? cur.lastJob
-        : null;
-    return {
-      armedAt: Date.now(),
-      // Most trustworthy first: what the live frames of this page show, then what the
-      // frame holding the Submit button sees itself, then a recent same-site memory.
-      armedJob: current || clickedFrameJob || recentLast || fallbackJob(pageUrl, pageTitle),
-    };
-  });
+  // The same job the overlay shows: the posting, even when the form is elsewhere.
+  const current = await jobForTab(tabId);
+  const st = await updateTracking(tabId, () => ({
+    armedAt: Date.now(),
+    armedJob: current || clickedFrameJob || fallbackJob(pageUrl, pageTitle),
+  }));
   // No frameId → every frame of the tab starts watching for the confirmation.
   chrome.tabs
     .sendMessage(tabId, { type: "track:armed", until: (st.armedAt ?? 0) + ARM_TTL_MS } satisfies BgToFrame)
@@ -373,10 +392,10 @@ function handleFrameMessage(req: FrameToBg, sender: chrome.runtime.MessageSender
     if (req.hasForm) forms.set(frameId, req.page);
     else forms.delete(frameId);
     void pruneDeadFrames(tabId).then(async () => {
-      const best = bestJobForTab(tabId);
-      // Remembered past navigation: the confirmation page rarely looks like a job.
-      if (best) void updateTracking(tabId, () => ({ lastJob: best, lastJobAt: Date.now() }));
-      const shown = best ?? (await standInJob(tabId));
+      const posting = bestJobForTab(tabId, true);
+      // Remembered past navigation: the form and the confirmation rarely carry the posting.
+      if (posting) await updateTracking(tabId, () => ({ lastJob: posting, lastJobAt: Date.now() }));
+      const shown = await jobForTab(tabId);
       const sig = shown ? `${shown.url}|${shown.job_title}|${shown.text.length}` : "";
       if (sig !== lastPushedSignature.get(tabId)) {
         lastPushedSignature.set(tabId, sig);
@@ -400,6 +419,7 @@ function handleFrameMessage(req: FrameToBg, sender: chrome.runtime.MessageSender
       filled: req.filled,
       skipped: req.skipped,
       attachedResume: req.attachedResume,
+      keptResume: req.keptResume,
       questions: req.questions,
       nextLabel: req.nextLabel,
       error: req.error,

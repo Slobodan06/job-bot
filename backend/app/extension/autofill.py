@@ -54,6 +54,12 @@ _FIELD_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("linkedin", re.compile(r"linkedin", re.I)),
     ("github", re.compile(r"github", re.I)),
     ("portfolio", re.compile(r"portfolio|personal\s*(web)?site|\bwebsite\b|\bblog\b", re.I)),
+    # Where the candidate lives, as one answer ("Location (City)", "Current location"),
+    # usually a search-as-you-type picker. Not an office or job-site preference.
+    ("location", re.compile(
+        r"(?s)^(?!.*\b(prefer\w*|desired|office|which|willing|open\s+to|relocat\w*|work\s+location)\b)"
+        r".*(\blocation\b|where\s+(are\s+you|do\s+you)\s+(currently\s+)?(located|based|live|reside)|"
+        r"current\s+(residence|city))", re.I)),
     ("city", re.compile(r"\bcity\b|\btown\b", re.I)),
     ("state", re.compile(r"\bstate\b|\bprovince\b|\bregion\b", re.I)),
     ("postal_code", re.compile(r"\b(zip|postal)\s*code\b|\bpostcode\b", re.I)),
@@ -250,6 +256,15 @@ def _pick_option(value: str, options: list[str]) -> str:
     return ""
 
 
+def _pick_location_option(value: str, options: list[str]) -> str:
+    """The option naming the candidate's city ("Austin, TX" for "Austin, Texas, United States")."""
+    city = value.split(",")[0].strip().lower()
+    for opt in options:
+        if re.search(rf"(^|\W){re.escape(city)}($|\W)", opt.lower()):
+            return opt
+    return ""
+
+
 _DEMOGRAPHIC_KEYS = frozenset({"gender", "hispanic_latino", "race_ethnicity", "veteran_status", "disability_status"})
 # Answered by meaning, since every form words these differently.
 _YES_NO_DEMOGRAPHICS = frozenset({"hispanic_latino", "veteran_status", "disability_status"})
@@ -369,6 +384,10 @@ def resolve_deterministic_values(
     put("last_name", last, "profile" if profile.get("last_name") else "resume")
     put("full_name", full_name, "resume")
     put("phone", profile.get("phone"), "profile")
+    if profile.get("city"):
+        put("location", ", ".join(
+            str(profile[k]).strip() for k in ("city", "state", "country") if str(profile.get(k) or "").strip()
+        ), "profile")
     put("password", profile.get("application_password"), "profile")
     for k in ("phone_country_code", "phone_device_type",
               "address", "address_line2", "city", "state", "postal_code", "country", "pronouns",
@@ -413,6 +432,8 @@ def resolve_deterministic_values(
         if options:
             if canonical in _DEMOGRAPHIC_KEYS:
                 value = _pick_demographic_option(canonical, value, options)
+            elif canonical == "location":
+                value = _pick_location_option(value, options)
             else:
                 value = _pick_option(value, options)
             if not value:

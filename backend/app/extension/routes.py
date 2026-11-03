@@ -269,7 +269,10 @@ async def tailor_for_job(
 
     text = _job_text(body.job)
     if len(text) < 40:
-        raise HTTPException(status_code=400, detail="Not enough job text to tailor against.")
+        raise HTTPException(status_code=400, detail=(
+                "JobBot can't see this job's description. Open the job posting, "
+                "click Apply from there, then click Auto-fill."
+            ),)
 
     try:
         result = await build_fresh_tailored_resume(

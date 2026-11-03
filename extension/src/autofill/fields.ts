@@ -60,7 +60,87 @@ function optionsFor(el: HTMLElement): string[] {
 // at all — only an ARIA role gives them away.
 const CUSTOM_DROPDOWN_SELECTOR = '[role="combobox"], [aria-haspopup="listbox"]';
 
+// Choice widgets with no native inputs: Yes/No button pairs ("Are you legally
+// authorized to work...? [Yes] [No]") and role="radiogroup" sets of role="radio" items.
+const CHOICE_ATTR = "data-jobbot-choice";
+const BUTTONISH = 'button:not([type="submit"]), [role="button"]';
+const YES_RE = /^yes$/i;
+const NO_RE = /^no$/i;
+
+const textOf = (el: HTMLElement) => (el.innerText || el.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim();
+
+export const isChoiceGroup = (el: HTMLElement) => el.hasAttribute(CHOICE_ATTR);
+
+export function choiceItems(group: HTMLElement): HTMLElement[] {
+  const selector = group.getAttribute("role") === "radiogroup" ? '[role="radio"]' : BUTTONISH;
+  return Array.from(group.querySelectorAll<HTMLElement>(selector)).filter(isVisible);
+}
+
+const SELECTED_CLASS_RE = /(^|[\s_-])(active|selected|checked)([\s_-]|$)/i;
+
+export function isChoiceSelected(item: HTMLElement): boolean {
+  return (
+    ["aria-checked", "aria-pressed", "aria-selected"].some((a) => item.getAttribute(a) === "true") ||
+    /^(checked|on|active)$/i.test(item.getAttribute("data-state") || "") ||
+    SELECTED_CLASS_RE.test(typeof item.className === "string" ? item.className : "")
+  );
+}
+
+function findChoiceGroups(root: ParentNode): HTMLElement[] {
+  const out = new Set<HTMLElement>();
+  for (const g of deepQueryAll<HTMLElement>('[role="radiogroup"]', root)) {
+    const nativeRadios = Array.from(g.querySelectorAll<HTMLElement>('input[type="radio"]')).filter(isVisible);
+    if (!nativeRadios.length && g.querySelector('[role="radio"]')) out.add(g);
+  }
+  for (const b of deepQueryAll<HTMLElement>(BUTTONISH, root)) {
+    if (!YES_RE.test(textOf(b)) || !isVisible(b)) continue;
+    // The smallest ancestor holding both answers: the Yes/No pair, nothing more.
+    let node = b.parentElement;
+    for (let depth = 0; depth < 3 && node; depth += 1, node = node.parentElement) {
+      const items = Array.from(node.querySelectorAll<HTMLElement>(BUTTONISH)).filter(isVisible);
+      if (items.length > 4) break;
+      if (items.some((i) => NO_RE.test(textOf(i)))) {
+        out.add(node);
+        break;
+      }
+    }
+  }
+  return Array.from(out);
+}
+
+/** The question a choice group answers: its ARIA label, else the text just above it. */
+function questionFor(group: HTMLElement): string {
+  const own = labelFor(group) || group.getAttribute("aria-label") || "";
+  if (own && !/^(yes|no)\b/i.test(own)) return own;
+  for (let node: HTMLElement | null = group, depth = 0; node && depth < 4; node = node.parentElement, depth += 1) {
+    for (let sib = node.previousElementSibling as HTMLElement | null; sib; sib = sib.previousElementSibling as HTMLElement | null) {
+      const text = (sib.innerText || "").trim();
+      if (text) return text.length <= 400 ? text : "";
+    }
+  }
+  return "";
+}
+
+/** Styled radios and checkboxes hide the real input and show only its label. */
+function hasVisibleLabel(el: HTMLElement, type: string): boolean {
+  if (type !== "radio" && type !== "checkbox") return false;
+  const id = el.getAttribute("id");
+  const label =
+    (id ? rootOf(el).querySelector<HTMLElement>(`label[for="${CSS.escape(id)}"]`) : null) ||
+    el.closest<HTMLElement>("label");
+  return !!label && isVisible(label);
+}
+
 let counter = 0;
+
+function keyFor(el: HTMLElement): string {
+  let key = el.dataset.jobbotKey;
+  if (!key) {
+    key = `jb${counter++}`;
+    el.dataset.jobbotKey = key;
+  }
+  return key;
+}
 
 export function discoverFields(root: ParentNode = document): LiveField[] {
   const out: LiveField[] = [];
@@ -82,22 +162,17 @@ export function discoverFields(root: ParentNode = document): LiveField[] {
     if (["hidden", "submit", "button", "reset", "image", "search", "file"].includes(type)) continue;
     if (el instanceof HTMLInputElement && el.disabled) continue;
     if (!isFormEl && el.getAttribute("aria-disabled") === "true") continue;
-    if (!isVisible(el)) continue;
+    if (!isVisible(el) && !hasVisibleLabel(el, type)) continue;
     if (type === "radio") {
       const name = el.getAttribute("name") || "";
       if (seenRadioNames.has(name)) continue;
       seenRadioNames.add(name);
     }
-    let key = el.dataset.jobbotKey;
-    if (!key) {
-      key = `jb${counter++}`;
-      el.dataset.jobbotKey = key;
-    }
     const group = fieldGroup(el);
     out.push({
       el,
       descriptor: {
-        key,
+        key: keyFor(el),
         label: labelFor(el).slice(0, 500),
         name: el.getAttribute("name") || "",
         id: el.getAttribute("id") || "",
@@ -108,6 +183,29 @@ export function discoverFields(root: ParentNode = document): LiveField[] {
         required:
           el.hasAttribute("required") || el.getAttribute("aria-required") === "true",
         options: optionsFor(el),
+        group_kind: group.kind,
+        group_index: group.index,
+      },
+    });
+  }
+  for (const el of findChoiceGroups(root)) {
+    if (!isVisible(el)) continue;
+    el.setAttribute(CHOICE_ATTR, "1");
+    const group = fieldGroup(el);
+    const question = questionFor(el);
+    out.push({
+      el,
+      descriptor: {
+        key: keyFor(el),
+        label: question.slice(0, 500),
+        name: "",
+        id: el.getAttribute("id") || "",
+        type: "radio",
+        placeholder: "",
+        autocomplete: "",
+        aria_label: el.getAttribute("aria-label") || "",
+        required: el.getAttribute("aria-required") === "true" || /\*\s*$/.test(question),
+        options: choiceItems(el).map(textOf).filter(Boolean),
         group_kind: group.kind,
         group_index: group.index,
       },
