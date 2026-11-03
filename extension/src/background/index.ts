@@ -20,7 +20,11 @@ async function setToken(token: string | null, email: string | null): Promise<voi
 }
 
 class HttpError extends Error {
-  constructor(public status: number, message: string) {
+  constructor(
+    public status: number,
+    message: string,
+    public code?: string,
+  ) {
     super(message);
   }
 }
@@ -50,13 +54,19 @@ async function api<T>(path: string, init: RequestInit = {}, auth = true): Promis
   }
   if (!res.ok) {
     let detail = res.statusText;
+    let code: string | undefined;
     try {
       const j = await res.json();
       if (typeof j?.detail === "string") detail = j.detail;
+      // Structured refusals ({code, message}), e.g. a hybrid / on-site job.
+      else if (typeof j?.detail?.message === "string") {
+        detail = j.detail.message;
+        code = typeof j.detail.code === "string" ? j.detail.code : undefined;
+      }
     } catch {
       /* ignore */
     }
-    throw new HttpError(res.status, detail);
+    throw new HttpError(res.status, detail, code);
   }
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
@@ -654,7 +664,7 @@ async function handle(req: BgRequest, sender: chrome.runtime.MessageSender): Pro
     }
   } catch (e) {
     const err = e as HttpError;
-    return { ok: false, error: err.message || "Request failed", status: err.status };
+    return { ok: false, error: err.message || "Request failed", status: err.status, code: err.code };
   }
 }
 

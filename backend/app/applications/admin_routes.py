@@ -94,17 +94,20 @@ def _scope(member_id: str | None, visible: Visible) -> dict[str, Any]:
     return {} if visible is None else {"user_id": {"$in": list(visible)}}
 
 
-def _with_day(base: dict[str, Any], day: str | None, tz: str | None) -> dict[str, Any]:
-    """Narrow a filter to applications applied on one local calendar day."""
-    if not day:
-        return base
+def _with_day(
+    base: dict[str, Any],
+    day: str | None,
+    tz: str | None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> dict[str, Any]:
+    """Narrow a filter to applications applied on one local calendar day (the chart's
+    selection) and/or within a date range (the tracker's date filter)."""
     try:
-        parsed = daily.parse_day(day)
+        scoped = daily.with_applied_dates(base, date_from=day, date_to=day, tz=tz)
+        return daily.with_applied_dates(scoped, date_from=date_from, date_to=date_to, tz=tz)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail="day must be YYYY-MM-DD.") from exc
-    start, end = daily.day_bounds_utc(parsed, daily.resolve_tz(tz))
-    # $and keeps this $or from colliding with the search box's $or.
-    return {**base, "$and": [*base.get("$and", []), daily.applied_between_filter(start, end)]}
+        raise HTTPException(status_code=400, detail="Dates must be YYYY-MM-DD.") from exc
 
 
 async def _member(member_id: str, visible: Visible) -> dict:
@@ -185,9 +188,11 @@ async def list_member_applications(
     cursor: str | None = Query(default=None),
     day: str | None = Query(default=None, description="Only jobs applied on this day (YYYY-MM-DD)"),
     tz: str | None = Query(default=None, description="IANA time zone for `day`, e.g. Europe/Belgrade"),
+    date_from: str | None = Query(default=None, description="Applied on or after this day (YYYY-MM-DD)"),
+    date_to: str | None = Query(default=None, description="Applied on or before this day (YYYY-MM-DD)"),
     visible: Visible = Depends(visible_members),
 ) -> MemberApplicationListResponse:
-    base = _with_day(_scope(member_id, visible), day, tz)
+    base = _with_day(_scope(member_id, visible), day, tz, date_from, date_to)
     query = service.build_list_query(base, status=status, q=q, cursor=cursor)
     docs, next_cursor = await service.list_page(query, limit)
     members = await _members_by_id({d["user_id"] for d in docs})
@@ -205,9 +210,13 @@ async def member_application_stats(
     member_id: str | None = Query(default=None),
     day: str | None = Query(default=None),
     tz: str | None = Query(default=None),
+    date_from: str | None = Query(default=None),
+    date_to: str | None = Query(default=None),
     visible: Visible = Depends(visible_members),
 ) -> ApplicationStatsResponse:
-    total, by_status = await service.status_counts(_with_day(_scope(member_id, visible), day, tz))
+    total, by_status = await service.status_counts(
+        _with_day(_scope(member_id, visible), day, tz, date_from, date_to)
+    )
     return ApplicationStatsResponse(total=total, by_status=by_status)
 
 

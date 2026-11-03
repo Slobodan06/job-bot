@@ -43,14 +43,19 @@ async function typeIntoInput(
   el.dispatchEvent(new Event("blur", { bubbles: true }));
 }
 
+/** An answer's own name: the first line of its label, without the explanation under it
+ * ("Hispanic or Latino" + "A person of Cuban, Mexican, ... origin"). */
 function labelTextOf(input: HTMLInputElement, root: ParentNode): string {
+  const label =
+    (input.id ? root.querySelector<HTMLElement>(`label[for="${CSS.escape(input.id)}"]`) : null) ||
+    input.closest<HTMLElement>("label");
+  const text = label ? label.innerText || label.textContent || "" : input.getAttribute("aria-label") || input.value || "";
   return (
-    (input.id && root.querySelector(`label[for="${CSS.escape(input.id)}"]`)?.textContent) ||
-    input.closest("label")?.textContent ||
-    input.getAttribute("aria-label") ||
-    input.value ||
-    ""
-  ).trim();
+    text
+      .split("\n")
+      .map((t) => t.trim())
+      .find(Boolean) || ""
+  );
 }
 
 function check(input: HTMLInputElement): void {

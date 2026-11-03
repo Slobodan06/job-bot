@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { AUTOFILL_ENABLED, WEB_ORIGIN } from "../lib/env";
 import type { BgToFrame } from "../lib/frames";
-import { bg } from "../lib/messaging";
+import { bg, ONSITE_BLOCKED } from "../lib/messaging";
 import type { ApplicationQuestion, DetectedJob } from "../lib/types";
 
 type Phase = "idle" | "working" | "done" | "error";
@@ -178,6 +178,12 @@ export function Overlay({ job }: Props) {
         }
         setMsg("Tailoring your resume for this job — this can take a minute…");
         const t = await bg.tailor(job, job.job_title);
+        // Hybrid / on-site: stop here, nothing is filled or uploaded.
+        if (!t.ok && t.code === ONSITE_BLOCKED) {
+          setPhase("error");
+          setMsg(t.error);
+          return;
+        }
         variantRef.current = t.ok ? t.data.resume.variant_id : undefined;
         // Tailoring failing shouldn't lose the rest of the form: fill it and say so.
         if (!t.ok) totals.current.notes = t.error;

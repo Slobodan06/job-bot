@@ -60,6 +60,28 @@ def parse_day(value: str) -> date:
     return date.fromisoformat(value.strip())
 
 
+def with_applied_dates(
+    base: dict[str, Any],
+    *,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    tz: str | None = None,
+) -> dict[str, Any]:
+    """Narrow a filter to jobs applied from `date_from` through `date_to` (local calendar
+    days, both inclusive; either may be left open). Raises ValueError on a bad date."""
+    if not date_from and not date_to:
+        return base
+    zone = resolve_tz(tz)
+    first = parse_day(date_from) if date_from else None
+    last = parse_day(date_to) if date_to else None
+    if first and last and first > last:
+        first, last = last, first
+    start = day_bounds_utc(first, zone)[0] if first else datetime.min.replace(tzinfo=UTC)
+    end = day_bounds_utc(last, zone)[1] if last else datetime.max.replace(tzinfo=UTC)
+    # $and keeps this $or from colliding with the search box's $or.
+    return {**base, "$and": [*base.get("$and", []), applied_between_filter(start, end)]}
+
+
 def bucket_by_day(
     docs: Iterable[dict[str, Any]],
     *,

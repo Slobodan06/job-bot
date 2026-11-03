@@ -255,16 +255,25 @@ export const APPLICATION_STATUSES = [
   "withdrawn",
 ] as const;
 
+/** Applied-date filter: local calendar days (YYYY-MM-DD), both inclusive, either open. */
+export type DateRange = { date_from?: string; date_to?: string };
+
+/** Query string for tracker requests; dates are read in the viewer's own time zone. */
+function trackerQuery(params: Record<string, string | number | undefined | null>): string {
+  const qs = new URLSearchParams();
+  Object.entries(params).forEach(([k, v]) => v != null && v !== "" && qs.set(k, String(v)));
+  if ((qs.has("date_from") || qs.has("date_to") || qs.has("day")) && !qs.has("tz")) qs.set("tz", viewerTimeZone());
+  return qs.toString() ? `?${qs}` : "";
+}
+
 export const applicationsApi = {
-  list(params: { status?: string; q?: string; cursor?: string; limit?: number } = {}) {
-    const qs = new URLSearchParams();
-    Object.entries(params).forEach(([k, v]) => v != null && v !== "" && qs.set(k, String(v)));
-    return apiFetch<{ items: JobApplication[]; next_cursor: string | null }>(
-      `/api/applications${qs.toString() ? `?${qs}` : ""}`,
-    );
+  list(params: { status?: string; q?: string; cursor?: string; limit?: number } & DateRange = {}) {
+    return apiFetch<{ items: JobApplication[]; next_cursor: string | null }>(`/api/applications${trackerQuery(params)}`);
   },
-  stats() {
-    return apiFetch<{ total: number; by_status: Record<string, number> }>("/api/applications/stats");
+  stats(range: DateRange = {}) {
+    return apiFetch<{ total: number; by_status: Record<string, number> }>(
+      `/api/applications/stats${trackerQuery(range)}`,
+    );
   },
   get(id: string) {
     return apiFetch<JobApplication>(`/api/applications/${id}`);
@@ -316,8 +325,8 @@ type ApplicationStats = { total: number; by_status: Record<string, number> };
 
 /** What the tracker table needs — implemented for a member's own tracker and for the manager's view. */
 export type TrackerApi = {
-  list(params: { status?: string; q?: string; limit?: number }): Promise<ApplicationList>;
-  stats(): Promise<ApplicationStats>;
+  list(params: { status?: string; q?: string; limit?: number } & DateRange): Promise<ApplicationList>;
+  stats(range?: DateRange): Promise<ApplicationStats>;
   create(body: ApplicationInput): Promise<JobApplication>;
   update(id: string, patch: Partial<ApplicationInput>): Promise<JobApplication>;
   remove(id: string): Promise<void>;
@@ -349,17 +358,11 @@ export const viewerTimeZone = () => Intl.DateTimeFormat().resolvedOptions().time
  * `day` (YYYY-MM-DD, viewer's time zone) narrows list/stats to jobs applied that day.
  */
 export function adminApplicationsApi(memberId: string | null, day: string | null = null): TrackerApi {
-  const scope = (params: Record<string, string | number | undefined>) => {
-    const qs = new URLSearchParams();
-    const dayParams = day ? { day, tz: viewerTimeZone() } : {};
-    Object.entries({ ...params, ...dayParams, member_id: memberId ?? undefined }).forEach(
-      ([k, v]) => v != null && v !== "" && qs.set(k, String(v)),
-    );
-    return qs.toString() ? `?${qs}` : "";
-  };
+  const scope = (params: Record<string, string | number | undefined>) =>
+    trackerQuery({ ...params, day, member_id: memberId });
   return {
     list: (params) => apiFetch<ApplicationList>(`${ADMIN_APPS}${scope(params)}`),
-    stats: () => apiFetch<ApplicationStats>(`${ADMIN_APPS}/stats${scope({})}`),
+    stats: (range = {}) => apiFetch<ApplicationStats>(`${ADMIN_APPS}/stats${scope(range)}`),
     create(body) {
       if (!memberId) return Promise.reject(new Error("Pick a member first."));
       return apiFetch<JobApplication>(`${ADMIN_APPS}${scope({})}`, { method: "POST", body: JSON.stringify(body) });

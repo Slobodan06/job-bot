@@ -32,11 +32,48 @@ function labelFor(el: HTMLElement): string {
       .filter(Boolean);
     if (parts.length) return parts.join(" ").trim();
   }
-  // Nearest preceding heading/label-ish text within the field's group.
-  const group = el.closest("fieldset, .field, [class*='field'], [class*='question'], div");
-  const q = group?.querySelector("legend, label, [class*='label'], [class*='question']");
-  if (q && !q.contains(el)) return (q as HTMLElement).innerText.trim();
+  return nearbyLabel(el);
+}
+
+const LABELISH = "legend, label, [class*='label' i], [class*='question' i]";
+
+/** The closest label-ish text before the field. Its own wrapper often holds only the
+ * input (Lever's .application-field) with the label a level up, so look outward. */
+function nearbyLabel(el: HTMLElement): string {
+  for (let node = el.parentElement, depth = 0; node && depth < 4; node = node.parentElement, depth += 1) {
+    const before = Array.from(node.querySelectorAll<HTMLElement>(LABELISH)).filter(
+      (c) =>
+        !c.contains(el) &&
+        !c.querySelector("input, select, textarea") &&
+        (c.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0 &&
+        (c.innerText || "").trim(),
+    );
+    if (before.length) return before[before.length - 1].innerText.trim();
+  }
   return "";
+}
+
+/** An option's own name: the first line of its label, without the explanation under it
+ * ("Hispanic or Latino" + "A person of Cuban, Mexican, ... origin"). */
+const firstLine = (text: string) =>
+  text
+    .split("\n")
+    .map((t) => t.trim())
+    .find(Boolean) || "";
+
+/** Radios (and same-name checkboxes) are labelled by their answers; the question is
+ * the text above the whole set ("Race", "Are you legally authorized to work...?"). */
+function groupQuestion(el: HTMLInputElement): string {
+  const name = el.getAttribute("name");
+  const set = name
+    ? Array.from(rootOf(el).querySelectorAll<HTMLInputElement>(`input[name="${CSS.escape(name)}"]`))
+    : [el];
+  if (set.length < 2 && el.type !== "radio") return "";
+  let container = el.parentElement;
+  while (container && !set.every((input) => container!.contains(input))) container = container.parentElement;
+  // Step out of the answer's own <label> so the answers aren't read as the question.
+  while (container && container.closest("label")) container = container.closest("label")!.parentElement;
+  return container ? questionFor(container) : "";
 }
 
 function optionsFor(el: HTMLElement): string[] {
@@ -49,7 +86,7 @@ function optionsFor(el: HTMLElement): string[] {
   if (name && (el as HTMLInputElement).type === "radio") {
     const root = rootOf(el);
     return Array.from(root.querySelectorAll(`input[type="radio"][name="${CSS.escape(name)}"]`))
-      .map((r) => labelFor(r as HTMLElement))
+      .map((r) => firstLine(labelFor(r as HTMLElement)))
       .filter(Boolean);
   }
   return [];
@@ -108,9 +145,9 @@ function findChoiceGroups(root: ParentNode): HTMLElement[] {
   return Array.from(out);
 }
 
-/** The question a choice group answers: its ARIA label, else the text just above it. */
+/** The question a set of answers belongs to: its ARIA label, else the text just above it. */
 function questionFor(group: HTMLElement): string {
-  const own = labelFor(group) || group.getAttribute("aria-label") || "";
+  const own = group.hasAttribute("aria-labelledby") ? labelFor(group) : group.getAttribute("aria-label") || "";
   if (own && !/^(yes|no)\b/i.test(own)) return own;
   for (let node: HTMLElement | null = group, depth = 0; node && depth < 4; node = node.parentElement, depth += 1) {
     for (let sib = node.previousElementSibling as HTMLElement | null; sib; sib = sib.previousElementSibling as HTMLElement | null) {
@@ -118,7 +155,7 @@ function questionFor(group: HTMLElement): string {
       if (text) return text.length <= 400 ? text : "";
     }
   }
-  return "";
+  return nearbyLabel(group);
 }
 
 /** Styled radios and checkboxes hide the real input and show only its label. */
@@ -173,7 +210,9 @@ export function discoverFields(root: ParentNode = document): LiveField[] {
       el,
       descriptor: {
         key: keyFor(el),
-        label: labelFor(el).slice(0, 500),
+        label: (
+          (type === "radio" || type === "checkbox" ? groupQuestion(el as HTMLInputElement) : "") || labelFor(el)
+        ).slice(0, 500),
         name: el.getAttribute("name") || "",
         id: el.getAttribute("id") || "",
         type: el instanceof HTMLTextAreaElement ? "textarea" : type,

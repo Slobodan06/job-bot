@@ -57,7 +57,12 @@ export type BgRequest =
   | { type: "gmail:get-enabled" }
   | { type: "gmail:set-enabled"; enabled: boolean };
 
-export type BgResponse<T = unknown> = { ok: true; data: T } | { ok: false; error: string; status?: number };
+export type BgResponse<T = unknown> =
+  | { ok: true; data: T }
+  | { ok: false; error: string; status?: number; code?: string };
+
+/** The job is hybrid or on-site: JobBot doesn't apply to it. */
+export const ONSITE_BLOCKED = "onsite_role_blocked";
 
 export function sendToBackground<T = unknown>(req: BgRequest): Promise<BgResponse<T>> {
   return new Promise((resolve) => {

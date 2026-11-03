@@ -1,4 +1,5 @@
 import base64
+from dataclasses import asdict
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -43,6 +44,7 @@ from app.resume.store import (
     store_resume_variant,
 )
 from app.services.fresh_resume_builder import build_fresh_tailored_resume
+from app.services.job_filter import check_job_filter
 from app.services.pdf_resume import extract_jd_target_role_title
 from app.services.resume_evidence import analyze_job_description
 from app.services.tailor import extract_keywords
@@ -59,6 +61,32 @@ def _require_autofill_allowed(user: dict) -> None:
             status_code=403,
             detail="Auto-fill isn't turned on for your account. Ask the site owner to enable it on the Members page.",
         )
+
+
+ONSITE_BLOCKED = "onsite_role_blocked"
+
+
+def _require_remote_role(job: DetectedJob) -> None:
+    """Auto-fill applies to fully remote jobs only: a hybrid or on-site posting is
+    refused before any AI call, with the sentence from the posting that shows it."""
+    text = "\n".join(
+        part for part in (job.location and f"Location: {job.location}.", job.job_title, job.text) if part
+    )
+    reasons = [r for r in check_job_filter(text).reasons if r.category in ("hybrid", "onsite")]
+    if not reasons:
+        return
+    kind = "hybrid" if reasons[0].category == "hybrid" else "on-site"
+    raise HTTPException(
+        status_code=422,
+        detail={
+            "code": ONSITE_BLOCKED,
+            "message": (
+                f"Application blocked: this looks like a {kind} role, and JobBot only applies to "
+                f"fully remote jobs. From the posting: \u201c{reasons[0].evidence}\u201d"
+            ),
+            "reasons": [asdict(r) for r in reasons],
+        },
+    )
 
 
 def _job_text(job: DetectedJob) -> str:
@@ -151,6 +179,7 @@ async def autofill(
     user: dict = Depends(get_builder_user),
 ) -> AutofillResponse:
     _require_autofill_allowed(user)
+    _require_remote_role(body.job)
     # Bidders fill applications as their team member: that member's resume + profile.
     owner = await profile_owner(user)
     model = get_base_resume_model(owner)
@@ -234,6 +263,7 @@ async def tailor_for_job(
     user: dict = Depends(get_builder_user),
 ) -> TailorForJobResponse:
     _require_autofill_allowed(user)
+    _require_remote_role(body.job)
     # Own base resume, or (bidders) the assigned team member's — lock-checked.
     model = await base_resume_for(user)
     jh = job_hash(body.job.url)

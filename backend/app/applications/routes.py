@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from fastapi.responses import Response
 from pydantic import ValidationError
 
-from app.applications import service
+from app.applications import daily, service
 from app.applications.email_tracking import process_email_signals
 from app.applications.schemas import (
     ApplicationListResponse,
@@ -98,22 +98,40 @@ async def record_email_signals(
     return EmailSignalsResponse(**result)
 
 
+def _applied_between(base: dict, date_from: str | None, date_to: str | None, tz: str | None) -> dict:
+    try:
+        return daily.with_applied_dates(base, date_from=date_from, date_to=date_to, tz=tz)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Dates must be YYYY-MM-DD.") from exc
+
+
 @router.get("", response_model=ApplicationListResponse)
 async def list_applications(
     status: str | None = Query(default=None),
     q: str | None = Query(default=None, max_length=200),
     limit: int = Query(default=50, ge=1, le=200),
     cursor: str | None = Query(default=None),
+    date_from: str | None = Query(default=None, description="Applied on or after this day (YYYY-MM-DD)"),
+    date_to: str | None = Query(default=None, description="Applied on or before this day (YYYY-MM-DD)"),
+    tz: str | None = Query(default=None, description="IANA time zone for the dates, e.g. Europe/Belgrade"),
     user: dict = Depends(get_builder_user),
 ) -> ApplicationListResponse:
-    query = service.build_list_query({"user_id": user["_id"]}, status=status, q=q, cursor=cursor)
+    base = _applied_between({"user_id": user["_id"]}, date_from, date_to, tz)
+    query = service.build_list_query(base, status=status, q=q, cursor=cursor)
     docs, next_cursor = await service.list_page(query, limit)
     return ApplicationListResponse(items=[service.to_public(d) for d in docs], next_cursor=next_cursor)
 
 
 @router.get("/stats", response_model=ApplicationStatsResponse)
-async def application_stats(user: dict = Depends(get_builder_user)) -> ApplicationStatsResponse:
-    total, by_status = await service.status_counts({"user_id": user["_id"]})
+async def application_stats(
+    date_from: str | None = Query(default=None),
+    date_to: str | None = Query(default=None),
+    tz: str | None = Query(default=None),
+    user: dict = Depends(get_builder_user),
+) -> ApplicationStatsResponse:
+    total, by_status = await service.status_counts(
+        _applied_between({"user_id": user["_id"]}, date_from, date_to, tz)
+    )
     return ApplicationStatsResponse(total=total, by_status=by_status)
 
 

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from datetime import date
 from typing import Any
 
 from app.services.resume_model import ResumeModel, split_date_range
@@ -35,6 +36,10 @@ _NO = "no"
 _FIELD_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
     # About the interview, not a survey answer, even when it mentions a disability.
     ("free_text", re.compile(r"accommodat|special\s+(support|assistance|arrangement)", re.I)),
+    # The signature under a survey (Lever's disability form: eeo[disabilitySignature] /
+    # eeo[disabilitySignatureDate]) is the candidate's name and today's date, not an answer.
+    ("today_date", re.compile(r"signature\s*date|\bdate\s*(of\s*)?signature|^\s*today'?s\s+date\b", re.I)),
+    ("full_name", re.compile(r"signature", re.I)),
     # Demographic questions come first: their long wording often contains words the
     # generic rules below look for ("...United States", "state", "contact", ...).
     ("gender", re.compile(r"\bgender\b", re.I)),
@@ -84,6 +89,9 @@ _FIELD_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
         r"(previously|before)\s+work(ed)?\s+(for|at)|worked\s+(for|at)\s+.{0,20}\s+before|"
         r"former\s+employee", re.I)),
     ("has_drivers_license", re.compile(r"driver'?s?\s+licen[cs]e", re.I)),
+    ("lives_in_us", re.compile(
+        r"\b(live|reside|located|based)\s+in\s+the\s+(contiguous\s+|continental\s+)?(united\s+states|u\.?s\.?a?\.?)(?!\w)",
+        re.I)),
     ("work_authorized", re.compile(
         r"legally\s*(authoriz|entitl)|authoriz(ed|ation)\s*to\s*work|right\s*to\s*work|"
         r"work\s*authoriz", re.I)),
@@ -191,6 +199,11 @@ def _classify_education_group_field(field: dict[str, Any]) -> str:
     return ""
 
 
+# "If yes, how many years...?" depends on the answer above it: left for the member.
+_FOLLOW_UP_RE = re.compile(r"^\s*if\s+(yes|so|applicable|no)\b", re.I)
+_US_RE = re.compile(r"^(us|u\.s\.?|usa|u\.s\.a\.?|united states( of america)?|america)$", re.I)
+
+
 def classify_field(field: dict[str, Any]) -> str:
     group_kind = str(field.get("group_kind") or "")
     if group_kind == "experience":
@@ -213,9 +226,15 @@ def classify_field(field: dict[str, Any]) -> str:
     # happens to mention ("disability", "state", "email", ...).
     if (field.get("type") or "").lower() == "textarea" and len(str(field.get("label") or "")) > 40:
         return "free_text"
-    for key, pattern in _FIELD_RULES:
-        if pattern.search(text):
-            return key
+    label_text = str(field.get("label") or "")
+    if _FOLLOW_UP_RE.search(label_text):
+        return ""
+    # The visible question decides first; the field's name/id (e.g. Lever's
+    # "eeo[disabilitySignature]" on a plain "Name" box) only when the label says nothing.
+    for haystack in (label_text, text):
+        for key, pattern in _FIELD_RULES:
+            if pattern.search(haystack):
+                return key
     if len(str(field.get("label") or "")) > 12 and _FREE_TEXT_RE.search(str(field.get("label") or "")):
         return "free_text"
     if (field.get("type") or "").lower() == "textarea":
@@ -356,6 +375,7 @@ def resolve_deterministic_values(
     profile: dict[str, Any],
     model: ResumeModel | None,
     email: str,
+    today: date | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Return {field_key: {value, source, confidence}} for every field we can fill
     from the profile or resume alone. Free-text / unknown fields are left out."""
@@ -380,6 +400,10 @@ def resolve_deterministic_values(
     put("email", profile.get("email"), "profile")
     put("email", email, "account")
     put("consent", _YES, "profile")
+    put("today_date", (today or date.today()).strftime("%m/%d/%Y"), "profile")
+    country = str(profile.get("country") or "").strip()
+    if country:
+        put("lives_in_us", _YES if _US_RE.match(country) else _NO, "profile")
     put("first_name", first, "profile" if profile.get("first_name") else "resume")
     put("last_name", last, "profile" if profile.get("last_name") else "resume")
     put("full_name", full_name, "resume")
@@ -457,6 +481,10 @@ def unresolved_free_text_fields(
         if key in resolved:
             continue
         canonical = classify_field(field)
+        # A profile question left blank in the profile (salary, start date, ...) is the
+        # member's to answer, not something to have the AI guess.
+        if canonical and canonical != "free_text":
+            continue
         label = str(field.get("label") or "")
         if canonical == "free_text" or (
             (field.get("type") or "").lower() in ("textarea", "text")
