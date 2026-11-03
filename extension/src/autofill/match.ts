@@ -47,6 +47,13 @@ export function hasWords(text: string, words: string): boolean {
  * 0 no match. Options far longer than the answer are a wrapper around a whole list.
  */
 export function optionScore(optionText: string, value: string): number {
+  // Workday-style suffixes: "White (Not Hispanic or Latino) (United States of America)".
+  const bare = optionText.replace(/\([^)]*\)/g, " ").trim();
+  const full = textScore(optionText, value);
+  return bare && bare !== optionText.trim() ? Math.max(full, textScore(bare, value)) : full;
+}
+
+function textScore(optionText: string, value: string): number {
   const want = canonical(value);
   const text = canonical(optionText);
   if (!want || !text) return 0;
@@ -59,9 +66,49 @@ export function optionScore(optionText: string, value: string): number {
   return 0;
 }
 
+/** What to choose: the answer, other acceptable wordings of it, and whether it is a
+ * yes/no-type survey answer ("I am not a protected veteran") that may be matched by meaning. */
+export type Answer = { value: string; alternatives?: string[]; polar?: boolean };
+
+const NEGATIVE_RE = /\b(no|not|non|none)\b|n't\b/i;
+const PLACEHOLDER_RE = /^\s*(select|choose|--|please select)/i;
+const MIXED_RE = /\bbut\b/i;
+
+/** Index of the option for `answer`: by wording first (answer, then alternatives), then,
+ * for yes/no-type survey answers, the option saying the same thing ("I am not a veteran"
+ * for "I am not a protected veteran"), preferring the one sharing the most words. */
+export function pickAnswer(texts: string[], answer: string | Answer): number {
+  const a = typeof answer === "string" ? { value: answer } : answer;
+  for (const value of [a.value, ...(a.alternatives || [])]) {
+    // Loose word matches mislead on survey answers: "I am not a protected veteran"
+    // shares every word with "I am a veteran but not a protected veteran".
+    const i = pickOption(texts, value, !a.polar);
+    if (i >= 0) return i;
+  }
+  if (!a.polar || DECLINE_RE.test(a.value)) return -1;
+  const negative = NEGATIVE_RE.test(a.value);
+  const wantWords = new Set(normalize(a.value).split(" "));
+  let best = -1;
+  let bestOverlap = -1;
+  texts.forEach((t, i) => {
+    if (!t.trim() || t.length > 160 || PLACEHOLDER_RE.test(t) || DECLINE_RE.test(t)) return;
+    // "I am a veteran but not a protected veteran" says both things: never a match by meaning.
+    if (MIXED_RE.test(t)) return;
+    if (NEGATIVE_RE.test(t) !== negative) return;
+    const overlap = normalize(t)
+      .split(" ")
+      .filter((w) => wantWords.has(w)).length;
+    if (overlap > bestOverlap) {
+      best = i;
+      bestOverlap = overlap;
+    }
+  });
+  return best;
+}
+
 /** Index of the best option for `value`, or -1. A score-1 (close) match counts only
  * when it is the only one; "decline" answers take whatever the form calls declining. */
-export function pickOption(texts: string[], value: string): number {
+export function pickOption(texts: string[], value: string, allowClose = true): number {
   let best = -1;
   let bestScore = 0;
   let closeCount = 0;
@@ -74,7 +121,7 @@ export function pickOption(texts: string[], value: string): number {
       bestScore = score;
     }
   });
-  if (bestScore >= 2 || (bestScore === 1 && closeCount === 1)) return best;
+  if (bestScore >= 2 || (allowClose && bestScore === 1 && closeCount === 1)) return best;
   if (DECLINE_RE.test(value)) {
     const decline = texts.findIndex((t) => t.length < 120 && DECLINE_RE.test(t));
     if (decline >= 0) return decline;

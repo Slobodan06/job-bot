@@ -2,7 +2,7 @@ import { deepQueryAll, rootOf } from "../detectors/dom";
 import { isResumeUploadTarget } from "../content/submission";
 import { choiceItems, isChoiceGroup, isChoiceSelected, type LiveField } from "./fields";
 import { markField } from "./highlight";
-import { pickOption } from "./match";
+import { pickAnswer, type Answer } from "./match";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -70,13 +70,13 @@ function check(input: HTMLInputElement): void {
 }
 
 /** Match a radio group, or a multi-checkbox group sharing a `name`, by label text. */
-function fillGroupByLabel(el: HTMLInputElement, value: string): boolean {
+function fillGroupByLabel(el: HTMLInputElement, value: Answer): boolean {
   const name = el.getAttribute("name");
   const root = rootOf(el);
   const group = name
     ? Array.from(root.querySelectorAll<HTMLInputElement>(`input[name="${CSS.escape(name)}"]`))
     : [el];
-  const i = pickOption(group.map((input) => labelTextOf(input, root)), value);
+  const i = pickAnswer(group.map((input) => labelTextOf(input, root)), value);
   if (i < 0) return false;
   check(group[i]);
   return true;
@@ -92,7 +92,7 @@ function fillCheckbox(el: HTMLInputElement, value: string): boolean {
   const group = name
     ? Array.from(root.querySelectorAll<HTMLInputElement>(`input[type="checkbox"][name="${CSS.escape(name)}"]`))
     : [el];
-  if (group.length > 1) return fillGroupByLabel(el, value);
+  if (group.length > 1) return fillGroupByLabel(el, { value });
 
   const v = value.trim();
   if (!AFFIRMATIVE_RE.test(v) && !NEGATIVE_RE.test(v)) return false; // not a clear yes/no — leave for manual review
@@ -106,10 +106,10 @@ function fillCheckbox(el: HTMLInputElement, value: string): boolean {
   return true;
 }
 
-function fillSelect(el: HTMLSelectElement, value: string): boolean {
+function fillSelect(el: HTMLSelectElement, answer: Answer): boolean {
   const options = Array.from(el.options);
-  const exact = options.findIndex((o) => o.value.trim().toLowerCase() === value.trim().toLowerCase());
-  const i = exact >= 0 ? exact : pickOption(options.map((o) => o.text), value);
+  const exact = options.findIndex((o) => o.value.trim().toLowerCase() === answer.value.trim().toLowerCase());
+  const i = exact >= 0 ? exact : pickAnswer(options.map((o) => o.text), answer);
   if (i < 0) return false;
   setNativeValueRaw(el, options[i].value);
   el.dispatchEvent(new Event("change", { bubbles: true }));
@@ -117,9 +117,9 @@ function fillSelect(el: HTMLSelectElement, value: string): boolean {
 }
 
 /** Yes/No buttons and custom radio groups (role="radio" items, no native inputs). */
-function fillChoiceGroup(group: HTMLElement, value: string): boolean {
+function fillChoiceGroup(group: HTMLElement, value: Answer): boolean {
   const items = choiceItems(group);
-  const i = pickOption(items.map((b) => b.innerText || b.getAttribute("aria-label") || ""), value);
+  const i = pickAnswer(items.map((b) => b.innerText || b.getAttribute("aria-label") || ""), value);
   if (i < 0) return false;
   if (!isChoiceSelected(items[i])) dispatchClick(items[i]);
   return true;
@@ -181,16 +181,16 @@ const isShown = (el: HTMLElement) => {
 
 /** The open option list's best match for `value`. Only visible options count: every
  * other dropdown on the page keeps its (hidden) list in the DOM too. */
-function findOption(value: string, exclude?: HTMLElement): HTMLElement | null {
+function findOption(value: Answer, exclude?: HTMLElement): HTMLElement | null {
   const options = deepQueryAll<HTMLElement>(OPTION_SELECTOR).filter(
     (o) => isShown(o) && o !== exclude && !o.contains(exclude ?? null) && o.getAttribute("aria-disabled") !== "true",
   );
-  const i = pickOption(options.map((o) => o.innerText || o.textContent || ""), value);
+  const i = pickAnswer(options.map((o) => o.innerText || o.textContent || ""), value);
   return i >= 0 ? options[i] : null;
 }
 
 /** Suggestions load over the network: keep looking for a while. */
-async function waitForOption(value: string, exclude: HTMLElement, ms: number): Promise<HTMLElement | null> {
+async function waitForOption(value: Answer, exclude: HTMLElement, ms: number): Promise<HTMLElement | null> {
   for (let waited = 0; waited <= ms; waited += 250) {
     const option = findOption(value, exclude);
     if (option) return option;
@@ -207,19 +207,19 @@ function searchQueries(value: string): string[] {
 }
 
 /** Open a custom dropdown or a search-as-you-type picker and click the option for `value`. */
-async function fillCombobox(el: HTMLElement, value: string): Promise<boolean> {
+async function fillCombobox(el: HTMLElement, answer: Answer): Promise<boolean> {
   const typeable = el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement;
   dispatchClick(el);
   el.focus();
-  let option = await waitForOption(value, el, typeable ? 300 : 900);
+  let option = await waitForOption(answer, el, typeable ? 300 : 900);
   if (!option && typeable) {
-    for (const query of searchQueries(value)) {
+    for (const query of searchQueries(answer.value)) {
       await typeIntoInput(el, query, 25, false);
-      option = await waitForOption(value, el, 2500);
+      option = await waitForOption(answer, el, 2500);
       if (!option) {
         // Workday's pickers search on Enter rather than as you type.
         key(el, "Enter");
-        option = await waitForOption(value, el, 2000);
+        option = await waitForOption(answer, el, 2000);
       }
       if (option) break;
     }
@@ -239,7 +239,7 @@ async function fillCombobox(el: HTMLElement, value: string): Promise<boolean> {
  * then pick a matching suggestion if one shows up. Typed text stands if none does. */
 async function fillLookupInput(el: HTMLInputElement, value: string): Promise<void> {
   await typeIntoInput(el, searchQueries(value)[0], 25, false);
-  const option = await waitForOption(value, el, 1500);
+  const option = await waitForOption({ value }, el, 1500);
   if (option) {
     dispatchClick(option);
     await sleep(150);
@@ -247,6 +247,9 @@ async function fillLookupInput(el: HTMLInputElement, value: string): Promise<voi
   }
   await typeIntoInput(el, value, 10);
 }
+
+// Survey answers worded differently on every form, matched by meaning when wording fails.
+const POLAR_CANONICALS = new Set(["hispanic_latino", "veteran_status", "disability_status", "lives_in_us"]);
 
 export type FillResult = { filled: number; skipped: string[] };
 export type FillProgress = { label: string; index: number; total: number };
@@ -259,7 +262,7 @@ function looksMasked(descriptorLabel: string, value: string): boolean {
 
 export async function applyValues(
   fields: LiveField[],
-  values: Record<string, { value: string; source?: string }>,
+  values: Record<string, { value: string; source?: string; canonical?: string; alternatives?: string[] }>,
   answers: Record<string, string>,
   onProgress?: (progress: FillProgress) => void,
 ): Promise<FillResult> {
@@ -285,6 +288,11 @@ export async function applyValues(
     const lf = byKey.get(key)!;
     const el: HTMLElement = lf.el;
     const label = lf.descriptor.label || lf.descriptor.name || "field";
+    const answer: Answer = {
+      value,
+      alternatives: values[key]?.alternatives,
+      polar: POLAR_CANONICALS.has(values[key]?.canonical || ""),
+    };
     onProgress?.({ label, index: i, total: entries.length });
     el.scrollIntoView({ behavior: "smooth", block: "center" });
     await sleep(120);
@@ -292,15 +300,15 @@ export async function applyValues(
     let ok = false;
     try {
       if (isChoiceGroup(el)) {
-        ok = fillChoiceGroup(el, value);
+        ok = fillChoiceGroup(el, answer);
       } else if (el instanceof HTMLSelectElement) {
-        ok = fillSelect(el, value);
+        ok = fillSelect(el, answer);
       } else if (el instanceof HTMLInputElement && el.type === "checkbox") {
         ok = fillCheckbox(el, value);
       } else if (el instanceof HTMLInputElement && el.type === "radio") {
-        ok = fillGroupByLabel(el, value);
+        ok = fillGroupByLabel(el, answer);
       } else if (isComboboxTrigger(el)) {
-        ok = await fillCombobox(el, value);
+        ok = await fillCombobox(el, answer);
       } else if (el instanceof HTMLTextAreaElement) {
         setNativeValueRaw(el, value);
         el.dispatchEvent(new Event("change", { bubbles: true }));

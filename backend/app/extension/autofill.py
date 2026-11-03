@@ -305,7 +305,12 @@ def _pick_demographic_option(canonical: str, value: str, options: list[str]) -> 
     candidates = [opt for opt in options if not _DECLINE_RE.search(opt)]
     if canonical in _YES_NO_DEMOGRAPHICS:
         negative = bool(_NEGATIVE_RE.search(v))
-        return next((opt for opt in candidates if bool(_NEGATIVE_RE.search(opt)) == negative), "")
+        # "I am a veteran but not a protected veteran" says both things: never a match by meaning.
+        return next(
+            (opt for opt in candidates
+             if not re.search(r"\bbut\b", opt, re.I) and bool(_NEGATIVE_RE.search(opt)) == negative),
+            "",
+        )
     for opt in candidates:
         o = opt.strip().lower()
         if o and (re.search(rf"\b{re.escape(v)}\b", o) or re.search(rf"\b{re.escape(o)}\b", v)):
@@ -317,6 +322,16 @@ def _pick_demographic_option(canonical: str, value: str, options: list[str]) -> 
         if words and all(any(t.startswith(w) for t in re.findall(r"[a-z0-9]+", opt.lower())) for w in words)
     ]
     return close[0] if len(close) == 1 else ""
+
+
+def _ethnicity_answer(hispanic_latino: Any) -> str:
+    """The Hispanic/Latino answer worded the way an "Ethnicity" list often asks it."""
+    v = str(hispanic_latino or "").strip()
+    if not v:
+        return ""
+    if _DECLINE_RE.search(v):
+        return v
+    return "Not Hispanic or Latino" if _NEGATIVE_RE.search(v) else "Hispanic or Latino"
 
 
 def resume_file_stem(profile: dict[str, Any], model: ResumeModel | None) -> str:
@@ -419,6 +434,9 @@ def resolve_deterministic_values(
               "years_of_experience", "highest_education", "how_heard_about_us",
               "gender", "hispanic_latino", "race_ethnicity", "veteran_status", "disability_status"):
         put(k, profile.get(k), "profile")
+    # "Ethnicity" is sometimes only the Hispanic / Not Hispanic question.
+    ethnicity = _ethnicity_answer(profile.get("hispanic_latino"))
+    put("race_ethnicity", ethnicity, "profile")
     put("linkedin", profile.get("linkedin") or (contact.linkedin if contact else ""), "profile")
     put("github", profile.get("github") or (contact.github if contact else ""), "profile")
     put("portfolio",
@@ -452,10 +470,15 @@ def resolve_deterministic_values(
             value, source = entry
         if not value:
             continue
+        alternatives = [ethnicity] if canonical == "race_ethnicity" and ethnicity and ethnicity != value else []
         options = [str(o) for o in (field.get("options") or []) if str(o).strip()]
         if options:
             if canonical in _DEMOGRAPHIC_KEYS:
-                value = _pick_demographic_option(canonical, value, options)
+                value = next(
+                    (picked for v in (value, *alternatives) if (picked := _pick_demographic_option(canonical, v, options))),
+                    "",
+                )
+                alternatives = []
             elif canonical == "location":
                 value = _pick_location_option(value, options)
             else:
@@ -467,6 +490,8 @@ def resolve_deterministic_values(
             "value": value[:_MAX_TEXT],
             "source": source,
             "confidence": 0.95 if source in ("account", "profile") else 0.8,
+            # Dropdowns whose options only show once opened: other wordings to look for.
+            "alternatives": alternatives,
         }
     return out
 

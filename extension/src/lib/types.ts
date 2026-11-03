@@ -31,6 +31,9 @@ export type AutofillValue = {
   source: string;
   confidence: number;
   canonical: string;
+  /** Other wordings that answer the same question (e.g. "Not Hispanic or Latino" for an
+   * "Ethnicity" list that asks only that). */
+  alternatives?: string[];
 };
 
 export type ResumeAttachment = {

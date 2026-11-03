@@ -114,6 +114,7 @@ class AutofillValue(BaseModel):
     source: str
     confidence: float = 0.0
     canonical: str = ""
+    alternatives: list[str] = Field(default_factory=list)
 
 
 class ResumeAttachment(BaseModel):
