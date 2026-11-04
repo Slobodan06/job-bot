@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { WEB_ORIGIN } from "../lib/env";
-import { bg } from "../lib/messaging";
+import { bg, type SignInProblem } from "../lib/messaging";
 import type { Application, ApplicationStats } from "../lib/types";
 
 const wrap: React.CSSProperties = { padding: 14 };
@@ -17,8 +17,17 @@ const button: React.CSSProperties = {
   marginTop: 6,
 };
 
+const PROBLEM_TEXT: Record<SignInProblem, string> = {
+  no_tab: "No JobBot tab is open. Open JobBot, make sure you're signed in there, then press refresh.",
+  not_signed_in: "Your JobBot tab isn't signed in. Sign in there, then press refresh.",
+  rejected: "Your JobBot sign-in has expired. Sign out and sign in again on the website, then press refresh.",
+  blocked:
+    "Chrome didn't let the extension read your JobBot tab. Reload that tab, and check that the extension's Site access (chrome://extensions → Details) allows the JobBot site, then press refresh.",
+};
+
 export function Popup() {
   const [email, setEmail] = useState<string | null>(null);
+  const [problem, setProblem] = useState<SignInProblem | null>(null);
   const [loading, setLoading] = useState(true);
   const [apps, setApps] = useState<Application[]>([]);
   const [stats, setStats] = useState<ApplicationStats | null>(null);
@@ -27,7 +36,9 @@ export function Popup() {
   const load = async () => {
     const auth = await bg.authGet();
     const signedIn = auth.ok && !!auth.data.token;
-    setEmail(signedIn ? auth.data.email : null);
+    // A sign-in saved without its email still counts as signed in.
+    setEmail(signedIn ? auth.data.email || "your account" : null);
+    setProblem(auth.ok ? auth.data.problem || null : null);
     setLoading(false);
     if (signedIn) {
       const [a, s, g] = await Promise.all([bg.applications(15), bg.stats(), bg.gmailEnabled()]);
@@ -59,6 +70,12 @@ export function Popup() {
         >
           I've signed in — refresh
         </button>
+        {problem && (
+          <p style={{ margin: "10px 0 0", color: "#ffa94d", fontSize: 12, lineHeight: 1.5 }}>{PROBLEM_TEXT[problem]}</p>
+        )}
+        <p style={{ margin: "8px 0 0", color: "#868e96", fontSize: 11, lineHeight: 1.4 }}>
+          This extension works with <b>{WEB_ORIGIN}</b>. Signing in on any other address won't connect it.
+        </p>
       </div>
     );
   }

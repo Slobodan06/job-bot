@@ -57,6 +57,10 @@ export type BgRequest =
   | { type: "gmail:get-enabled" }
   | { type: "gmail:set-enabled"; enabled: boolean };
 
+/** Why the extension has no sign-in: no JobBot tab open, that tab is signed out, the
+ * server refused its sign-in, or Chrome wouldn't let the extension read the tab. */
+export type SignInProblem = "no_tab" | "not_signed_in" | "rejected" | "blocked";
+
 export type BgResponse<T = unknown> =
   | { ok: true; data: T }
   | { ok: false; error: string; status?: number; code?: string };
@@ -78,7 +82,13 @@ export function sendToBackground<T = unknown>(req: BgRequest): Promise<BgRespons
 
 // Convenience typed wrappers
 export const bg = {
-  authGet: () => sendToBackground<{ token: string | null; email: string | null }>({ type: "auth:get" }),
+  authGet: () =>
+    sendToBackground<{
+      token: string | null;
+      email: string | null;
+      problem?: SignInProblem | null;
+      webOrigin?: string;
+    }>({ type: "auth:get" }),
   syncSession: (token: string | null) => sendToBackground<{ email: string | null } | null>({ type: "auth:sync", token }),
   logout: () => sendToBackground({ type: "auth:logout" }),
   profile: () => sendToBackground<ExtensionProfile>({ type: "profile:get" }),

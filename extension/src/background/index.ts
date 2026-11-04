@@ -8,6 +8,7 @@
 import { API_ORIGIN, TOKEN_KEY, WEB_ORIGIN, WEB_TOKEN_KEY } from "../lib/env";
 import type { BgRequest, BgResponse, EmailSignal, EmailStatusUpdate } from "../lib/messaging";
 import type { BgToFrame, FrameToBg } from "../lib/frames";
+import type { SignInProblem } from "../lib/messaging";
 import type { Application, DetectedJob } from "../lib/types";
 
 async function getToken(): Promise<string | null> {
@@ -36,8 +37,12 @@ async function adoptToken(token: string): Promise<boolean> {
  * website's content script only re-shares it once a JobBot page loads. Read it from
  * any JobBot tab already open instead, so a signed-in member is never told to sign in.
  */
+/** Why the last recovery found no sign-in, for the popup to explain. */
+let lastSignInProblem: SignInProblem | null = null;
+
 async function recoverSession(): Promise<string | null> {
   const tabs = await chrome.tabs.query({ url: `${WEB_ORIGIN}/*` }).catch(() => [] as chrome.tabs.Tab[]);
+  let problem: SignInProblem = "no_tab";
   for (const tab of tabs) {
     if (tab.id == null) continue;
     try {
@@ -47,11 +52,21 @@ async function recoverSession(): Promise<string | null> {
         args: [WEB_TOKEN_KEY],
       });
       const token = res?.result;
-      if (typeof token === "string" && token && (await adoptToken(token))) return token;
+      if (typeof token !== "string" || !token) {
+        if (problem !== "rejected") problem = "not_signed_in";
+        continue;
+      }
+      if (await adoptToken(token)) {
+        lastSignInProblem = null;
+        return token;
+      }
+      problem = "rejected";
     } catch {
-      /* tab still loading, or a page we may not script */
+      // Tab still loading, or Chrome's "Site access" for the extension excludes the site.
+      if (problem === "no_tab") problem = "blocked";
     }
   }
+  lastSignInProblem = problem;
   return null;
 }
 
@@ -72,7 +87,7 @@ class HttpError extends Error {
   }
 }
 
-async function api<T>(path: string, init: RequestInit = {}, auth = true): Promise<T> {
+async function api<T>(path: string, init: RequestInit = {}, auth = true, retried = false): Promise<T> {
   const headers = new Headers(init.headers);
   if (!(init.body instanceof FormData) && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
@@ -84,6 +99,8 @@ async function api<T>(path: string, init: RequestInit = {}, auth = true): Promis
   const res = await fetch(`${API_ORIGIN}${path}`, { ...init, headers });
   if (res.status === 401) {
     await setToken(null, null);
+    // The website may hold a newer sign-in than our copy: take it and try once more.
+    if (auth && !retried && (await recoverSession())) return api<T>(path, init, auth, true);
     let detail = "Your JobBot session ended — sign in on the JobBot website in this browser.";
     if (res.headers.get("X-Session-Ended")) {
       try {
@@ -649,9 +666,17 @@ async function handle(req: BgRequest, sender: chrome.runtime.MessageSender): Pro
   try {
     switch (req.type) {
       case "auth:get": {
-        await tokenOrRecover();
+        const token = await tokenOrRecover();
         const s = await chrome.storage.local.get([TOKEN_KEY, "jobbot_email"]);
-        return { ok: true, data: { token: s[TOKEN_KEY] || null, email: s.jobbot_email || null } };
+        return {
+          ok: true,
+          data: {
+            token: s[TOKEN_KEY] || null,
+            email: s.jobbot_email || null,
+            problem: token ? null : lastSignInProblem,
+            webOrigin: WEB_ORIGIN,
+          },
+        };
       }
       case "auth:sync": {
         // The extension never signs in on its own — it uses
