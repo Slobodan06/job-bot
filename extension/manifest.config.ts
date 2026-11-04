@@ -6,8 +6,9 @@ import pkg from "./package.json";
 // Agreement and is aggressively fingerprinted/blocked. Never add it here.
 const EXCLUDED_MATCHES = ["*://*.linkedin.com/*"];
 
-/** `apiOrigin` is the JobBot server (see build-env.ts) — the only host the extension may call. */
-export default function buildManifest(apiOrigin: string) {
+/** `apiOrigin` is the JobBot server (see build-env.ts) — the only host the extension may call.
+ * `webOrigin` is the JobBot website, whose open tabs the extension reads its sign-in from. */
+export default function buildManifest(apiOrigin: string, webOrigin: string = apiOrigin) {
   return defineManifest({
     manifest_version: 3,
     name: "JobBot Copilot",
@@ -19,8 +20,10 @@ export default function buildManifest(apiOrigin: string) {
     background: { service_worker: "src/background/index.ts", type: "module" },
     // webNavigation: know when a tab moves to a new page / which frames still
     // exist, so a job from an earlier page is never credited for a new submission.
-    permissions: ["storage", "webNavigation"],
-    host_permissions: [`${apiOrigin}/*`],
+    // scripting: read the sign-in from an already-open JobBot tab (after an install or
+    // update, content scripts aren't in tabs opened before it).
+    permissions: ["storage", "webNavigation", "scripting"],
+    host_permissions: Array.from(new Set([`${apiOrigin}/*`, `${webOrigin}/*`])),
     content_scripts: [
       {
         // Runs on every page and every frame (like BidHub) so custom-domain

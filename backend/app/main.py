@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -30,6 +31,7 @@ from app.extension.routes import router as extension_router
 from app.job_boards.routes import router as job_boards_router
 from app.jobs.routes import router as jobs_router
 from app.resume.routes import router as resume_router
+from app.applications.retention import run_retention_loop
 from app.database import close_db, connect_db, ensure_indexes
 from app.schemas import (
     CoverLetterResponse,
@@ -91,7 +93,10 @@ async def lifespan(app: FastAPI):
     log_email_config()
     await connect_db()
     await ensure_indexes()
+    # Tracked applications older than a month are deleted (see applications/retention.py).
+    retention = asyncio.create_task(run_retention_loop())
     yield
+    retention.cancel()
     await close_db()
 
 

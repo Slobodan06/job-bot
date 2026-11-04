@@ -10,7 +10,7 @@ import buildManifest from "./manifest.config";
 export default defineConfig(({ mode }) => {
   const { apiOrigin, webOrigin } = resolveOrigins(mode);
   return {
-    plugins: [react(), crx({ manifest: buildManifest(apiOrigin) })],
+    plugins: [react(), crx({ manifest: buildManifest(apiOrigin, webOrigin) })],
     define: {
       __JOBBOT_API_ORIGIN__: JSON.stringify(apiOrigin),
       __JOBBOT_WEB_ORIGIN__: JSON.stringify(webOrigin),

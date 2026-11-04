@@ -5,7 +5,7 @@
  * (see ../lib/frames.ts) — a job posting or its application form frequently
  * lives in an iframe, so no single frame can be assumed to own everything.
  */
-import { API_ORIGIN, TOKEN_KEY, WEB_ORIGIN } from "../lib/env";
+import { API_ORIGIN, TOKEN_KEY, WEB_ORIGIN, WEB_TOKEN_KEY } from "../lib/env";
 import type { BgRequest, BgResponse, EmailSignal, EmailStatusUpdate } from "../lib/messaging";
 import type { BgToFrame, FrameToBg } from "../lib/frames";
 import type { Application, DetectedJob } from "../lib/types";
@@ -18,6 +18,49 @@ async function setToken(token: string | null, email: string | null): Promise<voi
   if (token) await chrome.storage.local.set({ [TOKEN_KEY]: token, jobbot_email: email });
   else await chrome.storage.local.remove([TOKEN_KEY, "jobbot_email"]);
 }
+
+/** Take the website's token if the server still accepts it. */
+async function adoptToken(token: string): Promise<boolean> {
+  const me = await fetch(`${API_ORIGIN}/api/auth/me`, { headers: { Authorization: `Bearer ${token}` } }).catch(
+    () => null,
+  );
+  if (!me?.ok) return false;
+  const user = (await me.json()) as { email?: string };
+  await setToken(token, user.email || null);
+  void flushPendingApplications();
+  return true;
+}
+
+/**
+ * The extension's copy of the sign-in is lost on reinstall and on a 401, and the
+ * website's content script only re-shares it once a JobBot page loads. Read it from
+ * any JobBot tab already open instead, so a signed-in member is never told to sign in.
+ */
+async function recoverSession(): Promise<string | null> {
+  const tabs = await chrome.tabs.query({ url: `${WEB_ORIGIN}/*` }).catch(() => [] as chrome.tabs.Tab[]);
+  for (const tab of tabs) {
+    if (tab.id == null) continue;
+    try {
+      const [res] = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: (key: string) => localStorage.getItem(key),
+        args: [WEB_TOKEN_KEY],
+      });
+      const token = res?.result;
+      if (typeof token === "string" && token && (await adoptToken(token))) return token;
+    } catch {
+      /* tab still loading, or a page we may not script */
+    }
+  }
+  return null;
+}
+
+async function tokenOrRecover(): Promise<string | null> {
+  return (await getToken()) || (await recoverSession());
+}
+
+chrome.runtime.onInstalled.addListener(() => void tokenOrRecover());
+chrome.runtime.onStartup.addListener(() => void tokenOrRecover().then(() => flushPendingApplications()));
 
 class HttpError extends Error {
   constructor(
@@ -332,6 +375,75 @@ async function armTracking(
     .catch(() => {});
 }
 
+// Confirmed applications that couldn't be saved yet (signed out, offline). Kept until
+// the extension has a sign-in again, so no confirmed application is ever lost.
+const PENDING_KEY = "pending_applications";
+const MAX_PENDING = 20;
+const PENDING_TTL_MS = 14 * 24 * 60 * 60 * 1000;
+// chrome.storage.local holds ~10 MB: keep a picked-on-page resume only if it's small.
+const MAX_PENDING_RESUME_CHARS = 3 * 1024 * 1024;
+
+type Submission = {
+  payload: string;
+  resumeVariantId?: string;
+  resumeDataUrl?: string;
+  resumeFilename?: string;
+  at: number;
+};
+
+async function postSubmission(sub: Submission): Promise<Application> {
+  const form = new FormData();
+  form.append("payload", sub.payload);
+  if (sub.resumeVariantId) {
+    form.append("resume_variant_id", sub.resumeVariantId);
+  } else if (sub.resumeDataUrl) {
+    const blob = await (await fetch(sub.resumeDataUrl)).blob();
+    form.append("resume", blob, sub.resumeFilename || "resume");
+    form.append("resume_source", "selected_on_page");
+  }
+  return api<Application>("/api/applications/submitted", { method: "POST", body: form });
+}
+
+async function queueSubmission(sub: Submission): Promise<void> {
+  const s = await chrome.storage.local.get(PENDING_KEY);
+  const pending = ((s[PENDING_KEY] as Submission[]) || []).filter((p) => Date.now() - p.at < PENDING_TTL_MS);
+  const kept = sub.resumeDataUrl && sub.resumeDataUrl.length > MAX_PENDING_RESUME_CHARS
+    ? { ...sub, resumeDataUrl: undefined }
+    : sub;
+  await chrome.storage.local.set({ [PENDING_KEY]: [...pending, kept].slice(-MAX_PENDING) });
+}
+
+let flushing: Promise<void> | null = null;
+
+/** Save queued applications now that there's a sign-in. */
+function flushPendingApplications(): Promise<void> {
+  flushing ??= (async () => {
+    try {
+      if (!(await getToken())) return;
+      const s = await chrome.storage.local.get(PENDING_KEY);
+      const pending = (s[PENDING_KEY] as Submission[]) || [];
+      const left: Submission[] = [];
+      for (const [i, sub] of pending.entries()) {
+        if (Date.now() - sub.at >= PENDING_TTL_MS) continue;
+        try {
+          await postSubmission(sub);
+        } catch (e) {
+          const status = (e as HttpError).status;
+          // Signed out again or offline: keep the rest for next time. A refused one is dropped.
+          if (status === 401 || status === undefined || status >= 500) {
+            left.push(sub, ...pending.slice(i + 1));
+            break;
+          }
+        }
+      }
+      await chrome.storage.local.set({ [PENDING_KEY]: left });
+    } finally {
+      flushing = null;
+    }
+  })();
+  return flushing;
+}
+
 async function recordConfirmedApplication(tabId: number, pageUrl: string): Promise<void> {
   if (recordingTabs.has(tabId)) return; // several frames can confirm at once
   recordingTabs.add(tabId);
@@ -341,15 +453,10 @@ async function recordConfirmedApplication(tabId: number, pageUrl: string): Promi
     // Disarm first so a failure can't loop; the user can still add it by hand.
     await updateTracking(tabId, () => ({ armedAt: null, armedJob: null }));
 
-    if (!(await getToken())) {
-      notifyTopFrame(tabId, false, "JobBot: sign in on the JobBot website in this browser to track your applications.");
-      return;
-    }
     const job = st.armedJob || st.lastJob || fallbackJob(pageUrl, "");
-    const form = new FormData();
-    form.append(
-      "payload",
-      JSON.stringify({
+    const resume = st.resume && Date.now() - st.resume.at < RESUME_TTL_MS ? st.resume : null;
+    const sub: Submission = {
+      payload: JSON.stringify({
         job_url: postingUrl(job.url),
         ats: job.ats,
         company: job.company,
@@ -357,23 +464,40 @@ async function recordConfirmedApplication(tabId: number, pageUrl: string): Promi
         location: job.location,
         jd_text: job.text,
       }),
-    );
-    const resume = st.resume && Date.now() - st.resume.at < RESUME_TTL_MS ? st.resume : null;
-    if (resume?.variantId) {
-      form.append("resume_variant_id", resume.variantId);
-    } else if (resume?.dataUrl) {
-      const blob = await (await fetch(resume.dataUrl)).blob();
-      form.append("resume", blob, resume.filename);
-      form.append("resume_source", "selected_on_page");
-    }
-    const app = await api<Application>("/api/applications/submitted", { method: "POST", body: form });
+      resumeVariantId: resume?.variantId,
+      resumeDataUrl: resume?.variantId ? undefined : resume?.dataUrl,
+      resumeFilename: resume?.filename,
+      at: Date.now(),
+    };
     await updateTracking(tabId, () => ({ resume: null }));
+    const what = [job.job_title, job.company].filter(Boolean).join(" at ") || "This application";
+    const later = `JobBot kept ${what} and will add it to your tracker as soon as you open the JobBot website signed in.`;
 
-    const what = [app.job_title, app.company].filter(Boolean).join(" at ") || "Application";
+    if (!(await tokenOrRecover())) {
+      await queueSubmission(sub);
+      notifyTopFrame(tabId, false, later);
+      return;
+    }
+    let app: Application;
+    try {
+      app = await postSubmission(sub);
+    } catch (e) {
+      const status = (e as HttpError).status;
+      // Signed out meanwhile, offline or a server hiccup: keep it, don't lose it.
+      if (status === 401 || status === undefined || status >= 500) {
+        await queueSubmission(sub);
+        notifyTopFrame(tabId, false, later);
+        return;
+      }
+      throw e;
+    }
+    void flushPendingApplications();
+
+    const saved = [app.job_title, app.company].filter(Boolean).join(" at ") || "Application";
     notifyTopFrame(
       tabId,
       true,
-      `✓ Tracked: ${what}${app.applied_resume ? ` — resume "${app.applied_resume.filename}" saved` : ""}`,
+      `✓ Tracked: ${saved}${app.applied_resume ? ` — resume "${app.applied_resume.filename}" saved` : ""}`,
     );
   } catch (e) {
     notifyTopFrame(tabId, false, `JobBot couldn't record this application: ${(e as Error).message}`);
@@ -525,6 +649,7 @@ async function handle(req: BgRequest, sender: chrome.runtime.MessageSender): Pro
   try {
     switch (req.type) {
       case "auth:get": {
+        await tokenOrRecover();
         const s = await chrome.storage.local.get([TOKEN_KEY, "jobbot_email"]);
         return { ok: true, data: { token: s[TOKEN_KEY] || null, email: s.jobbot_email || null } };
       }
@@ -543,12 +668,13 @@ async function handle(req: BgRequest, sender: chrome.runtime.MessageSender): Pro
           if (current) await setToken(null, null);
           return { ok: true, data: null };
         }
-        if (req.token === current) return { ok: true, data: null };
-        const me = await fetch(`${API_ORIGIN}/api/auth/me`, { headers: { Authorization: `Bearer ${req.token}` } });
-        if (!me.ok) return { ok: false, error: "Website session isn't valid." };
-        const user = (await me.json()) as { email?: string };
-        await setToken(req.token, user.email || null);
-        return { ok: true, data: { email: user.email || null } };
+        if (req.token === current) {
+          void flushPendingApplications();
+          return { ok: true, data: null };
+        }
+        if (!(await adoptToken(req.token))) return { ok: false, error: "Website session isn't valid." };
+        const s = await chrome.storage.local.get("jobbot_email");
+        return { ok: true, data: { email: (s.jobbot_email as string) || null } };
       }
       case "auth:logout":
         // Signing out ends the account's session everywhere (website included).

@@ -344,6 +344,11 @@ export function TrackerTab({
         )}
       </Group>
 
+      <Text size="xs" c="dimmed">
+        Tracked applications are kept for one month after you applied, then deleted automatically with their
+        saved resumes.
+      </Text>
+
       {(range.date_from || range.date_to) && !loading && (
         <Text size="sm" c="dimmed">
           {total} application{total === 1 ? "" : "s"} applied{" "}
