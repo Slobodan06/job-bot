@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { AUTOFILL_ENABLED, WEB_ORIGIN } from "../lib/env";
+import { AUTOFILL_ENABLED, TOKEN_KEY, WEB_ORIGIN } from "../lib/env";
 import type { BgToFrame } from "../lib/frames";
 import { bg, ONSITE_BLOCKED } from "../lib/messaging";
 import type { ApplicationQuestion, DetectedJob } from "../lib/types";
@@ -68,9 +68,40 @@ export function Overlay({ job }: Props) {
   const variantRef = useRef<string | undefined>(undefined);
   const checkedContinuation = useRef(false);
 
-  useEffect(() => {
-    bg.authGet().then((r) => setAuthed(r.ok && !!r.data.token));
+  // After the extension is updated or reinstalled, a page that was already open keeps
+  // this old copy of the panel, which can no longer reach the extension.
+  const [stale, setStale] = useState(false);
+
+  const checkAuth = useCallback(() => {
+    if (!chrome.runtime?.id) {
+      setStale(true);
+      return;
+    }
+    bg.authGet()
+      .then((r) => {
+        if (!r.ok && /context invalidated|receiving end does not exist/i.test(r.error)) setStale(true);
+        else setAuthed(r.ok && !!r.data.token);
+      })
+      .catch(() => setStale(true));
   }, []);
+
+  // Checked again whenever the sign-in changes (signing in on the JobBot website in
+  // another tab) and when this tab comes back into view, not only when the panel appears.
+  useEffect(() => {
+    checkAuth();
+    const onStorage = (changes: Record<string, chrome.storage.StorageChange>, area: string) => {
+      if (area === "local" && TOKEN_KEY in changes) checkAuth();
+    };
+    const onVisible = () => {
+      if (document.visibilityState === "visible") checkAuth();
+    };
+    chrome.storage.onChanged.addListener(onStorage);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      chrome.storage.onChanged.removeListener(onStorage);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [checkAuth]);
 
   // Applications are recorded only once the site confirms the submission (see
   // content/submission.ts + background/index.ts), never just for
@@ -299,7 +330,13 @@ export function Overlay({ job }: Props) {
         {job.job_title || "Job application"} {job.company ? `· ${job.company}` : ""}
       </div>
 
-      {authed === false && (
+      {stale && (
+        <p style={{ margin: "0 0 8px" }}>
+          JobBot was updated. Reload this page to use the new version.
+        </p>
+      )}
+
+      {!stale && authed === false && (
         <div>
           <p style={{ margin: "0 0 8px" }}>Sign in to JobBot to autofill and track this application.</p>
           <a
@@ -310,10 +347,16 @@ export function Overlay({ job }: Props) {
           >
             Open JobBot
           </a>
+          <button
+            onClick={checkAuth}
+            style={{ ...btn, marginLeft: 8, background: "none", color: "#4dabf7", border: "1px solid #373a40" }}
+          >
+            I've signed in — refresh
+          </button>
         </div>
       )}
 
-      {authed && (
+      {!stale && authed && (
         <>
           {!AUTOFILL_ENABLED && (
             <p style={{ margin: "0 0 8px", color: "#adb5bd" }}>
