@@ -624,30 +624,6 @@ export default function HomePage() {
             setJobFilterBlock(null);
           }}
         />
-        <Button
-          fullWidth
-          size="md"
-          leftSection={<IconSparkles size={20} />}
-          disabled={!canSubmit || loading}
-          loading={loading}
-          onClick={onSubmit}
-          variant="gradient"
-          gradient={{ from: "teal", to: "cyan", deg: 105 }}
-        >
-          {loading ? "Generating ideal sample..." : "Generate perfect-match sample résumé"}
-        </Button>
-        {loading ? (
-          <Button
-            fullWidth
-            size="md"
-            color="red"
-            variant="light"
-            leftSection={<IconPlayerStop size={20} />}
-            onClick={stopTailoring}
-          >
-            Stop generating
-          </Button>
-        ) : null}
         {/* Legacy qualification questionnaire intentionally removed from the visible sample-generation flow.
         {!qualificationAnalysis ? (
           <>
@@ -903,13 +879,6 @@ export default function HomePage() {
           </>
         )}
         */}
-        {!canSubmit && !loading ? (
-          <Text size="xs" c="dimmed" ta="center">
-            {usesTeamResume
-              ? "Add a job description (20+ characters)."
-              : "Add a .docx or .pdf resume and a job description (20+ characters)."}
-          </Text>
-        ) : null}
         {jobFilterBlock ? (
           <Alert
             variant="light"
@@ -1004,6 +973,52 @@ export default function HomePage() {
     </Paper>
   );
 
+  // Kept in view at the bottom of the screen while the job description and options are
+  // filled in, so members never scroll down to find it.
+  const resumeActions = (
+    <Paper
+      p="sm"
+      radius="lg"
+      withBorder
+      shadow="lg"
+      style={{ position: "sticky", bottom: 12, zIndex: 20, background: "var(--mantine-color-dark-7)" }}
+    >
+      <Stack gap="xs">
+        <Button
+          fullWidth
+          size="md"
+          leftSection={<IconSparkles size={20} />}
+          disabled={!canSubmit || loading}
+          loading={loading}
+          onClick={onSubmit}
+          variant="gradient"
+          gradient={{ from: "teal", to: "cyan", deg: 105 }}
+        >
+          {loading ? "Generating ideal sample..." : "Generate perfect-match sample résumé"}
+        </Button>
+        {loading ? (
+          <Button
+            fullWidth
+            size="md"
+            color="red"
+            variant="light"
+            leftSection={<IconPlayerStop size={20} />}
+            onClick={stopTailoring}
+          >
+            Stop generating
+          </Button>
+        ) : null}
+        {!canSubmit && !loading ? (
+          <Text size="xs" c="dimmed" ta="center">
+            {usesTeamResume
+              ? "Add a job description (20+ characters)."
+              : "Add a .docx or .pdf resume and a job description (20+ characters)."}
+          </Text>
+        ) : null}
+      </Stack>
+    </Paper>
+  );
+
   const inputColumn = (
     <Stack gap="md">
       {sharedInputsPaper}
@@ -1012,6 +1027,7 @@ export default function HomePage() {
         : activeTab === "questions"
           ? questionsControls
           : coverLetterControls}
+      {activeTab === "resume" ? resumeActions : null}
     </Stack>
   );
 
