@@ -912,8 +912,15 @@ export default function HomePage() {
     </Paper>
   );
 
+  // Small enough to keep whole: stays in view at the bottom of the screen like resumeActions.
   const coverLetterControls = (
-    <Paper p={{ base: "md", sm: "lg" }} radius="lg" withBorder shadow="sm">
+    <Paper
+      p={{ base: "md", sm: "lg" }}
+      radius="lg"
+      withBorder
+      shadow="lg"
+      style={{ position: "sticky", bottom: 12, zIndex: 20, background: "var(--mantine-color-dark-7)" }}
+    >
       <Stack gap="sm">
         <TextInput
           label="Company name (optional)"
