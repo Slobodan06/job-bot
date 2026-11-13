@@ -5,6 +5,7 @@ import {
   Badge,
   Button,
   Group,
+  Highlight,
   Menu,
   Modal,
   Paper,
@@ -21,6 +22,8 @@ import {
   IconCalendar,
   IconDots,
   IconDownload,
+  IconExternalLink,
+  IconEye,
   IconPencil,
   IconPlus,
   IconSearch,
@@ -35,6 +38,7 @@ import {
   type JobApplication,
   type TrackerApi,
 } from "../../auth/api";
+import { ApplicationDetailsDrawer } from "./ApplicationDetailsDrawer";
 import { ApplicationFormModal } from "./ApplicationFormModal";
 
 const STATUS_COLOR: Record<string, string> = {
@@ -187,9 +191,19 @@ export function TrackerTab({
   const [formOpen, setFormOpen] = useState(false);
   const [deleting, setDeleting] = useState<JobApplication | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
+  const [viewing, setViewing] = useState<JobApplication | null>(null);
+  const [searchTerms, setSearchTerms] = useState<string[]>([]);
 
   const range = useMemo(() => presetRange(datePreset, dateFrom, dateTo), [datePreset, dateFrom, dateTo]);
-  const days = useMemo(() => groupByDay(items), [items]);
+  const searching = query.trim() !== "";
+  // Search results keep the server's best-match-first order; otherwise rows are grouped by day.
+  const days = useMemo(
+    () =>
+      searching
+        ? [{ day: "search", label: `Best matches${items.length ? ` (${items.length})` : ""}`, items }]
+        : groupByDay(items),
+    [items, searching],
+  );
 
   const load = useCallback(
     async (quiet = false) => {
@@ -200,6 +214,7 @@ export function TrackerTab({
           api.stats(range),
         ]);
         setItems(list.items);
+        setSearchTerms(list.search_terms || []);
         setStats(s.by_status);
         setTotal(s.total);
       } catch (e) {
@@ -277,13 +292,21 @@ export function TrackerTab({
 
       <Group justify="space-between" wrap="wrap">
         <Group wrap="wrap">
-          <TextInput
-            placeholder="Search role, company, URL…"
-            leftSection={<IconSearch size={14} />}
-            value={query}
-            onChange={(e) => setQuery(e.currentTarget.value)}
-            w={240}
-          />
+          <Tooltip
+            label="Paste anything from the employer's email: the subject, the recruiter's address, the job link, a req ID or a phrase from the posting. Job descriptions are searched too."
+            multiline
+            w={320}
+            withArrow
+            openDelay={400}
+          >
+            <TextInput
+              placeholder="Search company, role, recruiter email, job link, JD…"
+              leftSection={<IconSearch size={14} />}
+              value={query}
+              onChange={(e) => setQuery(e.currentTarget.value)}
+              w={{ base: "100%", sm: 360 }}
+            />
+          </Tooltip>
           <Select
             placeholder="All statuses"
             clearable
@@ -415,9 +438,25 @@ export function TrackerTab({
                         </Table.Td>
                       )}
                       <Table.Td maw={260}>
-                        <Anchor href={it.job_url} target="_blank" size="sm" lineClamp={1}>
-                          {it.job_title || it.job_url}
-                        </Anchor>
+                        <Group gap={4} wrap="nowrap">
+                          <Anchor size="sm" lineClamp={1} onClick={() => setViewing(it)} title="Show details">
+                            {it.job_title || it.job_url}
+                          </Anchor>
+                          <Tooltip label="Open posting" withArrow>
+                            <ActionIcon
+                              size="xs"
+                              variant="subtle"
+                              color="gray"
+                              component="a"
+                              href={it.job_url}
+                              target="_blank"
+                              rel="noreferrer"
+                              aria-label="Open posting"
+                            >
+                              <IconExternalLink size={12} />
+                            </ActionIcon>
+                          </Tooltip>
+                        </Group>
                         <Group gap={6}>
                           <Badge variant="light" size="xs" tt="capitalize">
                             {it.ats}
@@ -428,6 +467,27 @@ export function TrackerTab({
                             </Text>
                           )}
                         </Group>
+                        {it.match && (
+                          <Stack gap={2} mt={4}>
+                            <Group gap={4}>
+                              {it.match.exact_link && (
+                                <Badge size="xs" color="teal" variant="light">
+                                  Exact link
+                                </Badge>
+                              )}
+                              {it.match.fields.length > 0 && (
+                                <Text size="xs" c="dimmed">
+                                  Matched in {it.match.fields.join(", ")}
+                                </Text>
+                              )}
+                            </Group>
+                            {it.match.snippet && (
+                              <Highlight highlight={searchTerms} size="xs" c="dimmed" fs="italic" lineClamp={2}>
+                                {it.match.snippet}
+                              </Highlight>
+                            )}
+                          </Stack>
+                        )}
                       </Table.Td>
                       <Table.Td>{it.company || "—"}</Table.Td>
                       <Table.Td>
@@ -467,6 +527,9 @@ export function TrackerTab({
                               </ActionIcon>
                             </Menu.Target>
                             <Menu.Dropdown>
+                              <Menu.Item leftSection={<IconEye size={14} />} onClick={() => setViewing(it)}>
+                                Details &amp; job description
+                              </Menu.Item>
                               <Menu.Item
                                 leftSection={<IconPencil size={14} />}
                                 onClick={() => {
@@ -497,6 +560,20 @@ export function TrackerTab({
           </Table>
         </Table.ScrollContainer>
       )}
+
+      <ApplicationDetailsDrawer
+        application={viewing}
+        api={api}
+        highlight={searchTerms}
+        readOnly={readOnly}
+        onClose={() => setViewing(null)}
+        onChanged={upsertLocal}
+        onEdit={(app) => {
+          setViewing(null);
+          setEditing(app);
+          setFormOpen(true);
+        }}
+      />
 
       <ApplicationFormModal
         opened={formOpen}

@@ -117,7 +117,12 @@ async def list_applications(
     user: dict = Depends(get_builder_user),
 ) -> ApplicationListResponse:
     base = _applied_between({"user_id": user["_id"]}, date_from, date_to, tz)
-    query = service.build_list_query(base, status=status, q=q, cursor=cursor)
+    if q and q.strip():
+        ranked, terms = await service.search_page(base, status=status, q=q, limit=limit)
+        return ApplicationListResponse(
+            items=[service.to_public(d, match=m) for d, m in ranked], search_terms=terms
+        )
+    query = service.build_list_query(base, status=status, q=None, cursor=cursor)
     docs, next_cursor = await service.list_page(query, limit)
     return ApplicationListResponse(items=[service.to_public(d) for d in docs], next_cursor=next_cursor)
 
@@ -142,7 +147,7 @@ async def application_stats(
 
 @router.get("/{application_id}", response_model=ApplicationPublic)
 async def get_application(application_id: str, user: dict = Depends(get_builder_user)) -> ApplicationPublic:
-    return service.to_public(await _owned(application_id, user))
+    return service.to_public(await _owned(application_id, user), include_jd=True)
 
 
 @router.patch("/{application_id}", response_model=ApplicationPublic)

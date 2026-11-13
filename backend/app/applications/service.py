@@ -26,10 +26,12 @@ from app.applications.logic import (
     job_hash,
     resume_content_type,
 )
+from app.applications import search
 from app.applications.schemas import (
     ApplicationPublic,
     ApplicationUpdateRequest,
     ApplicationUpsertRequest,
+    SearchMatchPublic,
 )
 from app.database import get_db
 from app.resume.store import delete_applied_resumes, read_applied_resume, store_applied_resume
@@ -41,8 +43,15 @@ def oid(value: str, what: str = "Application") -> ObjectId:
     return ObjectId(value)
 
 
-def to_public(doc: dict) -> ApplicationPublic:
-    return ApplicationPublic(**application_doc_to_public(doc))
+def to_public(
+    doc: dict, *, include_jd: bool = False, match: search.SearchMatch | None = None
+) -> ApplicationPublic:
+    data = application_doc_to_public(doc)
+    if include_jd:
+        data["jd_text"] = doc.get("jd_text") or ""
+    if match is not None:
+        data["match"] = SearchMatchPublic(**match.__dict__)
+    return ApplicationPublic(**data)
 
 
 async def find_application(application_id: str, *, user_id: ObjectId | None = None) -> dict:
@@ -68,6 +77,36 @@ def build_list_query(
     if cursor and ObjectId.is_valid(cursor):
         query["_id"] = {"$lt": ObjectId(cursor)}
     return query
+
+
+# Search scans at most this many candidates. Applications are deleted after a month
+# (retention.py), so a member's whole tracker comfortably fits.
+SEARCH_CANDIDATES = 1000
+
+
+async def search_page(
+    base: dict[str, Any], *, status: str | None, q: str, limit: int
+) -> tuple[list[tuple[dict, search.SearchMatch]], list[str]]:
+    """Ranked search over company/title/link/notes/resume file name AND the job description.
+
+    Returns ``([(doc, match), ...] best first, search_terms)``. Not paginated: the
+    best ``limit`` matches are what the member is looking for.
+    """
+    parsed = search.parse_query(q)
+    if parsed.empty:
+        return [], []
+    query = dict(base)
+    if status and is_valid_status(status):
+        query["status"] = status
+    query["$and"] = [*query.get("$and", []), search.mongo_filter(parsed)]
+    docs = (
+        await get_db()
+        .applications.find(query)
+        .sort("_id", -1)
+        .limit(SEARCH_CANDIDATES)
+        .to_list(SEARCH_CANDIDATES)
+    )
+    return search.rank(docs, parsed)[:limit], parsed.terms
 
 
 async def list_page(query: dict[str, Any], limit: int) -> tuple[list[dict], str | None]:
@@ -160,6 +199,8 @@ async def update(doc: dict, body: ApplicationUpdateRequest) -> dict:
         updates["submitted_at"] = body.submitted_at
     if body.notes is not None:
         updates["notes"] = body.notes.strip()
+    if body.jd_text is not None:
+        updates["jd_text"] = body.jd_text.strip()
 
     await db.applications.update_one({"_id": doc["_id"]}, {"$set": updates})
     return await db.applications.find_one({"_id": doc["_id"]})

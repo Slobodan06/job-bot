@@ -30,6 +30,7 @@ export function ApplicationFormModal({ opened, application, api = applicationsAp
   const isEdit = application != null;
   const [resumeFile, setResumeFile] = useState<File | null>(null);
   const [saving, setSaving] = useState(false);
+  const [jdLoading, setJdLoading] = useState(false);
 
   const form = useForm({
     initialValues: {
@@ -40,6 +41,7 @@ export function ApplicationFormModal({ opened, application, api = applicationsAp
       status: "submitted",
       applied_on: "",
       notes: "",
+      jd_text: "",
     },
     validate: {
       job_url: (v: string) => (/^https?:\/\/\S+\.\S+/i.test(v.trim()) ? null : "Enter the job posting URL (https://…)"),
@@ -57,8 +59,26 @@ export function ApplicationFormModal({ opened, application, api = applicationsAp
       status: application?.status || "submitted",
       applied_on: toDateInput(application?.submitted_at ?? (application ? null : new Date().toISOString())),
       notes: application?.notes || "",
+      jd_text: application?.jd_text || "",
     });
     form.resetDirty();
+    // List rows don't carry the job description: fetch it so it can be edited.
+    let cancelled = false;
+    if (application && application.jd_text == null && application.has_jd) {
+      setJdLoading(true);
+      api
+        .get(application.id)
+        .then((full) => {
+          if (cancelled) return;
+          form.setFieldValue("jd_text", full.jd_text || "");
+          form.resetDirty({ ...form.getValues(), jd_text: full.jd_text || "" });
+        })
+        .catch(() => undefined)
+        .finally(() => !cancelled && setJdLoading(false));
+    }
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [opened, application]);
 
@@ -74,6 +94,7 @@ export function ApplicationFormModal({ opened, application, api = applicationsAp
         notes: v.notes,
       };
       if (v.applied_on) body.submitted_at = fromDateInput(v.applied_on);
+      if (isEdit ? form.isDirty("jd_text") : v.jd_text.trim()) body.jd_text = v.jd_text;
       let saved = isEdit
         ? await api.update(application.id, body)
         : await api.create(body);
@@ -112,6 +133,17 @@ export function ApplicationFormModal({ opened, application, api = applicationsAp
             <TextInput type="date" label="Applied on" {...form.getInputProps("applied_on")} />
           </Group>
           <Textarea label="Notes" autosize minRows={2} maxRows={6} {...form.getInputProps("notes")} />
+          <Textarea
+            label="Job description"
+            description="Paste the posting text so it's kept with the application and found by search."
+            placeholder={jdLoading ? "Loading…" : "Paste the job description…"}
+            disabled={jdLoading}
+            autosize
+            minRows={3}
+            maxRows={10}
+            maxLength={40000}
+            {...form.getInputProps("jd_text")}
+          />
           <FileInput
             label={isEdit && application.applied_resume ? "Replace applied resume" : "Applied resume"}
             description={

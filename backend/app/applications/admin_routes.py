@@ -50,11 +50,13 @@ async def _members_by_id(user_ids: set[Any]) -> dict[Any, dict]:
     return {u["_id"]: u async for u in cursor}
 
 
-async def _with_member(doc: dict, member: dict | None = None) -> MemberApplicationPublic:
+async def _with_member(
+    doc: dict, member: dict | None = None, *, include_jd: bool = False
+) -> MemberApplicationPublic:
     if member is None:
         member = await get_db().users.find_one({"_id": doc["user_id"]}, {"name": 1, "email": 1})
     return MemberApplicationPublic(
-        **service.to_public(doc).model_dump(), member=_member_ref(member, doc["user_id"])
+        **service.to_public(doc, include_jd=include_jd).model_dump(), member=_member_ref(member, doc["user_id"])
     )
 
 
@@ -193,16 +195,23 @@ async def list_member_applications(
     visible: Visible = Depends(visible_members),
 ) -> MemberApplicationListResponse:
     base = _with_day(_scope(member_id, visible), day, tz, date_from, date_to)
-    query = service.build_list_query(base, status=status, q=q, cursor=cursor)
-    docs, next_cursor = await service.list_page(query, limit)
-    members = await _members_by_id({d["user_id"] for d in docs})
+    terms: list[str] = []
+    next_cursor: str | None = None
+    if q and q.strip():
+        ranked, terms = await service.search_page(base, status=status, q=q, limit=limit)
+    else:
+        query = service.build_list_query(base, status=status, q=None, cursor=cursor)
+        docs, next_cursor = await service.list_page(query, limit)
+        ranked = [(d, None) for d in docs]
+    members = await _members_by_id({d["user_id"] for d, _ in ranked})
     items = [
         MemberApplicationPublic(
-            **service.to_public(d).model_dump(), member=_member_ref(members.get(d["user_id"]), d["user_id"])
+            **service.to_public(d, match=m).model_dump(),
+            member=_member_ref(members.get(d["user_id"]), d["user_id"]),
         )
-        for d in docs
+        for d, m in ranked
     ]
-    return MemberApplicationListResponse(items=items, next_cursor=next_cursor)
+    return MemberApplicationListResponse(items=items, next_cursor=next_cursor, search_terms=terms)
 
 
 @router.get("/stats", response_model=ApplicationStatsResponse)
@@ -267,7 +276,7 @@ async def create_member_application(
 async def get_member_application(
     application_id: str, visible: Visible = Depends(visible_members)
 ) -> MemberApplicationPublic:
-    return await _with_member(await _application(application_id, visible))
+    return await _with_member(await _application(application_id, visible), include_jd=True)
 
 
 @router.patch("/{application_id}", response_model=MemberApplicationPublic)

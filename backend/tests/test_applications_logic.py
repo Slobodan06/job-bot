@@ -104,7 +104,7 @@ class ApplicationDocTests(unittest.TestCase):
         doc["_id"] = "abc123"
         pub = application_doc_to_public(doc)
         self.assertEqual({"id", "job_url", "ats", "company", "job_title", "location", "status",
-                          "resume_variant_id", "notes", "answers", "scores", "applied_resume",
+                          "resume_variant_id", "notes", "answers", "scores", "applied_resume", "has_jd",
                           "created_at", "updated_at", "submitted_at"}, set(pub))
         self.assertIsNone(pub["applied_resume"])
 

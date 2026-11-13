@@ -236,11 +236,28 @@ export type JobApplication = {
   notes: string;
   scores: Record<string, number>;
   applied_resume: AppliedResume | null;
+  /** Whether the posting text was saved with the application. */
+  has_jd: boolean;
+  /** Full posting text — only returned by `get(id)`, not by lists. */
+  jd_text?: string | null;
+  /** Only on search results: why this job came up. */
+  match?: SearchMatch | null;
   /** Present on the manager's view: whose tracker this job is in. */
   member?: MemberRef;
   created_at: string | null;
   updated_at: string | null;
   submitted_at: string | null;
+};
+
+export type SearchMatch = {
+  score: number;
+  matched_terms: string[];
+  /** Where the terms were found: "company", "title", "job link", "job description", … */
+  fields: string[];
+  /** Job-description passage around the first hit. */
+  snippet: string;
+  /** The pasted link is this exact job. */
+  exact_link: boolean;
 };
 
 export const APPLICATION_STATUSES = [
@@ -268,7 +285,7 @@ function trackerQuery(params: Record<string, string | number | undefined | null>
 
 export const applicationsApi = {
   list(params: { status?: string; q?: string; cursor?: string; limit?: number } & DateRange = {}) {
-    return apiFetch<{ items: JobApplication[]; next_cursor: string | null }>(`/api/applications${trackerQuery(params)}`);
+    return apiFetch<ApplicationList>(`/api/applications${trackerQuery(params)}`);
   },
   stats(range: DateRange = {}) {
     return apiFetch<{ total: number; by_status: Record<string, number> }>(
@@ -320,13 +337,16 @@ async function downloadWithAuth(path: string, filename: string) {
   setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
 
-type ApplicationList = { items: JobApplication[]; next_cursor: string | null };
+/** `search_terms`: how the search box was read (empty when not searching), for highlighting. */
+type ApplicationList = { items: JobApplication[]; next_cursor: string | null; search_terms?: string[] };
 type ApplicationStats = { total: number; by_status: Record<string, number> };
 
 /** What the tracker table needs — implemented for a member's own tracker and for the manager's view. */
 export type TrackerApi = {
   list(params: { status?: string; q?: string; limit?: number } & DateRange): Promise<ApplicationList>;
   stats(range?: DateRange): Promise<ApplicationStats>;
+  /** One application including its full job description. */
+  get(id: string): Promise<JobApplication>;
   create(body: ApplicationInput): Promise<JobApplication>;
   update(id: string, patch: Partial<ApplicationInput>): Promise<JobApplication>;
   remove(id: string): Promise<void>;
@@ -363,6 +383,7 @@ export function adminApplicationsApi(memberId: string | null, day: string | null
   return {
     list: (params) => apiFetch<ApplicationList>(`${ADMIN_APPS}${scope(params)}`),
     stats: (range = {}) => apiFetch<ApplicationStats>(`${ADMIN_APPS}/stats${scope(range)}`),
+    get: (id) => apiFetch<JobApplication>(`${ADMIN_APPS}/${id}`),
     create(body) {
       if (!memberId) return Promise.reject(new Error("Pick a member first."));
       return apiFetch<JobApplication>(`${ADMIN_APPS}${scope({})}`, { method: "POST", body: JSON.stringify(body) });
@@ -405,6 +426,7 @@ export type ApplicationInput = {
   location?: string;
   status?: string;
   notes?: string;
+  jd_text?: string;
   submitted_at?: string | null;
 };
 

@@ -23,7 +23,18 @@ class ApplicationUpdateRequest(BaseModel):
     location: str | None = Field(default=None, max_length=200)
     status: str | None = Field(default=None, max_length=32)
     notes: str | None = Field(default=None, max_length=4000)
+    jd_text: str | None = Field(default=None, max_length=40000)
     submitted_at: datetime | None = None
+
+
+class SearchMatchPublic(BaseModel):
+    """Why a job came up in a tracker search."""
+
+    score: float
+    matched_terms: list[str] = Field(default_factory=list)
+    fields: list[str] = Field(default_factory=list)  # "company", "title", "job description", …
+    snippet: str = ""  # the job-description passage around the first hit
+    exact_link: bool = False
 
 
 class AppliedResumePublic(BaseModel):
@@ -48,6 +59,11 @@ class ApplicationPublic(BaseModel):
     answers: list[dict[str, Any]] = Field(default_factory=list)
     scores: dict[str, Any] = Field(default_factory=dict)
     applied_resume: AppliedResumePublic | None = None
+    has_jd: bool = False
+    # Full posting text — only on the single-application GET (lists stay small).
+    jd_text: str | None = None
+    # Only on search results.
+    match: SearchMatchPublic | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
     submitted_at: datetime | None = None
@@ -56,6 +72,8 @@ class ApplicationPublic(BaseModel):
 class ApplicationListResponse(BaseModel):
     items: list[ApplicationPublic]
     next_cursor: str | None = None
+    # How the search box was read (empty when not searching), for highlighting.
+    search_terms: list[str] = Field(default_factory=list)
 
 
 class ApplicationStatsResponse(BaseModel):
@@ -78,6 +96,7 @@ class MemberApplicationPublic(ApplicationPublic):
 class MemberApplicationListResponse(BaseModel):
     items: list[MemberApplicationPublic]
     next_cursor: str | None = None
+    search_terms: list[str] = Field(default_factory=list)
 
 
 class MemberTrackingSummary(BaseModel):

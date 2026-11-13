@@ -171,6 +171,7 @@ def application_doc_to_public(doc: dict[str, Any]) -> dict[str, Any]:
         "answers": doc.get("answers") or [],
         "scores": doc.get("scores") or {},
         "applied_resume": applied_resume_to_public(doc.get("applied_resume")),
+        "has_jd": bool((doc.get("jd_text") or "").strip()),
         "created_at": as_utc(doc.get("created_at")),
         "updated_at": as_utc(doc.get("updated_at")),
         "submitted_at": as_utc(doc.get("submitted_at")),
