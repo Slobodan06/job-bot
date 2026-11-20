@@ -17,6 +17,7 @@ from app.services.pdf_resume import is_plausible_personal_link, parse_contact, s
 from app.services.resume_model import (
     ResumeExperienceEntry,
     ResumeModel,
+    sanitize_resume_model,
     skills_dict_from_text,
 )
 from app.services.resume_sections import WorkExperienceRole
@@ -1186,7 +1187,7 @@ def _build_tailored_model(
                 responsibilities=[t for t in (bullet_text(b) for b in bullets) if t],
             )
         )
-    return ResumeModel(
+    return sanitize_resume_model(ResumeModel(
         name=source_model.name,
         title=headline or source_model.title,
         location=source_model.location,
@@ -1199,7 +1200,7 @@ def _build_tailored_model(
         languages=list(source_model.languages),
         additional_info=list(source_model.additional_info),
         meta=source_model.meta,
-    )
+    ))
 
 
 def drop_tech_lookalike_website(model: ResumeModel) -> ResumeModel:

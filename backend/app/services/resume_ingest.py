@@ -383,4 +383,6 @@ async def ingest_resume(data: bytes, *, filename: str) -> ResumeModel:
         model.certifications = attach_certification_links(model.certifications, data)
     model.meta.source_format = source_format
     model.meta.source_filename = filename or ""
-    return model
+    from app.services.resume_model import sanitize_resume_model
+
+    return sanitize_resume_model(model)

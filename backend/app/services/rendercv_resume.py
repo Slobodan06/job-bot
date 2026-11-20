@@ -195,7 +195,18 @@ def _split_degree_area(line: str) -> tuple[str | None, str]:
         if not credential.lower().endswith("'s"):
             credential = f"{credential}'s"
         return f"{credential} Degree", degree_dash.group("area").strip()
-    generic = re.match(r"^(Bachelor(?:'s)?|Master(?:'s)?|Associate(?:'s)?)\s+degree$", text, re.I)
+    # "Bachelor's Degree in Computer Science" / "Bachelor's Degree, Sunway University".
+    # Without this the generic "Bachelor's <area>" pattern below treated
+    # "Degree in Computer Science" as the area -> "Bachelor's in Degree in ...".
+    degree_in = re.match(
+        r"^(Bachelor|Master|Associate)(?:['’]s)?\s+Degree\s*(?:\b(?:in|of)\b|,)\s*(?P<area>.+)$",
+        text,
+        re.I,
+    )
+    if degree_in:
+        credential = f"{degree_in.group(1).capitalize()}'s"
+        return f"{credential} Degree", degree_in.group("area").strip(" -,:")
+    generic =re.match(r"^(Bachelor(?:'s)?|Master(?:'s)?|Associate(?:'s)?)\s+degree$", text, re.I)
     if generic:
         credential = generic.group(1)
         if not credential.lower().endswith("'s"):
@@ -774,6 +785,10 @@ def render_rendercv_pdf(payload: dict[str, Any]) -> bytes:
 
 
 def build_rendercv_resume_pdf_from_model(model: Any, *, theme: str) -> bytes:
+    from app.services.resume_model import ResumeModel, sanitize_resume_model
+
+    if isinstance(model, ResumeModel):
+        model = sanitize_resume_model(model)
     return render_rendercv_pdf(build_rendercv_payload_from_model(model, theme=theme))
 
 

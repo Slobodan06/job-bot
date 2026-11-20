@@ -326,7 +326,10 @@ def build_docx_resume_from_model(model: Any) -> bytes:
         _education_entries_from_model,
         _skill_entries_from_model,
     )
+    from app.services.resume_model import ResumeModel, sanitize_resume_model
 
+    if isinstance(model, ResumeModel):
+        model = sanitize_resume_model(model)
     return build_docx_resume(
         contact=model.contact_block(),
         professional_summary=model.professional_summary,

@@ -179,6 +179,95 @@ class ResumeModel(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# structural sanitation (run at ingest and on every tailored model)
+# ---------------------------------------------------------------------------
+
+# Lowercase words that may legitimately appear inside a place name.
+_LOCATION_LOWER_OK = {
+    "of", "de", "del", "la", "le", "da", "do", "dos", "das", "am", "an", "im", "upon",
+    "on", "en", "sur", "y", "e", "and", "remote", "hybrid", "onsite", "on-site",
+}
+# A field of study that starts with the credential itself, e.g. "Bachelor's in
+# Degree", "Bachelor's Degree in X", "Master Degree, X".
+_MALFORMED_DEGREE_FIELD_RE = re.compile(
+    r"^\s*(bachelor|master|associate)(?:['’]s)?\s+(?:(?:in|of)\s+)?degree\b(?:\s*(?:\b(?:in|of)\b|,|:|-))?\s*",
+    re.I,
+)
+
+
+def plausible_job_location(text: str) -> bool:
+    """True when ``text`` reads like a place ("Brea, CA", "Remote", "Kuala Lumpur").
+
+    Rejects sentence fragments that PDF wrapping pushed into the location slot,
+    e.g. "Drizzle ORM for reliable, high-performance data processing." which would
+    otherwise render as "Company, Drizzle ORM for reliable, ...".
+    """
+    value = (text or "").strip()
+    if not value:
+        return False
+    if len(value) > 60 or value.endswith((".", "!", "?", ";")) or re.search(r"\d+\s*%|[%:]", value):
+        return False
+    parts = [p.strip() for p in re.split(r"[,|/]", value) if p.strip()]
+    if not parts or len(parts) > 4:
+        return False
+    for part in parts:
+        words = re.findall(r"[A-Za-zÀ-ÿ][\wÀ-ÿ'’.\-]*", re.sub(r"[()]", " ", part))
+        if not words or len(words) > 4:
+            return False
+        for word in words:
+            if word[0].islower() and word.casefold() not in _LOCATION_LOWER_OK:
+                return False
+    return True
+
+
+def _norm_text(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", (value or "").casefold().replace("’", "'")).strip()
+
+
+def sanitize_education_entry(entry: ResumeEducationEntry) -> ResumeEducationEntry:
+    """Remove duplicated degree words / school name from the field of study.
+
+    Guards against outputs like "Bachelor's Degree in Bachelor's in Degree,
+    Sunway University": the field must be the subject only.
+    """
+    degree = (entry.degree or "").strip()
+    field = (entry.field or "").strip()
+    school = (entry.school or "").strip()
+
+    if school and field:
+        # Drop the institution name repeated inside the field ("..., Sunway University").
+        pattern = re.compile(r"\s*(?:[,|\-–—]|\bat\b)?\s*" + re.escape(school) + r"\s*$", re.I)
+        field = pattern.sub("", field).strip(" ,-–—|")
+        if _norm_text(field) == _norm_text(school):
+            field = ""
+
+    malformed = _MALFORMED_DEGREE_FIELD_RE.match(field)
+    if malformed:
+        # "Bachelor's in Degree in Computer Science" / "Bachelor's Degree, X".
+        if not degree:
+            degree = f"{malformed.group(1).capitalize()}'s Degree"
+        field = field[malformed.end():].strip(" ,-:")
+
+    if _norm_text(field) in {"", "degree", "degrees"} or (degree and _norm_text(field) == _norm_text(degree)):
+        field = ""
+    if degree and _norm_text(degree) == _norm_text(school):
+        degree = ""
+    return entry.model_copy(update={"degree": degree, "field": field})
+
+
+def sanitize_resume_model(model: "ResumeModel") -> "ResumeModel":
+    """Structural clean-up applied to every model before it is stored or rendered."""
+    experience = [
+        role
+        if not role.location or plausible_job_location(role.location)
+        else role.model_copy(update={"location": ""})
+        for role in model.professional_experience
+    ]
+    education = [sanitize_education_entry(e) for e in model.education]
+    return model.model_copy(update={"professional_experience": experience, "education": education})
+
+
+# ---------------------------------------------------------------------------
 # skill helpers
 # ---------------------------------------------------------------------------
 
